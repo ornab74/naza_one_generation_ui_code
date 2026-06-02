@@ -29,6 +29,25 @@ implementation lives in `main.py`.
 - Optional OpenAI integration uses `gpt-5.5` for web research and photo review,
   plus `gpt-image-2` for bike and report artwork.
 
+## Screenshots
+
+The AI Mechanic view retrieves cached manual excerpts, grounds repair guidance
+in visible citations, and carries a safety-focused checklist through the
+conversation. Select any image to open the full-size capture.
+
+<table>
+  <tr>
+    <td><a href="screenshot1.png"><img src="screenshot1.png" alt="AI Mechanic local cache and conversation start" width="300"></a></td>
+    <td><a href="screenshot2.png"><img src="screenshot2.png" alt="AI Mechanic evidence-backed spacer repair checklist" width="300"></a></td>
+    <td><a href="screenshot3.png"><img src="screenshot3.png" alt="AI Mechanic post-repair safety verification" width="300"></a></td>
+  </tr>
+  <tr>
+    <td><a href="screenshot4.png"><img src="screenshot4.png" alt="AI Mechanic numbered wheel and brake checklist" width="300"></a></td>
+    <td><a href="screenshot5.png"><img src="screenshot5.png" alt="AI Mechanic final confirmation guidance" width="300"></a></td>
+    <td><a href="screenshot6.png"><img src="screenshot6.png" alt="AI Mechanic manual citations and final guidance" width="300"></a></td>
+  </tr>
+</table>
+
 ## Run
 
 ```bash
@@ -121,4 +140,3 @@ Motorcycle service specifications vary by model and year. MotoLens intentionally
 does not invent torque values, service intervals, or wear limits. Use the
 official owner's manual, official service manual, and a qualified mechanic for
 safety-critical decisions.
-
