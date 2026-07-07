@@ -123,7 +123,7 @@ final class NazaAppConfig {
   static const String barkPackIndexSha256 = String.fromEnvironment(
     'NAZA_BARKPACK_INDEX_SHA256',
     defaultValue:
-        'e6892b322fff7af0440a48b87d7bc4a91f81ab3b4a6e8c5380331325f8ecb7dd',
+        '8f950a6dc3b6a15b35107a5fd09c3ce050fa8d27c88f5daf424b35d5d565f8f2',
   );
   static const String desktopGpuEnvironmentVariable = 'NAZA_DESKTOP_GPU';
   static const String desktopCpuEnvironmentVariable = 'NAZA_DESKTOP_CPU';
@@ -996,6 +996,10 @@ final class NazaSecureModelStore {
         host == 'huggingface.co' ||
         host.endsWith('.huggingface.co') ||
         host == 'cdn-lfs.huggingface.co' ||
+        host == 'cdn.hf.co' ||
+        host.endsWith('.cdn.hf.co') ||
+        host == 'cdn-lfs.hf.co' ||
+        (host.startsWith('cdn-lfs') && host.endsWith('.hf.co')) ||
         host == 'cas-bridge.xethub.hf.co' ||
         host.endsWith('.xethub.hf.co');
     if (!allowed) {
@@ -1280,9 +1284,9 @@ final class NazaSecureBarkPackStore {
         maxBytes: _maxIndexBytes,
       );
       final indexHash = crypto.sha256.convert(indexBytes).toString();
-      final expectedIndexHash = NazaAppConfig.barkPackIndexSha256
-          .trim()
-          .toLowerCase();
+      final expectedIndexHash = _normalizeSha256Pin(
+        NazaAppConfig.barkPackIndexSha256,
+      );
       if (expectedIndexHash.isNotEmpty && indexHash != expectedIndexHash) {
         throw FormatException(
           'BarkPack index SHA-256 mismatch. Expected $expectedIndexHash, got $indexHash.',
@@ -1667,6 +1671,14 @@ final class NazaSecureBarkPackStore {
       capabilitySummary: current.capabilitySummary,
       sidecarSummary: current.sidecarSummary,
     );
+  }
+
+  String _normalizeSha256Pin(String value) {
+    final clean = value.trim().toLowerCase();
+    if (clean.startsWith('sha256:')) {
+      return clean.substring('sha256:'.length).trim();
+    }
+    return clean;
   }
 
   Future<Directory> _packDir() async {

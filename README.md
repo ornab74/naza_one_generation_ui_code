@@ -159,7 +159,7 @@ https://github.com/ornab74/naza_one_generation_ui_code/releases/download/barkpac
 Pinned BarkPack release-index SHA-256:
 
 ```text
-e6892b322fff7af0440a48b87d7bc4a91f81ab3b4a6e8c5380331325f8ecb7dd
+8f950a6dc3b6a15b35107a5fd09c3ce050fa8d27c88f5daf424b35d5d565f8f2
 ```
 
 Every BarkPack file is downloaded over HTTPS into a temporary `.part` file,
@@ -170,7 +170,7 @@ build time after the workflow publishes `naza-barkpack-index.sha256`:
 ```bash
 flutter build linux --release \
   --dart-define=NAZA_BARKPACK_INDEX_URL=https://github.com/ornab74/naza_one_generation_ui_code/releases/download/barkpack-latest/naza-barkpack-index.json \
-  --dart-define=NAZA_BARKPACK_INDEX_SHA256=e6892b322fff7af0440a48b87d7bc4a91f81ab3b4a6e8c5380331325f8ecb7dd
+  --dart-define=NAZA_BARKPACK_INDEX_SHA256=8f950a6dc3b6a15b35107a5fd09c3ce050fa8d27c88f5daf424b35d5d565f8f2
 ```
 
 Current `barkpack-latest` release-index summary:
