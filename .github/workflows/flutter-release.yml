@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: analyze
     env:
-      ANDROID_PACKAGE_NAME: ${{ vars.ANDROID_PACKAGE_NAME || 'com.naza.naza_one' }}
+      ANDROID_PACKAGE_NAME: ${{ vars.ANDROID_PACKAGE_NAME || 'com.qroadscan.lightcal' }}
     steps:
       - uses: actions/checkout@v4
 

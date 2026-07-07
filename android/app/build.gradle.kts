@@ -16,7 +16,7 @@ if (hasReleaseSigning) {
 }
 
 android {
-    namespace = "com.naza.naza_one"
+    namespace = "com.qroadscan.lightcal"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -26,7 +26,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.naza.naza_one"
+        applicationId = "com.qroadscan.lightcal"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

@@ -25,7 +25,7 @@ Optional Google Play internal testing upload:
 
 Optional repository variable:
 
-- `ANDROID_PACKAGE_NAME` — defaults to `com.naza.naza_one`
+- `ANDROID_PACKAGE_NAME` — defaults to `com.qroadscan.lightcal`
 
 Base64 examples:
 
