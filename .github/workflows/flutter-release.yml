@@ -1,0 +1,353 @@
+name: Build Naza One
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.44.4"
+  JAVA_VERSION: "17"
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Analyze Dart
+        run: flutter analyze --no-pub
+
+  android:
+    name: Android APK/AAB
+    runs-on: ubuntu-24.04
+    needs: analyze
+    env:
+      ANDROID_PACKAGE_NAME: ${{ vars.ANDROID_PACKAGE_NAME || 'com.naza.naza_one' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Restore Android signing keystore
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "ANDROID_KEYSTORE_B64 is not set; release build will use local debug fallback signing."
+            exit 0
+          fi
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > android/app/upload-keystore.jks
+          {
+            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'storeFile=upload-keystore.jks\n'
+          } > android/key.properties
+          chmod 600 android/app/upload-keystore.jks android/key.properties
+
+      - name: Build Android APK
+        run: flutter build apk --release --no-pub
+
+      - name: Build Android App Bundle
+        run: flutter build appbundle --release --no-pub
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naza-One-Android
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/app/outputs/bundle/release/*.aab
+          if-no-files-found: error
+
+      - name: Detect Google Play credentials
+        id: play
+        if: github.event_name != 'pull_request'
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload AAB to Google Play internal testing
+        if: steps.play.outputs.configured == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.ANDROID_PACKAGE_NAME }}
+          releaseFiles: build/app/outputs/bundle/release/*.aab
+          track: internal
+          status: completed
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-24.04
+    needs: analyze
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Build Linux release
+        run: flutter build linux --release --no-pub
+
+      - name: Package Linux bundle
+        run: tar -czf naza-one-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naza-One-Linux-x64
+          path: naza-one-linux-x64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    needs: analyze
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release --no-pub
+
+      - name: Package Windows bundle
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath naza-one-windows-x64.zip -Force
+
+      - name: Build optional Microsoft Store MSIX
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
+          WINDOWS_MSIX_IDENTITY_NAME: ${{ vars.WINDOWS_MSIX_IDENTITY_NAME || 'Naza.NazaOne' }}
+          WINDOWS_PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_PUBLISHER_DISPLAY_NAME || 'Naza' }}
+          WINDOWS_PFX_B64: ${{ secrets.WINDOWS_PFX_B64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_MSIX_PUBLISHER) {
+            Write-Host "WINDOWS_MSIX_PUBLISHER is not set; skipping MSIX."
+            exit 0
+          }
+
+          $msixArgs = @(
+            "run", "msix:create",
+            "--store",
+            "--display-name", "Naza One",
+            "--publisher-display-name", $env:WINDOWS_PUBLISHER_DISPLAY_NAME,
+            "--identity-name", $env:WINDOWS_MSIX_IDENTITY_NAME,
+            "--publisher", $env:WINDOWS_MSIX_PUBLISHER,
+            "--build-windows", "false",
+            "--output-name", "naza-one-windows-store"
+          )
+
+          if ($env:WINDOWS_PFX_B64) {
+            [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\naza-one-windows.pfx", [Convert]::FromBase64String($env:WINDOWS_PFX_B64))
+            $msixArgs += @("--certificate-path", "$env:RUNNER_TEMP\naza-one-windows.pfx")
+            if ($env:WINDOWS_PFX_PASSWORD) {
+              $msixArgs += @("--certificate-password", $env:WINDOWS_PFX_PASSWORD)
+            }
+          } else {
+            $msixArgs += @("--sign-msix", "false")
+          }
+
+          & dart @msixArgs
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naza-One-Windows-x64
+          path: |
+            naza-one-windows-x64.zip
+            build/windows/**/*.msix
+          if-no-files-found: error
+
+  macos:
+    name: macOS
+    runs-on: macos-15
+    needs: analyze
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Build macOS release
+        run: flutter build macos --release --no-pub
+
+      - name: Optional macOS signing and notarization
+        if: github.event_name != 'pull_request'
+        env:
+          MACOS_CERTIFICATE_P12_B64: ${{ secrets.MACOS_CERTIFICATE_P12_B64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle found."
+            exit 1
+          fi
+          if [ -z "$MACOS_CERTIFICATE_P12_B64" ] || [ -z "$MACOS_CODESIGN_IDENTITY" ]; then
+            echo "macOS signing secrets are not set; leaving app unsigned/ad-hoc."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/naza-one-macos.keychain-db"
+          security create-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+          printf '%s' "$MACOS_CERTIFICATE_P12_B64" | base64 --decode > "$RUNNER_TEMP/macos-cert.p12" 2>/dev/null || printf '%s' "$MACOS_CERTIFICATE_P12_B64" | base64 -D > "$RUNNER_TEMP/macos-cert.p12"
+          security import "$RUNNER_TEMP/macos-cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          codesign --deep --force --options runtime --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$APP_PATH"
+
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" naza-one-macos-notarize.zip
+            xcrun notarytool submit naza-one-macos-notarize.zip \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$APP_PATH"
+          fi
+
+      - name: Package macOS app
+        run: |
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" naza-one-macos.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naza-One-macOS
+          path: naza-one-macos.zip
+          if-no-files-found: error
+
+  ios:
+    name: iOS
+    runs-on: macos-15
+    needs: analyze
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign --no-pub
+
+      - name: Package unsigned iOS app
+        run: ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app naza-one-ios-unsigned-app.zip
+
+      - name: Optional signed iOS IPA
+        if: github.event_name != 'pull_request'
+        env:
+          IOS_CERTIFICATE_P12_B64: ${{ secrets.IOS_CERTIFICATE_P12_B64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_B64 }}
+          IOS_EXPORT_OPTIONS_PLIST_B64: ${{ secrets.IOS_EXPORT_OPTIONS_PLIST_B64 }}
+        run: |
+          if [ -z "$IOS_CERTIFICATE_P12_B64" ] || [ -z "$IOS_PROVISIONING_PROFILE_B64" ] || [ -z "$IOS_EXPORT_OPTIONS_PLIST_B64" ]; then
+            echo "iOS signing secrets are not fully set; skipping signed IPA."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/naza-one-ios.keychain-db"
+          security create-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+
+          printf '%s' "$IOS_CERTIFICATE_P12_B64" | base64 --decode > "$RUNNER_TEMP/ios-cert.p12" 2>/dev/null || printf '%s' "$IOS_CERTIFICATE_P12_B64" | base64 -D > "$RUNNER_TEMP/ios-cert.p12"
+          security import "$RUNNER_TEMP/ios-cert.p12" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_B64" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/NazaOne.mobileprovision" 2>/dev/null || printf '%s' "$IOS_PROVISIONING_PROFILE_B64" | base64 -D > "$HOME/Library/MobileDevice/Provisioning Profiles/NazaOne.mobileprovision"
+          printf '%s' "$IOS_EXPORT_OPTIONS_PLIST_B64" | base64 --decode > "$RUNNER_TEMP/ExportOptions.plist" 2>/dev/null || printf '%s' "$IOS_EXPORT_OPTIONS_PLIST_B64" | base64 -D > "$RUNNER_TEMP/ExportOptions.plist"
+
+          flutter build ipa --release --no-pub --export-options-plist="$RUNNER_TEMP/ExportOptions.plist"
+
+      - name: Upload iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naza-One-iOS
+          path: |
+            naza-one-ios-unsigned-app.zip
+            build/ios/ipa/*.ipa
+          if-no-files-found: warn

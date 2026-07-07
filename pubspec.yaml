@@ -1,0 +1,51 @@
+name: naza_one
+description: A private, local-first Gemma assistant with a nature-glass Flutter UI.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cryptography: ^2.9.0
+  crypto: ^3.0.6
+  ffi: ^2.2.0
+  flutter_gemma: ^1.2.0
+  flutter_gemma_litertlm: ^1.0.2
+  path_provider: ^2.1.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  msix: ^3.18.0
+
+msix_config:
+  display_name: Naza One
+  publisher_display_name: Naza
+  identity_name: Naza.NazaOne
+  msix_version: 1.0.0.0
+  logo_path: assets/branding/naza_orb_512.png
+  capabilities: internetClient
+  store: true
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/backgrounds/
+    - assets/branding/
+    - assets/icons/
+    - assets/particles/
+    - assets/fonts/
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter[opsz,wght].ttf
+    - family: SpaceGrotesk
+      fonts:
+        - asset: assets/fonts/SpaceGrotesk[wght].ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono[wght].ttf

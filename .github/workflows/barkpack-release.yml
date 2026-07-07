@@ -1,0 +1,190 @@
+name: Build BarkPack
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag that the app downloads from"
+        required: true
+        default: "barkpack-latest"
+      hf_repo_id:
+        description: "Optional Hugging Face repo id, e.g. suno/bark-small"
+        required: false
+        default: ""
+      hf_revision:
+        description: "Hugging Face revision/commit/tag"
+        required: false
+        default: "main"
+      hf_include:
+        description: "Space-separated Hugging Face include patterns"
+        required: false
+        default: "*.safetensors *.bin *.pt *.pth *.npz config.json generation_config.json tokenizer* vocab* merges.txt special_tokens_map.json"
+      source_url:
+        description: "Optional direct HTTPS model/checkpoint archive URL"
+        required: false
+        default: ""
+      source_sha256:
+        description: "Optional SHA-256 for the direct URL download"
+        required: false
+        default: ""
+      quant:
+        description: "Tensor encoding"
+        required: true
+        type: choice
+        default: "int8"
+        options:
+          - int8
+          - float32
+      shard_mb:
+        description: "Shard size in MB"
+        required: true
+        default: "128"
+
+permissions:
+  contents: write
+
+jobs:
+  barkpack:
+    name: Convert and publish BarkPack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      BARK_RELEASE_TAG: ${{ inputs.release_tag }}
+      BARK_HF_REPO_ID: ${{ inputs.hf_repo_id }}
+      BARK_HF_REVISION: ${{ inputs.hf_revision }}
+      BARK_HF_INCLUDE: ${{ inputs.hf_include }}
+      BARK_SOURCE_URL: ${{ inputs.source_url }}
+      BARK_SOURCE_SHA256: ${{ inputs.source_sha256 }}
+      BARK_QUANT: ${{ inputs.quant }}
+      BARK_SHARD_MB: ${{ inputs.shard_mb }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Bark source input
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$BARK_HF_REPO_ID" ] && [ -z "$BARK_SOURCE_URL" ]; then
+            echo "::error::Provide either hf_repo_id, for example suno/bark-small, or source_url when running this workflow."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: tools/barkpack-requirements.txt
+
+      - name: Install converter dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r tools/barkpack-requirements.txt
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          hf --version
+
+      - name: Resolve Bark source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bark_source
+
+          if [ -n "$BARK_HF_REPO_ID" ]; then
+            args=(download "$BARK_HF_REPO_ID" --revision "$BARK_HF_REVISION" --local-dir bark_source)
+            if [ -n "${HF_TOKEN:-}" ]; then
+              args+=(--token "$HF_TOKEN")
+            fi
+            if [ -n "$BARK_HF_INCLUDE" ]; then
+              read -r -a patterns <<< "$BARK_HF_INCLUDE"
+              for pattern in "${patterns[@]}"; do
+                args+=(--include "$pattern")
+              done
+            fi
+            hf "${args[@]}"
+            echo "BARK_INPUT=bark_source" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [ -n "$BARK_SOURCE_URL" ]; then
+            case "$BARK_SOURCE_URL" in
+              https://*) ;;
+              *) echo "source_url must use HTTPS"; exit 1 ;;
+            esac
+            auth_args=()
+            if [ -n "${HF_TOKEN:-}" ]; then
+              auth_args=(-H "Authorization: Bearer $HF_TOKEN")
+            fi
+            curl -fL --retry 3 "${auth_args[@]}" -o bark_source/source_download "$BARK_SOURCE_URL"
+            if [ -n "$BARK_SOURCE_SHA256" ]; then
+              echo "$BARK_SOURCE_SHA256  bark_source/source_download" | sha256sum -c -
+            fi
+            file bark_source/source_download
+            if tar -tf bark_source/source_download >/dev/null 2>&1; then
+              mkdir -p bark_source/extracted
+              tar -xf bark_source/source_download -C bark_source/extracted
+              echo "BARK_INPUT=bark_source/extracted" >> "$GITHUB_ENV"
+            else
+              echo "BARK_INPUT=bark_source/source_download" >> "$GITHUB_ENV"
+            fi
+            exit 0
+          fi
+
+          echo "Provide either hf_repo_id or source_url."
+          exit 1
+
+      - name: Convert weights to BarkPack
+        run: |
+          python tools/convert_bark_to_barkpack.py \
+            --input "$BARK_INPUT" \
+            --output bark_pack \
+            --quant "$BARK_QUANT" \
+            --shard-mb "$BARK_SHARD_MB"
+
+      - name: Render BarkPack reference WAV previews
+        run: |
+          mkdir -p bark_previews
+          g++ -std=c++17 -O2 \
+            native/naza_bark_ffi.cpp \
+            tools/render_barkpack_preview.cpp \
+            -o tools/render_barkpack_preview
+          tools/render_barkpack_preview bark_pack bark_previews
+          sha256sum bark_previews/*.wav > bark_previews/SHA256SUMS.txt
+
+      - name: Build release index
+        run: |
+          python tools/build_barkpack_release_index.py \
+            --pack bark_pack \
+            --output release_barkpack
+          cat release_barkpack/naza-barkpack-index.sha256
+
+      - name: Upload BarkPack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Naza-BarkPack-${{ inputs.quant }}
+          path: |
+            release_barkpack/*
+            bark_previews/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish BarkPack release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.BARK_RELEASE_TAG }}
+          name: Naza BarkPack ${{ env.BARK_RELEASE_TAG }}
+          body: |
+            Generated BarkPack release for Naza One.
+
+            App index URL:
+            https://github.com/${{ github.repository }}/releases/download/${{ env.BARK_RELEASE_TAG }}/naza-barkpack-index.json
+
+            The SHA-256 of the release index is uploaded as:
+            naza-barkpack-index.sha256
+
+            Reference preview WAVs are attached to this release. Listen before
+            copying the new index SHA into app builds.
+          files: |
+            release_barkpack/*
+            bark_previews/*
+          make_latest: false

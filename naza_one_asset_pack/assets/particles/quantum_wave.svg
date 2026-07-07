@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260" fill="none">
+<defs>
+  <filter id="glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <linearGradient id="g" x1="0" y1="0" x2="900" y2="0"><stop stop-color="#59EFA9" stop-opacity=".1"/><stop offset=".5" stop-color="#D8FFE9"/><stop offset="1" stop-color="#59EFA9" stop-opacity=".1"/></linearGradient>
+</defs>
+<path d="M20 130C120 30 210 230 310 130C410 30 500 230 600 130C700 30 780 230 880 130" stroke="url(#g)" stroke-width="3" filter="url(#glow)"/>
+<path d="M20 130C120 230 210 30 310 130C410 230 500 30 600 130C700 230 780 30 880 130" stroke="#79F3BA" stroke-opacity=".5" stroke-width="2" filter="url(#glow)"/>
+<circle cx="40" cy="182.2" r="3" fill="#C7FFE3" opacity="0.38"/>
+<circle cx="75" cy="189.2" r="2" fill="#C7FFE3" opacity="0.49"/>
+<circle cx="110" cy="153.7" r="2" fill="#C7FFE3" opacity="0.57"/>
+<circle cx="145" cy="101.2" r="2" fill="#C7FFE3" opacity="0.78"/>
+<circle cx="180" cy="69.4" r="2" fill="#C7FFE3" opacity="0.39"/>
+<circle cx="215" cy="81.1" r="2" fill="#C7FFE3" opacity="0.73"/>
+<circle cx="250" cy="127.9" r="4" fill="#C7FFE3" opacity="0.68"/>
+<circle cx="285" cy="176.2" r="2" fill="#C7FFE3" opacity="0.46"/>
+<circle cx="320" cy="191.3" r="4" fill="#C7FFE3" opacity="0.79"/>
+<circle cx="355" cy="162.4" r="2" fill="#C7FFE3" opacity="0.76"/>
+<circle cx="390" cy="110.2" r="2" fill="#C7FFE3" opacity="0.69"/>
+<circle cx="425" cy="72.2" r="2" fill="#C7FFE3" opacity="0.77"/>
+<circle cx="460" cy="75.7" r="2" fill="#C7FFE3" opacity="0.68"/>
+<circle cx="495" cy="118.2" r="4" fill="#C7FFE3" opacity="0.42"/>
+<circle cx="530" cy="169.2" r="3" fill="#C7FFE3" opacity="0.82"/>
+<circle cx="565" cy="192.0" r="4" fill="#C7FFE3" opacity="0.39"/>
+<circle cx="600" cy="170.3" r="4" fill="#C7FFE3" opacity="0.75"/>
+<circle cx="635" cy="119.7" r="2" fill="#C7FFE3" opacity="0.74"/>
+<circle cx="670" cy="76.5" r="2" fill="#C7FFE3" opacity="0.59"/>
+<circle cx="705" cy="71.7" r="3" fill="#C7FFE3" opacity="0.81"/>
+<circle cx="740" cy="108.8" r="2" fill="#C7FFE3" opacity="0.57"/>
+<circle cx="775" cy="161.1" r="2" fill="#C7FFE3" opacity="0.42"/>
+<circle cx="810" cy="191.1" r="2" fill="#C7FFE3" opacity="0.31"/>
+<circle cx="845" cy="177.2" r="3" fill="#C7FFE3" opacity="0.58"/>
+</svg>

@@ -1,0 +1,29 @@
+# Merge into pubspec.yaml
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_gemma: ^1.2.0
+  flutter_gemma_litertlm: ^1.0.2
+  cryptography: ^2.9.0
+  path_provider: ^2.1.5
+
+flutter:
+  assets:
+    - assets/backgrounds/
+    - assets/branding/
+
+  # Optional. Remove this block if you are not bundling font files yet.
+  # fonts:
+  #   - family: NazaBody
+  #     fonts:
+  #       - asset: assets/fonts/Manrope-Regular.ttf
+  #         weight: 400
+  #       - asset: assets/fonts/Manrope-SemiBold.ttf
+  #         weight: 600
+  #       - asset: assets/fonts/Manrope-Bold.ttf
+  #         weight: 700
+  #       - asset: assets/fonts/Manrope-ExtraBold.ttf
+  #         weight: 800
+  #       - asset: assets/fonts/Manrope-Black.ttf
+  #         weight: 900

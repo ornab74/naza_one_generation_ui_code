@@ -1,0 +1,38 @@
+# Add/merge these sections into your Flutter pubspec.yaml.
+
+dependencies:
+  flutter_svg: ^2.0.0
+  # Optional for font loading by package. For a truly offline/private app,
+  # prefer bundling your own downloaded font files instead.
+  # google_fonts: ^6.0.0
+
+flutter:
+  assets:
+    - assets/backgrounds/
+    - assets/branding/
+    - assets/icons/
+    - assets/particles/
+
+  # Font files are NOT included in this pack.
+  # Download open fonts yourself from the official source, place them in assets/fonts/,
+  # then enable something like this:
+  #
+  # fonts:
+  #   - family: NazaDisplay
+  #     fonts:
+  #       - asset: assets/fonts/Manrope-ExtraBold.ttf
+  #         weight: 800
+  #       - asset: assets/fonts/Manrope-Black.ttf
+  #         weight: 900
+  #   - family: NazaBody
+  #     fonts:
+  #       - asset: assets/fonts/Manrope-Regular.ttf
+  #         weight: 400
+  #       - asset: assets/fonts/Manrope-SemiBold.ttf
+  #         weight: 600
+  #       - asset: assets/fonts/Manrope-Bold.ttf
+  #         weight: 700
+  #   - family: NazaMono
+  #     fonts:
+  #       - asset: assets/fonts/JetBrainsMono-Regular.ttf
+  #         weight: 400

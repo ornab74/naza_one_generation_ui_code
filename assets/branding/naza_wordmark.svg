@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="160" viewBox="0 0 640 160" fill="none">
+<defs>
+<linearGradient id="text" x1="0" y1="0" x2="640" y2="120">
+<stop stop-color="#F2FFF7"/><stop offset="1" stop-color="#8DFFC4"/>
+</linearGradient>
+</defs>
+<text x="22" y="92" font-size="64" font-weight="900" font-family="Manrope, Inter, Roboto, sans-serif" fill="url(#text)">Naza One</text>
+<path d="M500 36C456 36 432 59 432 96c0 5 4 9 9 9 37 0 59-25 59-69Z" stroke="#8DFFC4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M438 99c15-21 33-35 57-50" stroke="#E1FFE8" stroke-width="5" stroke-linecap="round"/>
+<text x="25" y="128" font-size="20" font-weight="700" font-family="Manrope, Inter, Roboto, sans-serif" fill="#A9CDBB">Private. Local. Yours.</text>
+</svg>

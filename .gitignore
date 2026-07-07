@@ -1,31 +1,20 @@
-
-# Buildozer / python-for-android
-.buildozer/
-bin/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Local venvs
-.venv/
-venv/
-
-# Android / Gradle artifacts (if any)
-*.apk
-*.aab
-*.keystore
-*.jks
-*.pem
-*.b64
-
-# Your app’s generated/secret files
-.enc_key
-chat_history.db*
-*.aes
-temp.db
-models/*.gguf
-models/*.aes
-
-# OS junk
-.DS_Store
+.dart_tool/
+.dartServer
+.flutter-plugins
+.flutter-plugins-dependencies
+.flutter-home/
+.metadata
+.packages
+.pub-cache/
+.tooling/
+build/
+android/.gradle/
+android/local.properties
+*.iml
+models/gemma-4-E2B-it.litertlm
+default.profraw
+bark_pack/
+bark_source/
+release_barkpack/
+tools/__pycache__/
+flutter_*.log

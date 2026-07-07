@@ -1,0 +1,518 @@
+Naza BarkPack Small-Size Vocal Capability Idea Tree
+version: 2026-07-07
+goal: keep Bark/Convo packs small while pushing closer to human, word-like, Bark-inspired voice generation
+constraint: target laptops with ~8 GB RAM, fast CPU path, optional GPU, secure SHA-verified downloadable packs
+
+palette
+├─ #55E6A5 mint        = semantic / linguistic structure
+├─ #8EC5FF sky         = speaker identity / voice color
+├─ #FFC857 gold        = codec / compression / quantization
+├─ #FF7A66 coral       = naturalness / prosody / expressiveness
+├─ #B18CFF violet      = neural distillation / tiny models
+├─ #6EE7F9 cyan        = runtime scheduler / speed
+├─ #F5A3FF rose        = long-form continuity / conversation memory
+├─ #A3FF8F lime        = safety / validation / anti-corruption
+└─ #D6D9DE silver      = challenge / risk / test gate
+
+root: "small pack, better speech"
+├─ seed_ideas[15]
+│  ├─ 01_mini_semantic_tokenizer #55E6A5
+│  │  ├─ idea: add a tiny grapheme/phoneme/syllable tokenizer that turns script words into Bark-like semantic events.
+│  │  ├─ size_plan: rules + compact exception table, not a large tokenizer model.
+│  │  └─ why: current humming improves only when events match word rhythm and vowel/consonant structure.
+│  ├─ 02_speaker_embedding_sidecars #8EC5FF
+│  │  ├─ idea: store a few tiny speaker vectors sidecar-style: pitch range, breath, brightness, nasality, pace.
+│  │  ├─ size_plan: 32-128 float/int8 values per voice.
+│  │  └─ why: sidecars give stable identity without shipping large history prompts.
+│  ├─ 03_phoneme_formant_micro_lut #FFC857
+│  │  ├─ idea: ship a small phoneme-to-formant lookup table with vowel/consonant envelopes.
+│  │  ├─ size_plan: hundreds of bytes to a few KB.
+│  │  └─ why: makes generated audio sound articulated rather than a smooth buzz.
+│  ├─ 04_tiny_prosody_predictor #B18CFF
+│  │  ├─ idea: distill punctuation, word length, emotion tags, and speaker into pitch/duration/energy curves.
+│  │  ├─ size_plan: tiny MLP, decision trees, or quantized linear tables.
+│  │  └─ why: prosody is a large part of human-likeness and does not require full Bark weights.
+│  ├─ 05_codebook_residual_texture #FFC857
+│  │  ├─ idea: store a compressed residual texture codebook for breath, fricatives, plosives, and room tone.
+│  │  ├─ size_plan: VQ table under 1-4 MB.
+│  │  └─ why: speech realism often comes from noise detail, not just tonal formants.
+│  ├─ 06_distilled_bark_semantic_decoder #B18CFF
+│  │  ├─ idea: train a small student to approximate Bark semantic token timing from text.
+│  │  ├─ size_plan: 5-30 MB int4/int8.
+│  │  └─ why: gets closer to Bark behavior without shipping original-scale models.
+│  ├─ 07_lpcnet_style_vocoder_lane #FFC857
+│  │  ├─ idea: use an LPC/formant source-filter vocoder plus tiny neural/noise excitation.
+│  │  ├─ size_plan: tiny runtime, few MB tables/model.
+│  │  └─ why: strong speech quality per byte on CPU.
+│  ├─ 08_chunked_longform_voice_state #F5A3FF
+│  │  ├─ idea: keep rolling speaker/prosody state between chunks so long replies do not reset voice.
+│  │  ├─ size_plan: runtime state only, nearly zero pack cost.
+│  │  └─ why: continuity makes voices feel much more human.
+│  ├─ 09_adaptive_quality_layers #6EE7F9
+│  │  ├─ idea: split pack into base voice + optional quality shards: consonants, emotion, room, studio harmonics.
+│  │  ├─ size_plan: download only what profile needs.
+│  │  └─ why: keeps default install small and allows upgrades.
+│  ├─ 10_int4_groupwise_quantization #FFC857
+│  │  ├─ idea: move selected tensors/side models from int8 to groupwise int4 with scale blocks.
+│  │  ├─ size_plan: 30-50% smaller than int8 for supported lanes.
+│  │  └─ why: frees budget for better semantic/speaker data.
+│  ├─ 11_phrase_cache_and_reuse #6EE7F9
+│  │  ├─ idea: cache rendered common phrases, phoneme curves, and speaker envelopes.
+│  │  ├─ size_plan: local cache, not release size.
+│  │  └─ why: faster iteration and smoother UI without bigger downloads.
+│  ├─ 12_emotion_control_tokens #FF7A66
+│  │  ├─ idea: compact emotion tags map to pitch, pace, breath, pause, and intensity curves.
+│  │  ├─ size_plan: small JSON/table.
+│  │  └─ why: expressive control can hide model limitations.
+│  ├─ 13_multiband_noise_shaper #FF7A66
+│  │  ├─ idea: synthesize fricative/breath noise in bands: s, sh, f, h, plosive pop, mouth click.
+│  │  ├─ size_plan: no model or tiny LUT.
+│  │  └─ why: makes words more recognizable.
+│  ├─ 14_runtime_probe_quality_score #A3FF8F
+│  │  ├─ idea: probe installed pack for all families, sidecars, version, tensor counts, and estimated quality.
+│  │  ├─ size_plan: metadata only.
+│  │  └─ why: prevents "installed but humming" confusion.
+│  └─ 15_micro_mel_to_wave_decoder #B18CFF
+│     ├─ idea: generate a tiny mel-like acoustic frame stream, then decode with a small quantized vocoder.
+│     ├─ size_plan: 15-60 MB depending quality.
+│     └─ why: highest realistic jump toward human sound while staying below full Bark size.
+
+loops
+├─ loop_01 expand #55E6A5
+│  ├─ build: add syllable nuclei detection to 01, not just word events.
+│  ├─ challenge #D6D9DE: English-only rules may sound wrong for names, code, acronyms, and slang.
+│  └─ mutate: add a fallback character n-gram phoneme guesser and "spell-out" mode for unknown tokens.
+├─ loop_02 expand #8EC5FF
+│  ├─ build: make 02 speaker sidecars include pitch contour bias and consonant softness.
+│  ├─ challenge #D6D9DE: tiny vectors can collapse voices into caricatures.
+│  └─ mutate: store two profiles per voice: calm and intense, interpolate by emotion tokens.
+├─ loop_03 expand #FFC857
+│  ├─ build: combine 03 and 13 into a "mouth events" table: vowel, nasal, stop, fricative, liquid, glide.
+│  ├─ challenge #D6D9DE: formant tables alone can sound robotic.
+│  └─ mutate: add random-but-seeded micro-variation per syllable so repeated words do not clone themselves.
+├─ loop_04 expand #B18CFF
+│  ├─ build: train 04 tiny prosody predictor from generated Bark clips: text features -> duration/pitch/energy.
+│  ├─ challenge #D6D9DE: training data may be large and licensing-sensitive.
+│  └─ mutate: generate synthetic training data from user-owned prompts and store only distilled weights.
+├─ loop_05 expand #FFC857
+│  ├─ build: make 05 residual texture codebook phoneme-conditioned.
+│  ├─ challenge #D6D9DE: codebooks can add noise but not intelligibility.
+│  └─ mutate: use texture only at consonant boundaries; leave vowels clean and formant-driven.
+├─ loop_06 expand #B18CFF
+│  ├─ build: 06 student model predicts semantic token classes, not raw audio.
+│  ├─ challenge #D6D9DE: if output token space is fake, it may not improve sound.
+│  └─ mutate: define Naza semantic tokens as practical speech events: onset, vowel, consonant, pause, emphasis.
+├─ loop_07 expand #FFC857
+│  ├─ build: 07 LPC lane uses pitch pulses plus filtered noise, not sine-only tone.
+│  ├─ challenge #D6D9DE: LPC tuning can be brittle across voices.
+│  └─ mutate: make speaker sidecar hold stable LPC coefficients per voice color.
+├─ loop_08 expand #F5A3FF
+│  ├─ build: 08 stores rolling "conversation breath" so pauses and intensity continue between chunks.
+│  ├─ challenge #D6D9DE: long state can drift into monotony.
+│  └─ mutate: reset only micro-state at paragraph boundaries, keep speaker identity state.
+├─ loop_09 expand #6EE7F9
+│  ├─ build: 09 splits BarkPack into base.pack, voice.pack, clarity.pack, studio.pack.
+│  ├─ challenge #D6D9DE: multiple downloads complicate SHA verification and UI.
+│  └─ mutate: one manifest, many optional shards, each with independent SHA and family contribution.
+├─ loop_10 expand #FFC857
+│  ├─ build: 10 stores int4 blocks for side models but leaves tiny tables uint8/raw for simple loading.
+│  ├─ challenge #D6D9DE: int4 decode can cost CPU and add bugs.
+│  └─ mutate: implement int4 only for large neural tables, never for hot tiny LUTs.
+├─ loop_11 expand #6EE7F9
+│  ├─ build: 11 caches semantic events separately from WAV output.
+│  ├─ challenge #D6D9DE: cache invalidation can cause mismatched voice/profile.
+│  └─ mutate: cache key includes pack SHA, speaker vector hash, preset, language, and renderer version.
+├─ loop_12 expand #FF7A66
+│  ├─ build: 12 maps "whisper, excited, tired, radio, close mic" to deterministic render coefficients.
+│  ├─ challenge #D6D9DE: too many knobs make UI confusing.
+│  └─ mutate: expose simple style prompt; internal parser maps text to hidden controls.
+├─ loop_13 expand #FF7A66
+│  ├─ build: 13 models sibilants as high-band filtered noise envelopes.
+│  ├─ challenge #D6D9DE: too much high-band noise becomes hissy.
+│  └─ mutate: tie noise gain to vowel energy and clamp by speaker brightness.
+├─ loop_14 expand #A3FF8F
+│  ├─ build: 14 quality score shows "acoustic-only", "sidecar speech", "neural-lite", "full graph".
+│  ├─ challenge #D6D9DE: quality labels may overpromise.
+│  └─ mutate: show exact capabilities: semantic sidecar yes/no, speaker sidecar yes/no, vocoder type.
+├─ loop_15 expand #B18CFF
+│  ├─ build: 15 tiny mel decoder uses 80-bin frames at low fps, then CPU vocoder.
+│  ├─ challenge #D6D9DE: mel decoder may still be too big for 140 MB budget.
+│  └─ mutate: optional "voice clarity shard" adds the decoder only when user wants larger download.
+├─ loop_16 recombine #55E6A5
+│  ├─ build: combine 01 + 06: rules produce initial semantic tokens, student model refines timing/emphasis.
+│  ├─ challenge #D6D9DE: two systems can disagree.
+│  └─ mutate: student only outputs deltas, never replaces safe rule baseline.
+├─ loop_17 recombine #8EC5FF
+│  ├─ build: combine 02 + 07: speaker vector controls source-filter parameters.
+│  ├─ challenge #D6D9DE: voice identity may be too synthetic.
+│  └─ mutate: add tiny per-voice residual texture from 05 for organic variation.
+├─ loop_18 recombine #FFC857
+│  ├─ build: combine 05 + 10: quantize residual texture with product quantization.
+│  ├─ challenge #D6D9DE: compressed artifacts may buzz.
+│  └─ mutate: use residual texture only above 2 kHz and during consonants.
+├─ loop_19 recombine #F5A3FF
+│  ├─ build: combine 08 + 11: long-form semantic cache stores rolling state and avoids recomputing chunks.
+│  ├─ challenge #D6D9DE: disk cache can grow.
+│  └─ mutate: LRU cache capped by MB and expires by pack SHA.
+├─ loop_20 recombine #FF7A66
+│  ├─ build: combine 12 + 13: emotion controls consonant sharpness and breath.
+│  ├─ challenge #D6D9DE: emotional speech can become noisy.
+│  └─ mutate: emotion intensity has a "naturalness governor" that avoids extremes unless studio mode.
+├─ loop_21 challenge #D6D9DE
+│  ├─ concern: sidecar semantic/speaker families satisfy manifest gates but do not equal true Bark inference.
+│  ├─ hard_truth: they improve structure only if the renderer consumes them deeply.
+│  └─ new_idea #B18CFF: create "sidecar v2" with learned coefficients, not just metadata hashes.
+├─ loop_22 challenge #D6D9DE
+│  ├─ concern: full neural Bark quality probably cannot fit in tiny size without serious distillation.
+│  ├─ hard_truth: 140-240 MB can be good, but not magic.
+│  └─ new_idea #B18CFF: train a 30-80 MB Bark-lite model specifically for Naza semantic tokens.
+├─ loop_23 challenge #D6D9DE
+│  ├─ concern: CPU-only real-time vocoding is the bottleneck on 8 GB laptops.
+│  ├─ hard_truth: tiny neural vocoders can still spike CPU.
+│  └─ new_idea #6EE7F9: render low-rate semantic/prosody first, stream audio in small chunks, cache finished chunks.
+├─ loop_24 challenge #D6D9DE
+│  ├─ concern: better word intelligibility may require phoneme dictionaries.
+│  ├─ hard_truth: dictionaries cost size but rules miss edge cases.
+│  └─ new_idea #55E6A5: include a compressed top-20k pronunciation lexicon shard as optional "clarity-en".
+├─ loop_25 mutate #55E6A5
+│  ├─ build: add language packs: base English rules in app, optional lexicon shards by language.
+│  ├─ challenge #D6D9DE: multi-language expands scope quickly.
+│  └─ mutate: support language tags but ship only one default compact language.
+├─ loop_26 mutate #8EC5FF
+│  ├─ build: generate speaker sidecars from a short local calibration phrase.
+│  ├─ challenge #D6D9DE: privacy and consent must be explicit.
+│  └─ mutate #A3FF8F: store calibration locally only, never upload; hash/cache with user control.
+├─ loop_27 mutate #FFC857
+│  ├─ build: add "codec shimmer" table sampled from verified pack fingerprints.
+│  ├─ challenge #D6D9DE: fingerprint-derived audio texture is not real learned audio.
+│  └─ mutate: use it as subtle modulation only, not primary sound source.
+├─ loop_28 mutate #B18CFF
+│  ├─ build: distill a micro duration model: text token features -> milliseconds.
+│  ├─ challenge #D6D9DE: bad duration ruins intelligibility.
+│  └─ mutate: clamp model output with rule-based min/max per phoneme class.
+├─ loop_29 mutate #FF7A66
+│  ├─ build: add "mouth closure" plosive model: silence dip + pressure burst.
+│  ├─ challenge #D6D9DE: plosives can clip.
+│  └─ mutate: normalize burst energy through limiter before codec stage.
+├─ loop_30 mutate #F5A3FF
+│  ├─ build: assign per-character voice memory in conversations: narrator, speaker_a, speaker_b.
+│  ├─ challenge #D6D9DE: generated scripts may invent new labels.
+│  └─ mutate: map unknown labels to nearest existing speaker embedding by hash/style.
+├─ loop_31 mutate #6EE7F9
+│  ├─ build: use two-pass generation: instant preview, then improved background rerender.
+│  ├─ challenge #D6D9DE: replacing audio while user listens can feel glitchy.
+│  └─ mutate: show "draft" vs "enhanced" and keep both files.
+├─ loop_32 mutate #A3FF8F
+│  ├─ build: add pack self-test clip after install: phrase "The quick brown fox..." to check consonants.
+│  ├─ challenge #D6D9DE: self-test can be subjective.
+│  └─ mutate: compute objective envelope stats: silence bursts, high-band consonants, pitch movement.
+├─ loop_33 synthesize #B18CFF
+│  ├─ build: "BarkLite-3lane": semantic-lite model + source-filter vocoder + residual texture.
+│  ├─ challenge #D6D9DE: needs training pipeline and release governance.
+│  └─ mutate: start with inference ABI now, swap in learned model later without UI changes.
+├─ loop_34 synthesize #FFC857
+│  ├─ build: "Pack Budget Tiers": 64 MB, 160 MB, 320 MB, 700 MB.
+│  ├─ challenge #D6D9DE: too many tiers confuse users.
+│  └─ mutate: UI names: Tiny Preview, Clear Speech, Studio Lite, Full Voice.
+├─ loop_35 synthesize #55E6A5
+│  ├─ build: "semantic lattice": word -> syllable -> phoneme -> event frames, each cacheable.
+│  ├─ challenge #D6D9DE: lattice complexity can slow generation.
+│  └─ mutate #6EE7F9: precompute lattice on isolate/native worker, stream frames to renderer.
+└─ loop_36 synthesize #A3FF8F
+   ├─ build: "honest capability gate": app refuses to call it Bark-like speech unless semantic+speaker+mouth events pass.
+   ├─ challenge #D6D9DE: strict gates may block experimental packs.
+   └─ mutate: add developer override, but default users get clear quality labels.
+
+ranked_next_build_candidates
+├─ quick_win_01 #55E6A5: implement compact phoneme/syllable event generator in native/Dart.
+├─ quick_win_02 #FF7A66: improve consonant/fricative/plosive envelopes in current FFI renderer.
+├─ quick_win_03 #8EC5FF: make speaker sidecars carry real voice coefficients, not only deterministic markers.
+├─ quick_win_04 #A3FF8F: add BarkPack quality label and self-test result in Settings/Bark tab.
+├─ medium_01 #B18CFF: train tiny prosody/duration student model and ship int8.
+├─ medium_02 #FFC857: add residual texture codebook under 4 MB.
+├─ medium_03 #F5A3FF: rolling voice state for long-form chunk continuity.
+├─ large_01 #B18CFF: BarkLite semantic decoder, 30-80 MB, optional shard.
+└─ large_02 #B18CFF: micro mel-to-wave decoder, optional 60-200 MB quality tier.
+
+hard_constraints_to_keep_rechecking
+├─ size #FFC857: every added shard needs before/after MB cost and SHA pin.
+├─ cpu #6EE7F9: no hot path should block Flutter UI isolate.
+├─ truthfulness #A3FF8F: sidecars are not full neural Bark; UI should label capabilities honestly.
+├─ security #A3FF8F: all packs stay HTTPS + SHA-256 verified + sanitized filenames.
+└─ quality #FF7A66: judge by intelligible words, not just "less hum".
+
+continuation_loops
+├─ loop_37 articulatory_seed #55E6A5
+│  ├─ build: represent each token as jaw, tongue, lip, nasal, and glottal positions before converting to sound.
+│  ├─ challenge #D6D9DE: articulatory models can sound academic and dry if not paired with texture.
+│  ├─ mutate #FF7A66: drive articulators with emotional micro-motion and consonant bursts.
+│  └─ new_idea #8EC5FF: speaker sidecars store default mouth shape and vocal-tract length.
+├─ loop_38 tract_length_voice_color #8EC5FF
+│  ├─ build: add vocal-tract-length and larynx-depth coefficients to speaker sidecars.
+│  ├─ challenge #D6D9DE: too much shifting creates alien/monster voices.
+│  ├─ mutate: clamp by natural human ranges and expose only "warm, bright, deep, youthful" labels.
+│  └─ new_idea #A3FF8F: voice-naturalness guard rejects unsafe coefficient extremes.
+├─ loop_39 allophone_table #55E6A5
+│  ├─ build: replace one phoneme table with allophones: t aspirated, t flap, dark l, reduced vowels.
+│  ├─ challenge #D6D9DE: allophones require language/context rules.
+│  ├─ mutate: start with high-impact English-only rules, fallback to basic phonemes.
+│  └─ new_idea #FFC857: compress allophone rules as trie transitions.
+├─ loop_40 trie_pronunciation_codec #FFC857
+│  ├─ build: compact top-word pronunciation lexicon using front-coded trie + phoneme IDs.
+│  ├─ challenge #D6D9DE: lexicon can grow fast and still miss names.
+│  ├─ mutate: optional "clarity-en-20k" shard, with fallback grapheme rules for names.
+│  └─ new_idea #55E6A5: runtime learns user corrections into a local custom lexicon.
+├─ loop_41 local_pronunciation_memory #F5A3FF
+│  ├─ build: store local pronunciation overrides for names, places, project terms.
+│  ├─ challenge #D6D9DE: wrong learned pronunciations can persist and annoy users.
+│  ├─ mutate #A3FF8F: make corrections inspectable, editable, resettable, and never synced by default.
+│  └─ new_idea #6EE7F9: pronunciation cache compiles to fast token events on startup.
+├─ loop_42 coarticulation_windows #FF7A66
+│  ├─ build: blend phonemes across boundaries so "st", "tr", "oo" move like connected speech.
+│  ├─ challenge #D6D9DE: over-blending makes words mushy.
+│  ├─ mutate: adapt blend strength to speech rate and clarity setting.
+│  └─ new_idea #A3FF8F: intelligibility self-test penalizes over-blended consonants.
+├─ loop_43 stress_predictor #B18CFF
+│  ├─ build: tiny model predicts primary stress and reduction from word shape and sentence position.
+│  ├─ challenge #D6D9DE: stress mistakes sound uncanny and affect meaning.
+│  ├─ mutate #55E6A5: combine lexicon stress when available with model fallback.
+│  └─ new_idea #FF7A66: stressed syllables get longer vowel, brighter formants, clearer attack.
+├─ loop_44 phrase_breath_planner #FF7A66
+│  ├─ build: insert breath intakes and phrase endings based on punctuation, length, and emotion.
+│  ├─ challenge #D6D9DE: too much breath sounds theatrical or creepy.
+│  ├─ mutate: breath is subtle in Eco/Balanced and stronger only in Studio.
+│  └─ new_idea #8EC5FF: speaker sidecar controls breathiness and breath frequency.
+├─ loop_45 voiced_unvoiced_split #FF7A66
+│  ├─ build: split synthesis into voiced source plus unvoiced noise source per phoneme.
+│  ├─ challenge #D6D9DE: switching sources can click.
+│  ├─ mutate #FFC857: crossfade using tiny envelope LUTs.
+│  └─ new_idea #6EE7F9: vectorize source mixing in the FFI renderer.
+├─ loop_46 simd_hot_path #6EE7F9
+│  ├─ build: SIMD-friendly oscillator/noise/mix loops for desktop native renderer.
+│  ├─ challenge #D6D9DE: platform-specific SIMD complicates CI and mobile.
+│  ├─ mutate: keep scalar fallback, enable SIMD only with compile-time flags.
+│  └─ new_idea #A3FF8F: native probe reports renderer capability and chosen path.
+├─ loop_47 adaptive_sample_rate #6EE7F9
+│  ├─ build: render consonants/high clarity at higher internal rate, vowels at lower rate, then resample.
+│  ├─ challenge #D6D9DE: resampling can add artifacts.
+│  ├─ mutate #FFC857: use fixed small polyphase table, not heavy DSP dependency.
+│  └─ new_idea #FF7A66: high-band detail only when consonants need it.
+├─ loop_48 neural_excitation_micro_model #B18CFF
+│  ├─ build: tiny model predicts excitation/noise shape from phoneme, pitch, energy, speaker.
+│  ├─ challenge #D6D9DE: still needs training data and may be the real quality bottleneck.
+│  ├─ mutate: train only excitation residual, keep deterministic formant backbone.
+│  └─ new_idea #FFC857: quantize excitation model to int4 and run per-frame, not per-sample.
+├─ loop_49 frame_rate_compromise #FFC857
+│  ├─ build: neural controls update at 50-100 Hz; DSP fills samples between frames.
+│  ├─ challenge #D6D9DE: low frame rate can sound steppy.
+│  ├─ mutate #FF7A66: cubic interpolation of pitch, formants, noise, and energy.
+│  └─ new_idea #6EE7F9: frame scheduler precomputes controls off the UI isolate.
+├─ loop_50 bark_token_teacher #B18CFF
+│  ├─ build: use full Bark offline only during Actions/training to create teacher semantic/prosody traces.
+│  ├─ challenge #D6D9DE: legal/licensing and reproducibility must be clean.
+│  ├─ mutate #A3FF8F: require user-provided sources and record provenance in pack manifest.
+│  └─ new_idea #55E6A5: train Naza tokens from teacher traces without distributing teacher weights.
+├─ loop_51 provenance_manifest #A3FF8F
+│  ├─ build: manifest records source repo, revision, quant, sidecars, training recipe hash, and license note.
+│  ├─ challenge #D6D9DE: metadata can get stale or become noise.
+│  ├─ mutate: release-index builder fails if critical provenance fields are absent.
+│  └─ new_idea #A3FF8F: Settings shows "voice pack trust card" with exact capabilities.
+├─ loop_52 trust_card_ui #A3FF8F
+│  ├─ build: show "sidecar speech", "neural-lite", or "full graph" with family counts and SHA.
+│  ├─ challenge #D6D9DE: labels can disappoint users if sound still poor.
+│  ├─ mutate #FF7A66: include a short self-test preview button so users hear reality immediately.
+│  └─ new_idea #6EE7F9: self-test uses cached phrase so it is instant after first render.
+├─ loop_53 tiny_unit_selection #B18CFF
+│  ├─ build: store very small licensed micro-units: breaths, clicks, sibilants, plosive pops, laughter fragments.
+│  ├─ challenge #D6D9DE: any human sample data raises consent/licensing concerns.
+│  ├─ mutate #A3FF8F: use synthetic generated units or explicitly licensed public-domain units only.
+│  └─ new_idea #FFC857: encode units as spectral envelopes instead of raw audio.
+├─ loop_54 spectral_envelope_units #FFC857
+│  ├─ build: store spectral envelope snapshots for consonants and breaths, excite with local noise.
+│  ├─ challenge #D6D9DE: envelopes alone may lack organic timing.
+│  ├─ mutate #FF7A66: pair each envelope with attack/decay curves and random seed ranges.
+│  └─ new_idea #6EE7F9: pack envelopes into one memory-mapped table.
+├─ loop_55 memory_mapped_pack_tables #6EE7F9
+│  ├─ build: native library memory-maps tables/shards instead of reading/scanning on each render.
+│  ├─ challenge #D6D9DE: mmap behavior differs across platforms and mobile sandboxes.
+│  ├─ mutate: desktop mmap first, mobile buffered read fallback.
+│  └─ new_idea #A3FF8F: pack verifier writes a compact local install index after SHA checks.
+├─ loop_56 install_index_v2 #A3FF8F
+│  ├─ build: after verification, write install-index with family offsets, sidecar offsets, table offsets.
+│  ├─ challenge #D6D9DE: index corruption can break render.
+│  ├─ mutate: regenerate install-index from manifest if missing; never trust it for security.
+│  └─ new_idea #6EE7F9: native probe reads install-index for fast startup.
+├─ loop_57 accent_and_register_control #8EC5FF
+│  ├─ build: speaker sidecar includes register controls: formal, casual, whisper, announcer, soft.
+│  ├─ challenge #D6D9DE: "accent" can become stereotyped or offensive.
+│  ├─ mutate #A3FF8F: avoid demographic labels; use acoustic/style descriptors only.
+│  └─ new_idea #FF7A66: style prompt maps to acoustic controls through neutral vocabulary.
+├─ loop_58 rhythm_template_library #FF7A66
+│  ├─ build: small library of rhythm templates for narration, question, reply, aside, warning, excitement.
+│  ├─ challenge #D6D9DE: templates can become repetitive.
+│  ├─ mutate: pick by hash + emotion + sentence type, then perturb timings.
+│  └─ new_idea #F5A3FF: conversation memory tracks recent rhythm to avoid repetition.
+├─ loop_59 anti_repetition_voice_memory #F5A3FF
+│  ├─ build: rolling memory penalizes repeated pitch contours and identical pauses.
+│  ├─ challenge #D6D9DE: too much variation sounds unstable.
+│  ├─ mutate #8EC5FF: variation range belongs to speaker sidecar.
+│  └─ new_idea #FF7A66: naturalness governor balances consistency and surprise.
+├─ loop_60 naturalness_governor #FF7A66
+│  ├─ build: final pass clamps pitch jumps, breath density, noise brightness, vowel length.
+│  ├─ challenge #D6D9DE: clamp too hard and expression dies.
+│  ├─ mutate: governor thresholds widen in Studio and emotional styles.
+│  └─ new_idea #A3FF8F: self-test reports "over-clamped" or "over-excited" audio stats.
+├─ loop_61 forced_alignment_debug #A3FF8F
+│  ├─ build: export render timeline: token, phoneme, milliseconds, pitch, energy, source type.
+│  ├─ challenge #D6D9DE: debug output can bloat logs and slow render.
+│  ├─ mutate #6EE7F9: enable only developer toggle; save compact JSON beside WAV.
+│  └─ new_idea #55E6A5: UI waveform overlays word boundaries for diagnosis.
+├─ loop_62 word_boundary_waveform #55E6A5
+│  ├─ build: show generated word timing above waveform in Convo tab.
+│  ├─ challenge #D6D9DE: UI complexity distracts from simple generation.
+│  ├─ mutate: hide under "Details" expander.
+│  └─ new_idea #A3FF8F: users can report "this word sounded bad" with exact token context.
+├─ loop_63 targeted_quality_feedback #A3FF8F
+│  ├─ build: local feedback marks bad words/phonemes and tunes local pronunciation/render overrides.
+│  ├─ challenge #D6D9DE: feedback loops can overfit one phrase.
+│  ├─ mutate #F5A3FF: keep feedback scoped to speaker/style/language.
+│  └─ new_idea #55E6A5: build a local adaptive pronunciation table.
+├─ loop_64 differentiable_future_path #B18CFF
+│  ├─ build: design current event pipeline so future learned modules can replace rules one lane at a time.
+│  ├─ challenge #D6D9DE: too abstract; does not improve sound today.
+│  ├─ mutate #6EE7F9: define stable ABI now: semantic_events -> acoustic_frames -> wav.
+│  └─ new_idea #A3FF8F: manifest declares which ABI stages are rule, table, tiny-neural, or full-neural.
+├─ loop_65 stage_capability_manifest #A3FF8F
+│  ├─ build: manifest field "stages": semantic=sidecar/rule/neural, acoustic=table/neural, codec=dsp/neural.
+│  ├─ challenge #D6D9DE: old packs need backward compatibility.
+│  ├─ mutate: default missing stage fields to v1 sidecar/dsp.
+│  └─ new_idea #6EE7F9: renderer selects fastest compatible path from stage metadata.
+├─ loop_66 path_selector #6EE7F9
+│  ├─ build: choose renderer path: rule-dsp, neural-prosody+dsp, neural-vocoder, full graph.
+│  ├─ challenge #D6D9DE: branch explosion can increase bugs.
+│  ├─ mutate: one path interface, multiple backend implementations.
+│  └─ new_idea #A3FF8F: every backend must produce probe JSON and self-test metrics.
+├─ loop_67 tiny_diffusion_refiner #B18CFF
+│  ├─ build: optional tiny diffusion/flow refiner only for consonant/noise bands, not full waveform.
+│  ├─ challenge #D6D9DE: diffusion is usually slow and not size-friendly.
+│  ├─ mutate #FFC857: limit to 1-2 denoise steps on low-bandwidth residuals.
+│  └─ new_idea #FF7A66: use it only in Studio tier after draft audio is ready.
+├─ loop_68 draft_then_refine_audio #6EE7F9
+│  ├─ build: instant DSP draft, optional background refinement replaces/augments high-band detail.
+│  ├─ challenge #D6D9DE: two files can confuse playback.
+│  ├─ mutate: UI offers "play draft now" and "enhance in background".
+│  └─ new_idea #F5A3FF: long-form generation refines first chunks while later chunks render.
+├─ loop_69 streaming_longform_pipeline #F5A3FF
+│  ├─ build: pipeline chunks: script chunk N, semantic N, audio N, refine N-1, playback N-2.
+│  ├─ challenge #D6D9DE: scheduling errors can stall or desync audio.
+│  ├─ mutate #6EE7F9: bounded queues and cancellation tokens per render job.
+│  └─ new_idea #A3FF8F: job monitor card shows stage, cache hits, memory, and cancel.
+├─ loop_70 render_job_monitor #A3FF8F
+│  ├─ build: Convo UI shows script, semantic, acoustic, codec, refinement progress separately.
+│  ├─ challenge #D6D9DE: too much telemetry may feel technical.
+│  ├─ mutate: default simple progress, expandable technical lane for debugging.
+│  └─ new_idea #6EE7F9: telemetry throttled to avoid UI jank.
+├─ loop_71 pack_budget_autotuner #FFC857
+│  ├─ build: Actions estimates size/quality tier and recommends quant/shard choices before publishing.
+│  ├─ challenge #D6D9DE: quality estimation without listening can be wrong.
+│  ├─ mutate #A3FF8F: include objective proxy metrics plus required manual listening note.
+│  └─ new_idea #B18CFF: CI can generate a tiny reference WAV artifact for human review.
+└─ loop_72 reference_wav_artifact #B18CFF
+   ├─ build: BarkPack Action renders fixed phrases with the newly built pack and uploads WAV previews.
+   ├─ challenge #D6D9DE: CI audio render adds time and can fail on native deps.
+   ├─ mutate #6EE7F9: use Dart/native fallback renderer with no GUI, short phrases only.
+   └─ new_idea #A3FF8F: release notes include "listen before pinning SHA" preview links.
+
+new_ranked_candidates_after_loop_72
+├─ immediate_01 #55E6A5: add phoneme/allophone event lattice and coarticulation windows.
+├─ immediate_02 #FF7A66: voiced/unvoiced source split with plosive/fricative/breath envelopes.
+├─ immediate_03 #8EC5FF: upgrade speaker sidecar from marker to real coefficients: tract, pitch, breath, brightness.
+├─ immediate_04 #A3FF8F: add stage capability manifest + trust card + self-test preview.
+├─ immediate_05 #6EE7F9: install-index v2 for fast native probe and future memory mapping.
+├─ medium_04 #FFC857: optional compressed pronunciation trie shard for clearer English.
+├─ medium_05 #B18CFF: tiny duration/stress/prosody student model with rule clamps.
+├─ medium_06 #FFC857: spectral envelope unit table for consonants/breath without raw samples.
+├─ advanced_03 #B18CFF: neural excitation residual model at 50-100 Hz control rate.
+├─ advanced_04 #B18CFF: optional tiny high-band refiner for Studio tier.
+└─ ci_01 #A3FF8F: GitHub Action emits reference WAV artifacts before SHA pinning.
+
+size_budget_hypotheses
+├─ 0_to_1_MB #55E6A5: phoneme/allophone rules, stress heuristics, rhythm templates, capability metadata.
+├─ 1_to_5_MB #FFC857: residual texture/envelope tables, pronunciation mini-trie, speaker coefficient bank.
+├─ 5_to_30_MB #B18CFF: tiny prosody/duration/stress student, neural excitation residual.
+├─ 30_to_100_MB #B18CFF: BarkLite semantic/acoustic student with int8/int4 quantization.
+├─ 100_to_300_MB #B18CFF: Studio Lite tier with optional vocoder/refiner shard.
+└─ over_300_MB #D6D9DE: likely no longer "small"; require clear quality jump and user opt-in.
+
+implemented_wave_01_2026_07_07
+├─ picked #55E6A5: phoneme/syllable-ish event lattice in native renderer.
+│  ├─ files: native/naza_bark_ffi.cpp
+│  └─ result: whole-word events are split into smaller speech units for better rhythm and articulation.
+├─ picked #FF7A66: voiced/unvoiced source split with fricative, plosive, and nasal behavior.
+│  ├─ files: native/naza_bark_ffi.cpp
+│  └─ result: vowels/nasals use voiced formants while fricatives/plosives add shaped noise and bursts.
+├─ picked #8EC5FF: speaker sidecar coefficients.
+│  ├─ files: tools/convert_bark_to_barkpack.py, native/naza_bark_ffi.cpp
+│  └─ result: compact metadata now controls pitch bias, tract length, breath, brightness, consonants, articulation, and pace.
+├─ picked #A3FF8F: stage/capability trust metadata.
+│  ├─ files: tools/convert_bark_to_barkpack.py, tools/build_barkpack_release_index.py, lib/main.dart
+│  └─ result: new packs expose quality tier, stage map, capabilities, and synthesized sidecars in the Bark/Convo status card.
+├─ picked #6EE7F9: larger native event budgets for the smaller lattice events.
+│  ├─ files: lib/main.dart, native/naza_bark_ffi.cpp
+│  └─ result: Eco/Balanced/Studio now allow more small events without forcing one event to carry an entire word.
+└─ next_after_wave_01
+   ├─ #FFC857: optional pronunciation trie shard for clearer words/names.
+   ├─ #B18CFF: tiny stress/duration model with rule clamps.
+   ├─ #A3FF8F: reference WAV artifact generated by GitHub Actions.
+   └─ #6EE7F9: install-index v2 / memory mapped pack tables.
+
+implemented_wave_02_2026_07_07
+├─ picked #6EE7F9: install-index v2.
+│  ├─ files: lib/main.dart, native/naza_bark_ffi.cpp
+│  └─ result: verified installs regenerate compact install_index_v2.json for fast capability/stage/profile reads.
+├─ picked #A3FF8F: reference WAV artifacts in CI.
+│  ├─ files: tools/render_barkpack_preview.cpp, .github/workflows/barkpack-release.yml
+│  └─ result: BarkPack Action renders narrator/dialogue/studio WAV previews and uploads them beside release assets.
+├─ picked #A3FF8F: preview SHA checks.
+│  ├─ files: .github/workflows/barkpack-release.yml
+│  └─ result: CI writes bark_previews/SHA256SUMS.txt so preview files are inspectable and stable.
+└─ next_after_wave_02
+   ├─ #FFC857: optional pronunciation trie shard.
+   ├─ #B18CFF: tiny duration/stress/prosody model.
+   ├─ #6EE7F9: desktop mmap table loader.
+   └─ #A3FF8F: in-app self-test button using the same three reference prompts.
+
+implemented_wave_03_2026_07_07
+├─ picked #FFC857: compact pronunciation/stress metadata.
+│  ├─ files: tools/convert_bark_to_barkpack.py, tools/build_barkpack_release_index.py
+│  └─ result: packs now carry pronunciationProfile with function words, suffix stress, digraphs, reduction strength, duration bias, and clarity bias.
+├─ picked #55E6A5: acronym/digraph-aware native tokenization.
+│  ├─ files: native/naza_bark_ffi.cpp
+│  └─ result: acronyms spell out as letter units and digraphs like sh/ch/th/ph/wh/ng/qu stay together.
+├─ picked #FF7A66: rule-clamped stress and duration shaping.
+│  ├─ files: native/naza_bark_ffi.cpp
+│  └─ result: function words reduce, stressed suffixes lift, soft suffixes relax, and timing responds to profile bias.
+├─ picked #A3FF8F: in-app BarkPack self-test.
+│  ├─ files: lib/main.dart
+│  └─ result: Bark/Convo card can render deterministic local native preview WAVs without the chat model.
+└─ next_after_wave_03
+   ├─ #B18CFF: tiny learned duration/stress model to replace some hand rules.
+   ├─ #FFC857: optional compressed top-word pronunciation trie shard.
+   ├─ #6EE7F9: memory-mapped table loader for desktop.
+   └─ #A3FF8F: waveform/word-boundary debug overlay for self-test outputs.
+
+implemented_wave_04_2026_07_07
+├─ picked #A3FF8F: native render trace JSON sidecars.
+│  ├─ files: native/naza_bark_ffi.cpp
+│  └─ result: every native WAV render emits <wav>.trace.json with event timing, units, pitch, energy, voicing, fricative/plosive/nasal flags, and pack coefficients.
+├─ picked #6EE7F9: trace propagation through preview tooling.
+│  ├─ files: tools/render_barkpack_preview.cpp, .github/workflows/barkpack-release.yml
+│  └─ result: CI preview artifacts include the trace JSON files automatically because bark_previews/* is uploaded.
+├─ picked #A3FF8F: in-app self-test trace visibility.
+│  ├─ files: lib/main.dart
+│  └─ result: Bark self-test stores and displays the latest WAV trace path beside the audio output path.
+└─ next_after_wave_04
+   ├─ #A3FF8F: waveform/word-boundary debug overlay reading trace JSON.
+   ├─ #FFC857: optional compact pronunciation trie shard.
+   ├─ #B18CFF: tiny learned stress/duration model trained from traces.
+   └─ #6EE7F9: memory-mapped profile/trace loading for desktop.
