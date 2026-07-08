@@ -31,8 +31,18 @@ void main() {
   });
 
   group('release scanner and BarkPack config', () {
-    test('does not pin mutable BarkPack latest by default', () {
-      expect(NazaAppConfig.barkPackIndexSha256, isEmpty);
+    test('pins the current BarkPack release-index JSON hash', () {
+      expect(
+        NazaAppConfig.barkPackIndexSha256,
+        'e30d638dc477ec017aacd0ceaf21d97d94f6a83ac35f9037313e3f66f5640eaf',
+      );
+    });
+
+    test('does not use the Actions artifact ZIP hash as the index pin', () {
+      const artifactZipSha256 =
+          '5e89db33478d430111bde5d1b430313a6c031a982acb41e254ae6417c1bbff6b';
+
+      expect(NazaAppConfig.barkPackIndexSha256, isNot(artifactZipSha256));
     });
 
     test(

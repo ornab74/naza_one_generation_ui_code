@@ -123,7 +123,8 @@ final class NazaAppConfig {
   );
   static const String barkPackIndexSha256 = String.fromEnvironment(
     'NAZA_BARKPACK_INDEX_SHA256',
-    defaultValue: '',
+    defaultValue:
+        'e30d638dc477ec017aacd0ceaf21d97d94f6a83ac35f9037313e3f66f5640eaf',
   );
   static const String desktopGpuEnvironmentVariable = 'NAZA_DESKTOP_GPU';
   static const String desktopCpuEnvironmentVariable = 'NAZA_DESKTOP_CPU';
@@ -5734,7 +5735,7 @@ final class NazaBarkConvoEngine {
           updatedAt: DateTime.now(),
         );
         final key = _cacheKey([
-          'self-test-v2',
+          'self-test-v3-source-filter',
           item.name,
           packStatus.packPath,
           NazaAppConfig.barkPackIndexSha256,
@@ -5834,7 +5835,7 @@ final class NazaBarkConvoEngine {
     }
 
     final renderKey = _cacheKey([
-      'render-v4',
+      'render-v5-source-filter',
       cleanPrompt,
       cleanVoice,
       cleanStyle,
@@ -6239,7 +6240,6 @@ Segments:
 Narrator: line
 Speaker A: line
 Speaker B: line
-Sound: short non-lyrical sound cue if useful
 Render Notes:
 - note
 - note
@@ -6258,6 +6258,7 @@ Rules:
 - Prefer concise lines in Eco mode; prefer richer expression in Studio mode.
 - For long-form parts, preserve names, tone, and scene continuity.
 - End each part in a way that can concatenate naturally with the next WAV section.
+- Prefer spoken English lines. Do not add Sound cues unless the user explicitly asks for non-speech audio.
 - Do not include copyrighted lyrics.
 - Do not expose hidden chain-of-thought.
 - Prefer natural dialogue, emotional timing, and clear speaker labels.

@@ -70,8 +70,9 @@ struct BarkEvent {
   double energy = 0.45;
   double base_hz = 150.0;
   double pause_seconds = 0.08;
-  double formant2 = 1.88;
-  double formant3 = 2.72;
+  double formant1 = 650.0;
+  double formant2 = 1450.0;
+  double formant3 = 2500.0;
   double consonant = 0.16;
   double articulation = 0.52;
   double voicing = 1.0;
@@ -525,6 +526,20 @@ double suffix_stress_bonus(const std::string& token) {
 
 char dominant_vowel(const std::string& token) {
   const std::string low = lower_ascii(token);
+  if (low.find("ee") != std::string::npos ||
+      low.find("ea") != std::string::npos ||
+      low.find("ie") != std::string::npos) {
+    return 'i';
+  }
+  if (low.find("oo") != std::string::npos ||
+      low.find("ou") != std::string::npos ||
+      low.find("ew") != std::string::npos) {
+    return 'u';
+  }
+  if (low.find("oa") != std::string::npos ||
+      low.find("ow") != std::string::npos) {
+    return 'o';
+  }
   for (size_t i = 0; i < low.size(); ++i) {
     const char ch = low[i];
     if (ch == 'a' || ch == 'e' || ch == 'i' || ch == 'o' || ch == 'u' ||
@@ -535,25 +550,37 @@ char dominant_vowel(const std::string& token) {
   return 'a';
 }
 
-void vowel_formants(char vowel, double* formant2, double* formant3) {
+void vowel_formants(
+    char vowel,
+    double* formant1,
+    double* formant2,
+    double* formant3) {
   switch (vowel) {
-    case 'e':
     case 'i':
     case 'y':
-      *formant2 = 2.16;
-      *formant3 = 3.18;
+      *formant1 = 310.0;
+      *formant2 = 2210.0;
+      *formant3 = 2980.0;
+      break;
+    case 'e':
+      *formant1 = 470.0;
+      *formant2 = 1840.0;
+      *formant3 = 2480.0;
       break;
     case 'o':
-      *formant2 = 1.62;
-      *formant3 = 2.58;
+      *formant1 = 500.0;
+      *formant2 = 910.0;
+      *formant3 = 2450.0;
       break;
     case 'u':
-      *formant2 = 1.44;
-      *formant3 = 2.42;
+      *formant1 = 350.0;
+      *formant2 = 980.0;
+      *formant3 = 2240.0;
       break;
     default:
-      *formant2 = 1.86;
-      *formant3 = 2.86;
+      *formant1 = 730.0;
+      *formant2 = 1220.0;
+      *formant3 = 2600.0;
       break;
   }
 }
@@ -706,12 +733,12 @@ std::vector<BarkEvent> semantic_to_events(
             reduced ? (1.0 - pack.reduction_strength * 0.42) : 1.0;
 
         event.seconds = clamp_double(
-            (0.062 + event.text.size() * 0.011 + (has_vowel ? 0.045 : 0.0) +
-             (has_plosive ? 0.018 : 0.0)) *
-                time_scale * (1.0 + pack.duration_bias + stress * 0.45) *
+            (0.088 + event.text.size() * 0.017 + (has_vowel ? 0.070 : 0.0) +
+             (has_plosive ? 0.020 : 0.0) + (has_fricative ? 0.018 : 0.0)) *
+                time_scale * (1.0 + pack.duration_bias + stress * 0.38) *
                 reduction_scale,
-            eco ? 0.045 : 0.055,
-            studio ? 0.28 : 0.22);
+            eco ? 0.068 : 0.080,
+            studio ? 0.42 : 0.34);
         event.energy = clamp_double(
             0.22 + vowel_ratio * 1.10 + stress + (excited ? 0.12 : 0.0) +
                 (question ? 0.04 : 0.0) -
@@ -729,11 +756,17 @@ std::vector<BarkEvent> semantic_to_events(
           event.energy *= 0.72;
         }
 
-        vowel_formants(dominant_vowel(event.text), &event.formant2, &event.formant3);
+        vowel_formants(
+            dominant_vowel(event.text),
+            &event.formant1,
+            &event.formant2,
+            &event.formant3);
+        event.formant1 =
+            (event.formant1 + (pack.warmth - 0.5) * 28.0) / pack.tract_length;
         event.formant2 =
-            (event.formant2 + (pack.clarity - 0.5) * 0.08) / pack.tract_length;
+            (event.formant2 + (pack.clarity - 0.5) * 70.0) / pack.tract_length;
         event.formant3 =
-            (event.formant3 + (pack.density - 0.5) * 0.10) / pack.tract_length;
+            (event.formant3 + (pack.density - 0.5) * 110.0) / pack.tract_length;
         event.fricative = has_fricative ? 1.0 : 0.0;
         event.plosive = has_plosive ? 1.0 : 0.0;
         event.nasal = has_nasal ? 1.0 : 0.0;
@@ -746,10 +779,10 @@ std::vector<BarkEvent> semantic_to_events(
              event.nasal * 0.08) *
             pack.consonant_gain;
         event.articulation = clamp_double(
-            0.34 + (pack.semantic ? 0.18 : 0.0) + (pack.speaker ? 0.10 : 0.0) +
-                pack.articulation_bias * 0.34 + pack.clarity * 0.12 +
+            0.46 + (pack.semantic ? 0.15 : 0.0) + (pack.speaker ? 0.08 : 0.0) +
+                pack.articulation_bias * 0.26 + pack.clarity * 0.10 +
                 pack.clarity_boost * (reduced ? 0.30 : 0.70),
-            0.34,
+            0.42,
             0.92);
         event.pause_seconds =
             t + 1 == tokens.size() && u + 1 == units.size()
@@ -826,6 +859,53 @@ double softclip(double x) {
   return x / (1.0 + std::fabs(x) * 0.55);
 }
 
+class Resonator {
+ public:
+  void configure_bandpass(double sample_rate, double frequency, double q) {
+    const double nyquist = sample_rate * 0.5;
+    frequency = clamp_double(frequency, 70.0, nyquist * 0.88);
+    q = clamp_double(q, 1.2, 18.0);
+    const double omega = kTwoPi * frequency / sample_rate;
+    const double alpha = std::sin(omega) / (2.0 * q);
+    const double cos_omega = std::cos(omega);
+    const double a0 = 1.0 + alpha;
+    b0_ = alpha / a0;
+    b1_ = 0.0;
+    b2_ = -alpha / a0;
+    a1_ = (-2.0 * cos_omega) / a0;
+    a2_ = (1.0 - alpha) / a0;
+  }
+
+  double process(double input) {
+    const double output = b0_ * input + z1_;
+    z1_ = b1_ * input - a1_ * output + z2_;
+    z2_ = b2_ * input - a2_ * output;
+    return output;
+  }
+
+ private:
+  double b0_ = 1.0;
+  double b1_ = 0.0;
+  double b2_ = 0.0;
+  double a1_ = 0.0;
+  double a2_ = 0.0;
+  double z1_ = 0.0;
+  double z2_ = 0.0;
+};
+
+double glottal_pulse(double phase) {
+  phase = std::fmod(phase, kTwoPi);
+  if (phase < 0.0) phase += kTwoPi;
+  const double cycle = phase / kTwoPi;
+  const double open_quotient = 0.58;
+  if (cycle < open_quotient) {
+    const double x = cycle / open_quotient;
+    return std::sin(kPi * x) * (0.78 + 0.22 * std::sin(kTwoPi * x));
+  }
+  const double x = (cycle - open_quotient) / (1.0 - open_quotient);
+  return -0.42 * std::exp(-7.0 * x) * (1.0 - 0.18 * x);
+}
+
 class PcmChunkWriter {
  public:
   explicit PcmChunkWriter(std::ofstream* out) : out_(out) {
@@ -889,7 +969,7 @@ void write_render_trace_json(
   out << std::fixed << std::setprecision(6);
   out << "{\n";
   out << "  \"format\": \"naza-bark-render-trace-v1\",\n";
-  out << "  \"native\": \"naza_bark_ffi_v1\",\n";
+  out << "  \"native\": \"naza_bark_ffi_v2_source_filter\",\n";
   out << "  \"audioPath\": \"" << json_escape(output_wav) << "\",\n";
   out << "  \"sampleRate\": " << sample_rate << ",\n";
   out << "  \"samples\": " << samples << ",\n";
@@ -936,6 +1016,7 @@ void write_render_trace_json(
     out << "\"nasal\": " << event.nasal << ", ";
     out << "\"consonant\": " << event.consonant << ", ";
     out << "\"articulation\": " << event.articulation << ", ";
+    out << "\"formant1\": " << event.formant1 << ", ";
     out << "\"formant2\": " << event.formant2 << ", ";
     out << "\"formant3\": " << event.formant3;
     out << "}" << (i + 1 == events.size() ? "\n" : ",\n");
@@ -974,23 +1055,10 @@ int render_events_to_wav(
     const double breath = std::max(
         0.04,
         std::min(0.48, pack.breath * (0.82 + pack.breathiness)));
-    const double formant2_ratio =
-        std::max(1.20, std::min(2.55, event.formant2 + warmth * 0.035));
-    const double formant3_ratio =
-        std::max(2.05, std::min(3.55, event.formant3 + clarity * 0.055));
     const double inv_sample_rate = 1.0 / sample_rate;
     const double seed_phase =
         (static_cast<double>(event.semantic_seed & 0xFFFF) / 65535.0) * kTwoPi;
     double phase1 = seed_phase;
-    double phase2 =
-        (static_cast<double>((event.semantic_seed >> 16) & 0xFFFF) / 65535.0) *
-        kTwoPi;
-    double phase3 =
-        (static_cast<double>((event.semantic_seed >> 32) & 0xFFFF) / 65535.0) *
-        kTwoPi;
-    double phase4 =
-        (static_cast<double>((event.semantic_seed >> 48) & 0xFFFF) / 65535.0) *
-        kTwoPi;
     double vib_phase = seed_phase * 0.37 + 0.19;
     double phrase_phase = seed_phase * 0.11 + 1.71;
     double gate_phase = seed_phase * 0.23 + 2.43;
@@ -999,6 +1067,19 @@ int render_events_to_wav(
     const double phrase_increment = kTwoPi * 0.67 * inv_sample_rate;
     const double gate_increment =
         kTwoPi * (7.0 + density * 5.0) * inv_sample_rate;
+    const double f1 = event.formant1 * (0.985 + warmth * 0.030);
+    const double f2 = event.formant2 * (0.985 + clarity * 0.025);
+    const double f3 = event.formant3 * (0.980 + density * 0.030);
+    Resonator r1;
+    Resonator r2;
+    Resonator r3;
+    Resonator nasal_r;
+    r1.configure_bandpass(sample_rate, f1, eco ? 4.2 : 5.6);
+    r2.configure_bandpass(sample_rate, f2, eco ? 5.0 : 7.2);
+    r3.configure_bandpass(sample_rate, f3, studio ? 8.8 : 7.0);
+    nasal_r.configure_bandpass(sample_rate, 280.0 + warmth * 70.0, 3.2);
+    double previous_glottal = 0.0;
+    double noise_low = 0.0;
 
     for (int i = 0; i < event_samples; ++i) {
       const double t = static_cast<double>(i) * inv_sample_rate;
@@ -1011,25 +1092,24 @@ int render_events_to_wav(
       const double hz = base + vibrato + phrase * (5.2 + event.articulation * 3.8);
       const double inc1 = kTwoPi * hz * inv_sample_rate;
 
-      const double formant1 = fast_sin_phase(phase1);
-      const double formant2 = fast_sin_phase(phase2 + 0.21);
       const double mouth_gate =
           eco ? 0.84 : (0.62 + 0.38 * smoothstep(0.5 + 0.5 * fast_sin_phase(gate_phase)));
+      const double raw_glottal = glottal_pulse(phase1);
+      const double glottal_edge = raw_glottal - previous_glottal;
+      previous_glottal = raw_glottal;
+      const double harmonic_glottal =
+          glottal_edge * (1.28 + clarity * 0.34) + raw_glottal * 0.34;
       double voiced_sample =
-          formant1 * (eco ? 0.50 : 0.44) + formant2 * (0.22 + clarity * 0.05);
-
-      if (!eco) {
-        const double formant3 = fast_sin_phase(phase3 + 1.17);
-        voiced_sample += formant3 * (0.11 + clarity * 0.06);
-      }
-      if (studio) {
-        const double formant4 = fast_sin_phase(phase4 + 2.09);
-        voiced_sample += formant4 * (0.05 + density * 0.04);
-      }
+          r1.process(harmonic_glottal) * (1.18 + warmth * 0.25) +
+          r2.process(harmonic_glottal) * (0.82 + clarity * 0.24) +
+          r3.process(harmonic_glottal) * (studio ? 0.48 : 0.36);
 
       const uint32_t noise_bits = xorshift32(&rng);
-      const double noise =
-          (static_cast<double>(noise_bits & 0xFFFF) / 32767.5 - 1.0) * breath;
+      const double white =
+          (static_cast<double>(noise_bits & 0xFFFF) / 32767.5 - 1.0);
+      noise_low = noise_low * 0.72 + white * 0.28;
+      const double hiss = (white - noise_low) * breath;
+      const double aspiration = noise_low * breath * 0.38;
       const double plosive_open =
           event.plosive > 0.0 ? smoothstep((t - 0.012) / 0.026) : 1.0;
       const double burst_time = std::max(0.0, t - 0.010);
@@ -1039,32 +1119,30 @@ int render_events_to_wav(
           event.fricative * (0.42 + 0.30 * pack.brightness) *
           (0.72 + 0.28 * smoothstep(env));
       const double nasal_hum =
-          event.nasal * fast_sin_phase(phase2 * 0.49 + 0.7) * 0.08;
+          event.nasal * nasal_r.process(harmonic_glottal + aspiration * 0.35) *
+          0.50;
       const double consonant_burst =
           event.consonant * (std::exp(-t * (eco ? 34.0 : 48.0)) + 0.12 * (1.0 - env));
       double sample = voiced_sample * event.voicing * plosive_open;
       sample += nasal_hum * event.voicing;
-      sample += noise * (eco ? 0.06 : (studio ? 0.13 : 0.10));
-      sample += noise * fricative_air;
-      sample += noise * plosive_burst * (0.75 + event.articulation);
-      sample += noise * consonant_burst * (pack.speaker ? 1.18 : 0.86);
+      sample += aspiration * (eco ? 0.05 : (studio ? 0.10 : 0.075));
+      sample += hiss * fricative_air * (1.30 + clarity * 0.28);
+      sample += hiss * plosive_burst * (1.15 + event.articulation);
+      sample += hiss * consonant_burst * (pack.speaker ? 1.28 : 0.98);
 
       const double consonant_gate =
-          mouth_gate * (0.72 + event.articulation * 0.30);
+          mouth_gate * (0.78 + event.articulation * 0.24);
       sample *= consonant_gate;
-      sample *= env * (0.12 + event.energy * 0.42);
+      sample *= env * (0.16 + event.energy * 0.36);
 
-      smooth = smooth * (0.74 + (1.0 - event.articulation) * 0.12) +
-               sample * (0.26 - (1.0 - event.articulation) * 0.12);
-      const double codec = softclip(smooth * 1.55);
+      smooth = smooth * (0.62 + (1.0 - event.articulation) * 0.10) +
+               sample * (0.38 - (1.0 - event.articulation) * 0.10);
+      const double codec = softclip(smooth * (studio ? 1.72 : 1.55));
       const int16_t pcm =
           static_cast<int16_t>(std::max(-32767.0, std::min(32767.0, codec * 32767.0)));
       pcm_writer.write_i16(pcm);
 
       advance_phase(&phase1, inc1);
-      advance_phase(&phase2, inc1 * formant2_ratio);
-      if (!eco) advance_phase(&phase3, inc1 * formant3_ratio);
-      if (studio) advance_phase(&phase4, inc1 * (3.92 + density * 0.22));
       advance_phase(&vib_phase, vib_increment);
       advance_phase(&phrase_phase, phrase_increment);
       if (!eco) advance_phase(&gate_phase, gate_increment);
@@ -1176,8 +1254,9 @@ NAZA_BARK_EXPORT int32_t naza_bark_probe(
   const PackProfile pack = load_pack_profile(safe_string(pack_dir));
   std::ostringstream json;
   json << "{"
-       << "\"native\":\"naza_bark_ffi_v1\","
-       << "\"fastOscillator\":true,"
+       << "\"native\":\"naza_bark_ffi_v2_source_filter\","
+       << "\"sourceFilterSpeech\":true,"
+       << "\"fastOscillator\":false,"
        << "\"traceJson\":true,"
        << "\"pronunciationRules\":true,"
        << "\"profileCached\":" << (pack.cached ? "true" : "false") << ","

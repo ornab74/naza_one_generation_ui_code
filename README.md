@@ -159,12 +159,27 @@ https://github.com/ornab74/naza_one_generation_ui_code/releases/download/barkpac
 Pinned BarkPack release-index SHA-256:
 
 ```text
-unset by default for the mutable barkpack-latest release
+e30d638dc477ec017aacd0ceaf21d97d94f6a83ac35f9037313e3f66f5640eaf
 ```
+
+Latest GitHub Actions artifact ZIP SHA-256:
+
+```text
+5e89db33478d430111bde5d1b430313a6c031a982acb41e254ae6417c1bbff6b
+```
+
+Artifact URL:
+
+```text
+https://github.com/ornab74/naza_one_generation_ui_code/actions/runs/28929516714/artifacts/8162797810
+```
+
+This ZIP digest is useful for CI/artifact provenance only. It is not the
+`NAZA_BARKPACK_INDEX_SHA256` value.
 
 Every BarkPack file is downloaded over HTTPS into a temporary `.part` file,
 SHA-256 verified, size checked, sanitized by filename, then moved into the
-app-support `bark_pack/` directory. The optional release-index pin can be set at
+app-support `bark_pack/` directory. The release-index pin can be overridden at
 build time after the workflow publishes `naza-barkpack-index.sha256`. Do not use
 the GitHub Actions artifact ZIP hash here; this pin is specifically for
 `naza-barkpack-index.json`.
@@ -177,7 +192,7 @@ flutter build linux --release \
 
 Current `barkpack-latest` release-index summary:
 
-- Created: `2026-07-07T19:55:21.488993+00:00`
+- Created: `2026-07-08T08:42:41.186991+00:00`
 - Quantization: `int8`
 - Tensor count: `456`
 - Families: `coarse: 88`, `fine: 114`, `codec: 252`, `semantic: 1`, `speaker: 1`
