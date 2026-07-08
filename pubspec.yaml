@@ -1,7 +1,7 @@
 name: naza_one
 description: A private, local-first Gemma assistant with a nature-glass Flutter UI.
 publish_to: none
-version: 1.0.1+2
+version: 1.0.4+5
 
 environment:
   sdk: ^3.12.0
@@ -26,7 +26,7 @@ msix_config:
   display_name: Naza One
   publisher_display_name: Naza
   identity_name: Naza.NazaOne
-  msix_version: 1.0.1.0
+  msix_version: 1.0.4.0
   logo_path: assets/branding/naza_orb_512.png
   capabilities: internetClient
   store: true

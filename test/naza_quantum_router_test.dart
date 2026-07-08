@@ -29,4 +29,60 @@ void main() {
       expect(route.label, isNot('empty'));
     });
   });
+
+  group('release scanner and BarkPack config', () {
+    test('does not pin mutable BarkPack latest by default', () {
+      expect(NazaAppConfig.barkPackIndexSha256, isEmpty);
+    });
+
+    test(
+      'builds a single-pass scanner prompt with risk and safety outputs',
+      () {
+        final data = {
+          'location': 'Main St bridge',
+          'road_surface': 'wet with debris',
+          'nearby_hazards': 'stalled car near shoulder',
+        };
+        final trace = NazaScannerPrompts.roadTrace(data);
+        final prompt = NazaScannerPrompts.buildSinglePassScanner(
+          kind: 'Road',
+          visibleSummary: NazaScannerPrompts.roadSummary(data),
+          primaryPrompt: NazaScannerPrompts.buildRoad(data, trace: trace),
+          safetyPrompt: NazaScannerPrompts.buildRoadSafety(data, trace: trace),
+        );
+
+        expect(prompt, contains('Risk: Low | Medium | High'));
+        expect(prompt, contains('Safety Score: 0-100'));
+        expect(prompt, contains('[primary scanner instructions]'));
+        expect(prompt, contains('[safety scoring instructions]'));
+        expect(prompt, contains('Keep the full response under 450 words.'));
+      },
+    );
+
+    test('bounds oversized scanner field values before prompt assembly', () {
+      final longObservation = List.filled(900, 'x').join();
+      final prompt = NazaScannerPrompts.buildFoodWater({
+        'location': 'test kitchen',
+        'food_water_type': 'bottled water',
+        'sensor_notes': longObservation,
+      });
+      final boundedObservation =
+          '${List.filled(NazaScannerPrompts.maxFieldChars, 'x').join()}...';
+
+      expect(prompt, isNot(contains(longObservation)));
+      expect(prompt, contains(boundedObservation));
+    });
+
+    test('keeps the app prompt conversational for live voice mode', () {
+      final prompt = NazaAppConfig.systemInstruction.toLowerCase();
+
+      expect(prompt, contains('conversational partner'));
+      expect(prompt, isNot(contains("can't")));
+      expect(prompt, isNot(contains('cannot')));
+      expect(
+        NazaAppConfig.liveVoiceOutputTokens,
+        lessThan(NazaAppConfig.outputTokens),
+      );
+    });
+  });
 }

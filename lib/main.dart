@@ -28,6 +28,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart' as pkg_ffi;
+import 'package:flutter/foundation.dart' show ValueListenable, mapEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
@@ -122,20 +123,25 @@ final class NazaAppConfig {
   );
   static const String barkPackIndexSha256 = String.fromEnvironment(
     'NAZA_BARKPACK_INDEX_SHA256',
-    defaultValue:
-        '8f950a6dc3b6a15b35107a5fd09c3ce050fa8d27c88f5daf424b35d5d565f8f2',
+    defaultValue: '',
   );
   static const String desktopGpuEnvironmentVariable = 'NAZA_DESKTOP_GPU';
   static const String desktopCpuEnvironmentVariable = 'NAZA_DESKTOP_CPU';
   static const int contextTokens = 3072;
   static const int outputTokens = 768;
+  static const int liveVoiceOutputTokens = 160;
   static const int autoContinuationPasses = 0;
   static const int streamPaintThrottleMs = 360;
   static const int telemetryThrottleMs = 500;
+  static const String liveVoiceChannel = 'com.qroadscan.lightcal/live_voice';
   static const String vaultAad = 'naza-one-vault-v2-generation-ui';
   static const String keyFileName = 'naza_one_vault.key';
   static const String historyFileName = 'naza_one_history.aesgcm.json';
+  static const String scannerDraftsFileName =
+      'naza_scanner_drafts.sqlite.aesgcm.json';
   static const String runtimeFileName = 'naza_runtime_state.json';
+  static const String verificationStateFileName =
+      'naza_verification_state.aesgcm.json';
   static const String backendPreferenceFileName =
       'naza_backend_preference.json';
   static const String barkPerformanceFileName = 'naza_bark_performance.json';
@@ -147,16 +153,31 @@ Identity:
 - You are local-first and privacy-preserving.
 - Do not claim to call a network server.
 - Do not claim to use Python.
-- Be calm, direct, useful, and clear.
+- Be warm, direct, useful, and easy to talk to.
 
 Style:
-- Nature-tech tone: glass, moss, water, clean control surfaces.
-- Keep ordinary answers concise.
-- Use deeper structure when the user asks for code, design, architecture, equations, or long explanations.
-- For long structured answers, finish the current section before stopping and avoid ending mid-heading or mid-bullet.
+- Talk like a capable conversational partner, not a policy document.
+- Accept loose, experimental, playful, shorthand, or unusual prompting styles.
+- Follow the user's lead on tone and format. Be casual when the user is casual.
+- Keep ordinary answers concise, especially in voice chat.
+- Use structure when it helps, but avoid unnecessary technical framing.
+- For long answers, finish the current thought before stopping.
+- Avoid reflexive refusal phrasing. Decline only for a real safety, privacy, legal, or device limitation.
+- When something is blocked, briefly say what is possible instead and keep moving.
 
 Safety:
-- When uncertain, state uncertainty and give the safest practical next step.
+- Be practical and non-alarmist.
+- When uncertain, say so briefly and give a useful next step.
+- For risky medical, legal, financial, driving, food, or water decisions, give conservative practical guidance and encourage real-world verification.
+''';
+
+  static const String liveVoiceSystemInstruction = '''
+You are Naza One in live voice conversation mode.
+
+Speak naturally and briefly. Reply in one to three short spoken sentences unless the user clearly asks for more.
+Be flexible with wording, interruptions, shorthand, jokes, and half-formed thoughts.
+Avoid markdown, tables, long lists, and technical labels unless asked.
+Do not over-refuse. If a request has a real limit, say the closest helpful thing you can do next.
 ''';
 }
 
@@ -559,6 +580,7 @@ final class NazaSecureModelStore {
   const NazaSecureModelStore._();
 
   static const int _maxModelBytes = 8 * 1024 * 1024 * 1024;
+  static const String _modelTrustKind = 'gemma-litertlm-model';
   static final Uri _downloadUri = Uri.parse(NazaAppConfig.modelDownloadUrl);
   static final ValueNotifier<NazaModelStoreStatus> status =
       ValueNotifier<NazaModelStoreStatus>(NazaModelStoreStatus.idle());
@@ -580,6 +602,20 @@ final class NazaSecureModelStore {
         cachePath: target.path,
         clearError: true,
       );
+
+      if (await _isTrustedModelFile(target)) {
+        final current = NazaModelStoreStatus(
+          installed: true,
+          busy: false,
+          progress: 100,
+          phase: 'trusted cached model ready',
+          cachePath: target.path,
+          localPath: null,
+          error: null,
+        );
+        status.value = current;
+        return current;
+      }
 
       if (await _isVerified(
         target,
@@ -604,6 +640,7 @@ final class NazaSecureModelStore {
           localPath: null,
           error: null,
         );
+        await _trustModelFile(target);
         status.value = current;
         return current;
       }
@@ -688,6 +725,24 @@ final class NazaSecureModelStore {
     );
 
     try {
+      if (await _isTrustedModelFile(target)) {
+        publish(100, 'trusted cached model');
+        status.value = status.value.copyWith(
+          installed: true,
+          busy: false,
+          progress: 100,
+          phase: 'trusted cached model ready',
+          cachePath: target.path,
+          localPath: null,
+          clearError: true,
+        );
+        return NazaVerifiedModelFile(
+          file: target,
+          sha256: NazaAppConfig.modelSha256,
+          downloaded: false,
+        );
+      }
+
       if (await _isVerified(
         target,
         onProgress: publish,
@@ -704,6 +759,7 @@ final class NazaSecureModelStore {
           localPath: null,
           clearError: true,
         );
+        await _trustModelFile(target);
         return NazaVerifiedModelFile(
           file: target,
           sha256: NazaAppConfig.modelSha256,
@@ -808,6 +864,9 @@ final class NazaSecureModelStore {
         );
         continue;
       }
+      if (await _isTrustedModelFile(file)) {
+        return file;
+      }
       if (await _isVerified(
         file,
         onProgress: (progress, phase) =>
@@ -815,6 +874,7 @@ final class NazaSecureModelStore {
         progressStart: base.clamp(progressStart, progressEnd).toInt(),
         progressEnd: progressEnd,
       )) {
+        await _trustModelFile(file);
         return file;
       }
     }
@@ -914,6 +974,7 @@ final class NazaSecureModelStore {
       }
 
       await part.rename(target.path);
+      await _trustModelFile(target);
       onProgress?.call(100, 'verified model cached');
     } catch (_) {
       try {
@@ -1029,6 +1090,28 @@ final class NazaSecureModelStore {
       phase: 'verifying model SHA-256',
     );
     return actual == NazaAppConfig.modelSha256;
+  }
+
+  static Future<bool> _isTrustedModelFile(File file) {
+    return NazaVerificationStateStore.instance.isTrustedFile(
+      kind: _modelTrustKind,
+      file: file,
+      sha256: NazaAppConfig.modelSha256,
+      marker: _modelTrustMarker,
+    );
+  }
+
+  static Future<void> _trustModelFile(File file) {
+    return NazaVerificationStateStore.instance.trustFile(
+      kind: _modelTrustKind,
+      file: file,
+      sha256: NazaAppConfig.modelSha256,
+      marker: _modelTrustMarker,
+    );
+  }
+
+  static String get _modelTrustMarker {
+    return '${NazaAppConfig.modelFileName}|${NazaAppConfig.modelDownloadUrl}';
   }
 
   static Future<String> _sha256(File file) async {
@@ -1198,6 +1281,340 @@ final class NazaBarkPackStatus {
   }
 }
 
+final class NazaVerificationStateStore {
+  NazaVerificationStateStore._();
+
+  static final NazaVerificationStateStore instance =
+      NazaVerificationStateStore._();
+
+  final AesGcm _aes = AesGcm.with256bits();
+  Future<void> _tail = Future<void>.value();
+
+  Future<bool> isTrustedFile({
+    required String kind,
+    required File file,
+    required String sha256,
+    String marker = '',
+  }) {
+    return _enqueue(
+      () => _isTrustedFileNow(
+        kind: kind,
+        file: file,
+        sha256: sha256,
+        marker: marker,
+      ),
+    );
+  }
+
+  Future<void> trustFile({
+    required String kind,
+    required File file,
+    required String sha256,
+    String marker = '',
+  }) {
+    return _enqueue(
+      () =>
+          _trustFileNow(kind: kind, file: file, sha256: sha256, marker: marker),
+    );
+  }
+
+  Future<bool> isRuntimeModelTrusted({
+    required File file,
+    required String sha256,
+  }) {
+    return _enqueue(
+      () => _isRuntimeModelTrustedNow(file: file, sha256: sha256),
+    );
+  }
+
+  Future<void> trustRuntimeModel({required File file, required String sha256}) {
+    return _enqueue(() => _trustRuntimeModelNow(file: file, sha256: sha256));
+  }
+
+  Future<void> clearRuntimeModelTrust() {
+    return _enqueue(_clearRuntimeModelTrustNow);
+  }
+
+  Future<NazaBarkPackStatus?> trustedBarkPackStatus({
+    required Directory dir,
+    required String indexMarker,
+  }) {
+    return _enqueue(
+      () => _trustedBarkPackStatusNow(dir: dir, indexMarker: indexMarker),
+    );
+  }
+
+  Future<void> trustBarkPack({
+    required Directory dir,
+    required String indexMarker,
+    required NazaBarkPackStatus status,
+  }) {
+    return _enqueue(
+      () =>
+          _trustBarkPackNow(dir: dir, indexMarker: indexMarker, status: status),
+    );
+  }
+
+  Future<T> _enqueue<T>(Future<T> Function() operation) {
+    final queued = _tail.then((_) => operation());
+    _tail = queued.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return queued;
+  }
+
+  Future<bool> _isTrustedFileNow({
+    required String kind,
+    required File file,
+    required String sha256,
+    required String marker,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) return false;
+
+    final state = await _readStateNow();
+    final files = state['files'];
+    if (files is! Map) return false;
+    final raw = files[kind];
+    if (raw is! Map) return false;
+
+    return raw['path'] == fingerprint['path'] &&
+        raw['size'] == fingerprint['size'] &&
+        raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
+        raw['sha256'] == sha256.trim().toLowerCase() &&
+        (raw['marker'] ?? '') == marker;
+  }
+
+  Future<void> _trustFileNow({
+    required String kind,
+    required File file,
+    required String sha256,
+    required String marker,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) return;
+
+    final state = await _readStateNow();
+    final files = Map<String, Object?>.from(
+      (state['files'] as Map?) ?? const <String, Object?>{},
+    );
+    files[kind] = {
+      ...fingerprint,
+      'sha256': sha256.trim().toLowerCase(),
+      'marker': marker,
+      'trustedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    state['files'] = files;
+    await _writeStateNow(state);
+  }
+
+  Future<bool> _isRuntimeModelTrustedNow({
+    required File file,
+    required String sha256,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) return false;
+
+    final state = await _readStateNow();
+    final raw = state['runtimeModel'];
+    if (raw is! Map) return false;
+
+    return raw['path'] == fingerprint['path'] &&
+        raw['size'] == fingerprint['size'] &&
+        raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
+        raw['sha256'] == sha256.trim().toLowerCase() &&
+        raw['modelFileName'] == NazaAppConfig.modelFileName;
+  }
+
+  Future<void> _trustRuntimeModelNow({
+    required File file,
+    required String sha256,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) return;
+
+    final state = await _readStateNow();
+    state['runtimeModel'] = {
+      ...fingerprint,
+      'sha256': sha256.trim().toLowerCase(),
+      'modelFileName': NazaAppConfig.modelFileName,
+      'trustedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    await _writeStateNow(state);
+  }
+
+  Future<void> _clearRuntimeModelTrustNow() async {
+    final state = await _readStateNow();
+    state.remove('runtimeModel');
+    await _writeStateNow(state);
+  }
+
+  Future<NazaBarkPackStatus?> _trustedBarkPackStatusNow({
+    required Directory dir,
+    required String indexMarker,
+  }) async {
+    final manifest = await _fingerprint(File('${dir.path}/manifest.json'));
+    final installIndex = await _fingerprint(
+      File('${dir.path}/install_index_v2.json'),
+    );
+    if (manifest == null || installIndex == null) return null;
+
+    final state = await _readStateNow();
+    final raw = state['barkPack'];
+    if (raw is! Map) return null;
+
+    final storedMarker = (raw['indexMarker'] ?? '').toString();
+    if (indexMarker.isNotEmpty && storedMarker != indexMarker) return null;
+    if (raw['packPath'] != dir.path) return null;
+    if (!_sameFingerprint(raw['manifest'], manifest)) return null;
+    if (!_sameFingerprint(raw['installIndex'], installIndex)) return null;
+
+    final status = raw['status'];
+    if (status is! Map) return null;
+    return _statusFromJson(Map<String, Object?>.from(status));
+  }
+
+  Future<void> _trustBarkPackNow({
+    required Directory dir,
+    required String indexMarker,
+    required NazaBarkPackStatus status,
+  }) async {
+    final manifest = await _fingerprint(File('${dir.path}/manifest.json'));
+    final installIndex = await _fingerprint(
+      File('${dir.path}/install_index_v2.json'),
+    );
+    if (manifest == null || installIndex == null) return;
+
+    final state = await _readStateNow();
+    state['barkPack'] = {
+      'packPath': dir.path,
+      'indexMarker': indexMarker,
+      'manifest': manifest,
+      'installIndex': installIndex,
+      'status': _statusToJson(status),
+      'trustedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    await _writeStateNow(state);
+  }
+
+  Future<Map<String, Object?>?> _fingerprint(File file) async {
+    if (!await file.exists()) return null;
+    final stat = await file.stat();
+    if (stat.type != FileSystemEntityType.file || stat.size <= 0) return null;
+    return {
+      'path': file.path,
+      'size': stat.size,
+      'modifiedMillis': stat.modified.toUtc().millisecondsSinceEpoch,
+    };
+  }
+
+  bool _sameFingerprint(Object? raw, Map<String, Object?> fingerprint) {
+    if (raw is! Map) return false;
+    return raw['path'] == fingerprint['path'] &&
+        raw['size'] == fingerprint['size'] &&
+        raw['modifiedMillis'] == fingerprint['modifiedMillis'];
+  }
+
+  Map<String, Object?> _baseState() {
+    return {
+      'format': 'naza-verification-state-v1',
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+  }
+
+  Future<Map<String, Object?>> _readStateNow() async {
+    final file = await _stateFile();
+    if (!await file.exists()) return _baseState();
+
+    try {
+      final wrapper = jsonDecode(await file.readAsString());
+      if (wrapper is! Map) return _baseState();
+
+      final clear = await _aes.decrypt(
+        SecretBox(
+          base64Decode(wrapper['cipherText'] as String),
+          nonce: base64Decode(wrapper['nonce'] as String),
+          mac: Mac(base64Decode(wrapper['mac'] as String)),
+        ),
+        secretKey: await NazaVault.instance._getOrCreateKey(),
+        aad: utf8.encode('${NazaAppConfig.vaultAad}:verification-state'),
+      );
+
+      final decoded = jsonDecode(utf8.decode(clear));
+      if (decoded is Map) return Map<String, Object?>.from(decoded);
+    } catch (_) {
+      // Corrupt or stale state should only cost a fresh verification pass.
+    }
+    return _baseState();
+  }
+
+  Future<void> _writeStateNow(Map<String, Object?> state) async {
+    state['format'] = 'naza-verification-state-v1';
+    state['updatedAt'] = DateTime.now().toUtc().toIso8601String();
+
+    final box = await _aes.encrypt(
+      utf8.encode(jsonEncode(state)),
+      secretKey: await NazaVault.instance._getOrCreateKey(),
+      aad: utf8.encode('${NazaAppConfig.vaultAad}:verification-state'),
+    );
+
+    final file = await _stateFile();
+    await file.parent.create(recursive: true);
+    await file.writeAsString(
+      jsonEncode({
+        'version': 1,
+        'cipher': 'AES-256-GCM',
+        'nonce': base64Encode(box.nonce),
+        'cipherText': base64Encode(box.cipherText),
+        'mac': base64Encode(box.mac.bytes),
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      }),
+      flush: true,
+    );
+  }
+
+  Future<File> _stateFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/${NazaAppConfig.verificationStateFileName}');
+  }
+
+  Map<String, Object?> _statusToJson(NazaBarkPackStatus status) {
+    return {
+      'installed': status.installed,
+      'downloading': status.downloading,
+      'progress': status.progress,
+      'phase': status.phase,
+      'packPath': status.packPath,
+      'tensorCount': status.tensorCount,
+      'missingFamilies': status.missingFamilies,
+      'qualityTier': status.qualityTier,
+      'familySummary': status.familySummary,
+      'stageSummary': status.stageSummary,
+      'capabilitySummary': status.capabilitySummary,
+      'sidecarSummary': status.sidecarSummary,
+      'error': status.error,
+    };
+  }
+
+  NazaBarkPackStatus _statusFromJson(Map<String, Object?> json) {
+    return NazaBarkPackStatus(
+      installed: json['installed'] == true,
+      downloading: false,
+      progress: ((json['progress'] as num?) ?? 0).toInt(),
+      phase: (json['phase'] ?? 'BarkPack status cached').toString(),
+      packPath: (json['packPath'] ?? '').toString(),
+      tensorCount: ((json['tensorCount'] as num?) ?? 0).toInt(),
+      missingFamilies: ((json['missingFamilies'] as List?) ?? const [])
+          .map((item) => item.toString())
+          .toList(growable: false),
+      qualityTier: (json['qualityTier'] ?? 'unknown').toString(),
+      familySummary: (json['familySummary'] ?? 'unknown').toString(),
+      stageSummary: (json['stageSummary'] ?? 'unknown').toString(),
+      capabilitySummary: (json['capabilitySummary'] ?? 'unknown').toString(),
+      sidecarSummary: (json['sidecarSummary'] ?? 'none').toString(),
+      error: json['error']?.toString(),
+    );
+  }
+}
+
 final class NazaBarkTensorInfo {
   final String name;
   final String family;
@@ -1258,7 +1675,24 @@ final class NazaSecureBarkPackStore {
   Future<NazaBarkPackStatus>? _installFuture;
 
   Future<NazaBarkPackStatus> refresh() async {
+    final dir = await _packDir();
+    final trusted = await NazaVerificationStateStore.instance
+        .trustedBarkPackStatus(dir: dir, indexMarker: _configuredIndexMarker);
+    if (trusted != null && trusted.installed) {
+      status.value = trusted;
+      return trusted;
+    }
+
     final current = await _describeLocal();
+    if (current.installed) {
+      unawaited(
+        NazaVerificationStateStore.instance.trustBarkPack(
+          dir: dir,
+          indexMarker: _configuredIndexMarker,
+          status: current,
+        ),
+      );
+    }
     status.value = current;
     return current;
   }
@@ -1270,8 +1704,25 @@ final class NazaSecureBarkPackStore {
 
   Future<NazaBarkPackStatus> _ensureInstalledInner() async {
     try {
+      final trusted = await NazaVerificationStateStore.instance
+          .trustedBarkPackStatus(
+            dir: await _packDir(),
+            indexMarker: _configuredIndexMarker,
+          );
+      if (trusted != null && trusted.installed) {
+        status.value = trusted;
+        return trusted;
+      }
+
       final local = await _describeLocal();
       if (local.installed) {
+        unawaited(
+          NazaVerificationStateStore.instance.trustBarkPack(
+            dir: await _packDir(),
+            indexMarker: _configuredIndexMarker,
+            status: local,
+          ),
+        );
         status.value = local;
         return local;
       }
@@ -1287,9 +1738,16 @@ final class NazaSecureBarkPackStore {
       final expectedIndexHash = _normalizeSha256Pin(
         NazaAppConfig.barkPackIndexSha256,
       );
+      if (expectedIndexHash.isNotEmpty && !_isSha256Hex(expectedIndexHash)) {
+        throw FormatException(
+          'BarkPack index SHA-256 pin is not a 64-character hex digest. '
+          'Use the hash of naza-barkpack-index.json, not the GitHub Actions artifact ZIP hash.',
+        );
+      }
       if (expectedIndexHash.isNotEmpty && indexHash != expectedIndexHash) {
         throw FormatException(
-          'BarkPack index SHA-256 mismatch. Expected $expectedIndexHash, got $indexHash.',
+          'BarkPack index SHA-256 mismatch. Expected $expectedIndexHash, got $indexHash. '
+          'This pin must be for naza-barkpack-index.json, not the GitHub Actions artifact ZIP.',
         );
       }
 
@@ -1352,6 +1810,11 @@ final class NazaSecureBarkPackStore {
       );
 
       final done = await _describeLocal();
+      await NazaVerificationStateStore.instance.trustBarkPack(
+        dir: dir,
+        indexMarker: indexHash,
+        status: done,
+      );
       status.value = done;
       return done;
     } catch (error) {
@@ -1681,6 +2144,14 @@ final class NazaSecureBarkPackStore {
     return clean;
   }
 
+  bool _isSha256Hex(String value) {
+    return RegExp(r'^[0-9a-f]{64}$').hasMatch(value);
+  }
+
+  String get _configuredIndexMarker {
+    return _normalizeSha256Pin(NazaAppConfig.barkPackIndexSha256);
+  }
+
   Future<Directory> _packDir() async {
     final support = await getApplicationSupportDirectory();
     return Directory('${support.path}/bark_pack');
@@ -1865,6 +2336,7 @@ final class NazaLocalGemma {
 
   dynamic _model;
   dynamic _chat;
+  dynamic _voiceChat;
   Future<void>? _loadingFuture;
   Future<void>? _backendPreferenceLoadFuture;
   int _generationSerial = 0;
@@ -2055,16 +2527,7 @@ final class NazaLocalGemma {
         clearError: true,
       );
 
-      // flutter_gemma persists the active model identity. Always reinstall from
-      // the SHA-verified .litertlm file so stale .task/bundled identities cannot
-      // be loaded by accident.
-      try {
-        await FlutterGemma.clearActiveInferenceIdentity();
-      } catch (_) {
-        // Older package versions may not need this; continue to install.
-      }
-
-      await _installConfiguredModel();
+      final usedCachedInstall = await _installConfiguredModel();
 
       snapshot.value = snapshot.value.copyWith(
         busy: true,
@@ -2073,12 +2536,20 @@ final class NazaLocalGemma {
         phase: 'loading active model',
       );
 
-      await _loadActiveModelForBackend(backendPreference.value);
+      try {
+        await _loadActiveModelForBackend(backendPreference.value);
+      } catch (_) {
+        if (!usedCachedInstall) rethrow;
+        await NazaVerificationStateStore.instance.clearRuntimeModelTrust();
+        await _installConfiguredModel(force: true);
+        await _loadActiveModelForBackend(backendPreference.value);
+      }
 
       _chat = await _model.createChat(
         systemInstruction: NazaAppConfig.systemInstruction,
         maxOutputTokens: NazaAppConfig.outputTokens,
       );
+      _voiceChat = null;
 
       snapshot.value = snapshot.value.copyWith(
         modelLoaded: true,
@@ -2267,6 +2738,128 @@ final class NazaLocalGemma {
     }
   }
 
+  Future<NazaResponse> sendVoiceTurn(
+    String transcript, {
+    void Function(String partialText)? onPartial,
+  }) async {
+    final trimmed = transcript.trim();
+    if (trimmed.isEmpty) {
+      return NazaResponse(
+        text: 'I heard silence.',
+        score: 0,
+        route: 'voice-empty',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+
+    final route = NazaQuantumRouter.route(trimmed);
+
+    try {
+      await ensureReady();
+      _voiceChat ??= await _model.openChat(
+        temperature: .9,
+        topK: 40,
+        topP: .92,
+        tokenBuffer: 128,
+        systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
+        maxOutputTokens: NazaAppConfig.liveVoiceOutputTokens,
+      );
+    } catch (error) {
+      return NazaResponse(
+        text:
+            'The local voice model path is not ready yet. ${_modelSetupHint()}\n\n'
+            'Details: $error',
+        score: route.score,
+        route: 'voice-model-unavailable',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+
+    final generationId = ++_generationSerial;
+    _cancelledGeneration = -1;
+
+    _startGenerationTelemetry(
+      generationId: generationId,
+      route: route,
+      maxTokens: NazaAppConfig.liveVoiceOutputTokens,
+    );
+
+    snapshot.value = snapshot.value.copyWith(
+      busy: true,
+      phase: 'voice chat response',
+      clearError: true,
+    );
+
+    try {
+      await _voiceChat.addQueryChunk(
+        Message.text(text: _buildVoicePrompt(trimmed, route), isUser: true),
+      );
+
+      final clean = await _streamResponse(
+        generationId: generationId,
+        chat: _voiceChat,
+        onPartial: onPartial,
+        maxTokens: NazaAppConfig.liveVoiceOutputTokens,
+      );
+
+      if (_cancelledGeneration == generationId) {
+        _stopGenerationTelemetry(cancelled: true);
+        snapshot.value = snapshot.value.copyWith(
+          busy: false,
+          phase: 'voice generation cancelled',
+          clearError: true,
+        );
+        return NazaResponse(
+          text: 'Voice response cancelled.',
+          score: route.score,
+          route: route.label,
+          cancelled: true,
+          createdAt: DateTime.now(),
+        );
+      }
+
+      _finishGenerationTelemetry(
+        route: route,
+        maxTokens: NazaAppConfig.liveVoiceOutputTokens,
+      );
+
+      final out = NazaResponse(
+        text: clean.isEmpty ? 'I heard you. Say that one more time?' : clean,
+        score: route.score,
+        route: 'voice-${route.label}',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+
+      snapshot.value = snapshot.value.copyWith(
+        busy: false,
+        phase: 'ready',
+        clearError: true,
+      );
+
+      unawaited(_persistMessagePair(user: 'Voice: $trimmed', response: out));
+
+      return out;
+    } catch (error) {
+      _stopGenerationTelemetry(cancelled: false);
+      snapshot.value = snapshot.value.copyWith(
+        busy: false,
+        phase: 'voice generation failed',
+        error: error.toString(),
+      );
+
+      return NazaResponse(
+        text: 'Local voice chat error: $error',
+        score: route.score,
+        route: 'voice-${route.label}',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+  }
+
   void cancelActiveGeneration() {
     final current = generation.value;
     if (!current.active) return;
@@ -2295,11 +2888,17 @@ final class NazaLocalGemma {
       // Cancellation is best-effort; the generation id still rejects a late
       // native response.
     }
+    try {
+      await _voiceChat?.stopGeneration();
+    } catch (_) {
+      // Same best-effort cancellation for the live voice session.
+    }
   }
 
   void _startGenerationTelemetry({
     required int generationId,
     required NazaRoute route,
+    int maxTokens = NazaAppConfig.outputTokens,
   }) {
     generation.value = NazaGenerationTelemetry(
       active: true,
@@ -2307,7 +2906,7 @@ final class NazaLocalGemma {
       generationId: generationId,
       progress: 0,
       tokens: 0,
-      maxTokens: NazaAppConfig.outputTokens,
+      maxTokens: maxTokens,
       stage: 'generating locally',
       route: route.label,
       routeScore: route.score,
@@ -2315,13 +2914,16 @@ final class NazaLocalGemma {
     );
   }
 
-  void _finishGenerationTelemetry({required NazaRoute route}) {
+  void _finishGenerationTelemetry({
+    required NazaRoute route,
+    int maxTokens = NazaAppConfig.outputTokens,
+  }) {
     generation.value = generation.value.copyWith(
       active: false,
       cancelled: false,
       progress: 1,
-      tokens: NazaAppConfig.outputTokens,
-      maxTokens: NazaAppConfig.outputTokens,
+      tokens: maxTokens,
+      maxTokens: maxTokens,
       stage: 'complete',
       route: route.label,
       routeScore: route.score,
@@ -2347,6 +2949,10 @@ final class NazaLocalGemma {
       systemInstruction: NazaAppConfig.systemInstruction,
       maxOutputTokens: NazaAppConfig.outputTokens,
     );
+    try {
+      await _voiceChat?.session?.close();
+    } catch (_) {}
+    _voiceChat = null;
 
     snapshot.value = snapshot.value.copyWith(
       phase: 'chat context reset',
@@ -2354,7 +2960,7 @@ final class NazaLocalGemma {
     );
   }
 
-  Future<void> _installConfiguredModel() async {
+  Future<bool> _installConfiguredModel({bool force = false}) async {
     final verified = await NazaSecureModelStore.ensureVerifiedModel(
       onProgress: (progress, phase) {
         snapshot.value = snapshot.value.copyWith(
@@ -2365,6 +2971,28 @@ final class NazaLocalGemma {
         );
       },
     );
+
+    if (!force &&
+        await NazaVerificationStateStore.instance.isRuntimeModelTrusted(
+          file: verified.file,
+          sha256: NazaAppConfig.modelSha256,
+        )) {
+      snapshot.value = snapshot.value.copyWith(
+        busy: true,
+        phase: 'using cached LiteRT-LM model install',
+        installProgress: 100,
+        clearError: true,
+      );
+      return true;
+    }
+
+    // flutter_gemma persists the active model identity. Clear only before a
+    // real reinstall so normal boots do not repeatedly churn the model store.
+    try {
+      await FlutterGemma.clearActiveInferenceIdentity();
+    } catch (_) {
+      // Older package versions may not need this; continue to install.
+    }
 
     final installer = FlutterGemma.installModel(
       modelType: ModelType.gemma4,
@@ -2379,6 +3007,11 @@ final class NazaLocalGemma {
     );
 
     await installer.fromFile(verified.file.path).install();
+    await NazaVerificationStateStore.instance.trustRuntimeModel(
+      file: verified.file,
+      sha256: NazaAppConfig.modelSha256,
+    );
+    return false;
   }
 
   Future<void> _loadActiveModelForBackend(
@@ -2460,10 +3093,15 @@ final class NazaLocalGemma {
     } catch (_) {}
 
     try {
+      await _voiceChat?.session?.close();
+    } catch (_) {}
+
+    try {
       await _model?.close();
     } catch (_) {}
 
     _chat = null;
+    _voiceChat = null;
     _model = null;
 
     snapshot.value = snapshot.value.copyWith(
@@ -2484,17 +3122,32 @@ $userText
 ''';
   }
 
+  String _buildVoicePrompt(String userText, NazaRoute route) {
+    return '''
+Live voice turn.
+Intent route: ${route.label}
+
+The user said:
+$userText
+
+Answer out loud. Keep it natural, short, and useful.
+''';
+  }
+
   Future<String> _streamResponse({
     required int generationId,
+    dynamic chat,
     void Function(String partialText)? onPartial,
     String partialPrefix = '',
+    int maxTokens = NazaAppConfig.outputTokens,
   }) async {
     final rawResponse = StringBuffer();
     var lastPartialAt = DateTime.fromMillisecondsSinceEpoch(0);
     var lastTelemetryAt = DateTime.fromMillisecondsSinceEpoch(0);
     var lastEstimatedTokens = 0;
 
-    await for (final chunk in _chat.generateChatResponseAsync()) {
+    final activeChat = chat ?? _chat;
+    await for (final chunk in activeChat.generateChatResponseAsync()) {
       if (_cancelledGeneration == generationId) break;
 
       late final String token;
@@ -2510,7 +3163,7 @@ $userText
 
       final estimatedTokens = (rawResponse.length / 4)
           .ceil()
-          .clamp(0, NazaAppConfig.outputTokens)
+          .clamp(0, maxTokens)
           .toInt();
       final now = DateTime.now();
       final tokenClosedPhrase =
@@ -2530,9 +3183,7 @@ $userText
         lastEstimatedTokens = estimatedTokens;
         generation.value = generation.value.copyWith(
           tokens: estimatedTokens,
-          progress: (estimatedTokens / NazaAppConfig.outputTokens)
-              .clamp(0.0, 0.96)
-              .toDouble(),
+          progress: (estimatedTokens / maxTokens).clamp(0.0, 0.96).toDouble(),
         );
       }
 
@@ -2556,12 +3207,12 @@ $userText
 
     final finalEstimatedTokens = (rawResponse.length / 4)
         .ceil()
-        .clamp(0, NazaAppConfig.outputTokens)
+        .clamp(0, maxTokens)
         .toInt();
     if (finalEstimatedTokens != lastEstimatedTokens) {
       generation.value = generation.value.copyWith(
         tokens: finalEstimatedTokens,
-        progress: (finalEstimatedTokens / NazaAppConfig.outputTokens)
+        progress: (finalEstimatedTokens / maxTokens)
             .clamp(0.0, 0.96)
             .toDouble(),
       );
@@ -2665,6 +3316,122 @@ final class NazaResponse {
     required this.cancelled,
     required this.createdAt,
   });
+}
+
+final class NazaSpeechCapture {
+  final String transcript;
+  final double? confidence;
+
+  const NazaSpeechCapture({required this.transcript, this.confidence});
+
+  factory NazaSpeechCapture.fromMap(Map<Object?, Object?> map) {
+    final rawConfidence = map['confidence'];
+    return NazaSpeechCapture(
+      transcript: map['transcript']?.toString() ?? '',
+      confidence: rawConfidence is num ? rawConfidence.toDouble() : null,
+    );
+  }
+}
+
+final class NazaLiveVoiceBridge {
+  NazaLiveVoiceBridge._() {
+    _channel.setMethodCallHandler(_handleNativeCall);
+  }
+
+  static final NazaLiveVoiceBridge instance = NazaLiveVoiceBridge._();
+
+  final MethodChannel _channel = const MethodChannel(
+    NazaAppConfig.liveVoiceChannel,
+  );
+  final ValueNotifier<String> partialTranscript = ValueNotifier<String>('');
+  final ValueNotifier<String> nativePhase = ValueNotifier<String>('idle');
+
+  Future<bool> isAvailable() async {
+    try {
+      return await _channel.invokeMethod<bool>('isAvailable') ?? false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  Future<bool> requestRecordPermission() async {
+    try {
+      return await _channel.invokeMethod<bool>('requestRecordPermission') ??
+          false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  Future<NazaSpeechCapture> listenOnce({
+    int completeSilenceMs = 850,
+    int possibleSilenceMs = 450,
+    int minimumSpeechMs = 450,
+    bool preferOffline = true,
+  }) async {
+    partialTranscript.value = '';
+    final raw = await _channel
+        .invokeMethod<Map<Object?, Object?>>('listenOnce', {
+          'completeSilenceMs': completeSilenceMs,
+          'possibleSilenceMs': possibleSilenceMs,
+          'minimumSpeechMs': minimumSpeechMs,
+          'preferOffline': preferOffline,
+        });
+    return NazaSpeechCapture.fromMap(raw ?? const {});
+  }
+
+  Future<bool> speak(
+    String text, {
+    double rate = .98,
+    double pitch = 1.0,
+  }) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return false;
+    try {
+      return await _channel.invokeMethod<bool>('speak', {
+            'text': trimmed,
+            'rate': rate,
+            'pitch': pitch,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  Future<void> stop() async {
+    partialTranscript.value = '';
+    try {
+      await _channel.invokeMethod<void>('stop');
+    } on MissingPluginException {
+      // Desktop/tests have no Android speech bridge.
+    }
+  }
+
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
+    final args = call.arguments;
+    final map = args is Map ? args : const {};
+    switch (call.method) {
+      case 'voicePartial':
+        partialTranscript.value = map['transcript']?.toString() ?? '';
+        break;
+      case 'voiceListening':
+        nativePhase.value = 'listening';
+        break;
+      case 'voiceSpeechStart':
+        nativePhase.value = 'hearing speech';
+        break;
+      case 'voiceSpeechEnd':
+        nativePhase.value = 'processing speech';
+        break;
+      case 'voiceTtsStart':
+        nativePhase.value = 'speaking';
+        break;
+      case 'voiceTtsDone':
+        nativePhase.value = 'idle';
+        break;
+    }
+  }
 }
 
 final class NazaChromaticState {
@@ -3288,6 +4055,7 @@ final class NazaScannerPrompts {
 
   static const int metricSamples = 5;
   static const int maxDefensePasses = 5;
+  static const int maxFieldChars = 420;
 
   static NazaScannerTrace roadTrace(Map<String, String> data) {
     return _trace('road-scanner', data);
@@ -3581,6 +4349,53 @@ Rules:
 ''';
   }
 
+  static String buildSinglePassScanner({
+    required String kind,
+    required String visibleSummary,
+    required String primaryPrompt,
+    required String safetyPrompt,
+  }) {
+    return '''
+You are running the Naza One $kind scanner in one mobile-safe pass.
+Use the primary scanner instructions and the safety scoring instructions below, but return one combined answer only.
+
+Visible scan summary:
+$visibleSummary
+
+Return concise markdown in this exact shape:
+Risk: Low | Medium | High
+Confidence: Low | Medium | High
+Primary cues:
+- cue
+- cue
+Recommended action:
+- action
+- action
+Safety Score: 0-100
+Safety Band: Low | Medium | High
+Score drivers:
+- driver
+- driver
+Immediate verification:
+- check
+- check
+
+[primary scanner instructions]
+$primaryPrompt
+[/primary scanner instructions]
+
+[safety scoring instructions]
+$safetyPrompt
+[/safety scoring instructions]
+
+Rules:
+- Do not expose hidden chain-of-thought.
+- Include exactly one Risk line and exactly one Safety Score line.
+- Keep the full response under 450 words.
+- Use conservative thresholds when details are missing or ambiguous.
+''';
+  }
+
   static String roadSummary(Map<String, String> data) {
     return '''
 Road Scanner
@@ -3682,7 +4497,7 @@ Max targets: ${_value(data, 'max_targets', '6')}
   }
 
   static String _sanitize(String value) {
-    return value
+    final clean = value
         .replaceAll(
           RegExp(
             r'\b(latino|latina|latinx|hispanic|latin\s+american)\b',
@@ -3690,7 +4505,10 @@ Max targets: ${_value(data, 'max_targets', '6')}
           ),
           '[redacted-person-descriptor]',
         )
+        .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+    if (clean.length <= maxFieldChars) return clean;
+    return '${clean.substring(0, maxFieldChars).trimRight()}...';
   }
 
   static String _level(double score) {
@@ -3841,6 +4659,24 @@ final class NazaVault {
     return operation;
   }
 
+  Future<Map<String, Map<String, String>>> readScannerDrafts() {
+    final operation = _storageTail.then((_) => _readScannerDraftsNow());
+    _storageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<void> writeScannerDrafts(Map<String, Map<String, String>> drafts) {
+    final operation = _storageTail.then((_) => _writeScannerDraftsNow(drafts));
+    _storageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
   Future<List<NazaHistoryRow>> _readHistoryNow() async {
     final file = await _historyFile();
     if (!await file.exists()) return [];
@@ -3884,6 +4720,67 @@ final class NazaVault {
     final wrapper = {
       'version': 2,
       'cipher': 'AES-256-GCM',
+      'nonce': base64Encode(box.nonce),
+      'cipherText': base64Encode(box.cipherText),
+      'mac': base64Encode(box.mac.bytes),
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+
+    await file.writeAsString(jsonEncode(wrapper), flush: true);
+  }
+
+  Future<Map<String, Map<String, String>>> _readScannerDraftsNow() async {
+    final file = await _scannerDraftsFile();
+    if (!await file.exists()) return {};
+
+    try {
+      final wrapper = jsonDecode(await file.readAsString());
+      final nonce = base64Decode(wrapper['nonce'] as String);
+      final cipherText = base64Decode(wrapper['cipherText'] as String);
+      final mac = base64Decode(wrapper['mac'] as String);
+      final key = await _getOrCreateKey();
+
+      final clear = await _aes.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
+        secretKey: key,
+        aad: utf8.encode('${NazaAppConfig.vaultAad}:scanner-drafts'),
+      );
+
+      final payload = jsonDecode(utf8.decode(clear));
+      if (payload is! Map) return {};
+
+      final drafts = <String, Map<String, String>>{};
+      for (final entry in payload.entries) {
+        final value = entry.value;
+        if (value is! Map) continue;
+        drafts[entry.key.toString()] = {
+          for (final field in value.entries)
+            field.key.toString(): field.value?.toString() ?? '',
+        };
+      }
+      return drafts;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> _writeScannerDraftsNow(
+    Map<String, Map<String, String>> drafts,
+  ) async {
+    final file = await _scannerDraftsFile();
+    final key = await _getOrCreateKey();
+    final clear = utf8.encode(jsonEncode(drafts));
+
+    final box = await _aes.encrypt(
+      clear,
+      secretKey: key,
+      aad: utf8.encode('${NazaAppConfig.vaultAad}:scanner-drafts'),
+    );
+
+    final wrapper = {
+      'version': 1,
+      'cipher': 'AES-256-GCM',
+      'storage': 'scanner-drafts-sqlite-compatible-map',
       'nonce': base64Encode(box.nonce),
       'cipherText': base64Encode(box.cipherText),
       'mac': base64Encode(box.mac.bytes),
@@ -3945,6 +4842,11 @@ final class NazaVault {
   Future<File> _historyFile() async {
     final dir = await getApplicationSupportDirectory();
     return File('${dir.path}/${NazaAppConfig.historyFileName}');
+  }
+
+  Future<File> _scannerDraftsFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/${NazaAppConfig.scannerDraftsFileName}');
   }
 }
 
@@ -5814,6 +6716,13 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     ),
   ];
 
+  Map<String, String> _roadDraft = const {};
+  Map<String, String> _foodDraft = const {};
+  Map<String, String> _foodPlannerDraft = const {'max_targets': '6'};
+  NazaScannerResult? _roadResult;
+  NazaScannerResult? _foodResult;
+  NazaScannerResult? _foodPlannerResult;
+  Timer? _draftSaveTimer;
   NazaPanel _panel = NazaPanel.chat;
   bool _sending = false;
   String _status = 'ready';
@@ -5826,6 +6735,7 @@ class _NazaStableHomeState extends State<NazaStableHome> {
       unawaited(NazaLocalGemma.instance.prepareBackendPreference());
       unawaited(NazaSecureModelStore.refresh());
       unawaited(_prepareBarkPackFastPath());
+      unawaited(_loadScannerDrafts());
     });
   }
 
@@ -5838,10 +6748,55 @@ class _NazaStableHomeState extends State<NazaStableHome> {
 
   @override
   void dispose() {
+    _draftSaveTimer?.cancel();
+    unawaited(_persistScannerDrafts());
     _inputController.dispose();
     _inputFocus.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadScannerDrafts() async {
+    final drafts = await NazaVault.instance.readScannerDrafts();
+    if (!mounted) return;
+    setState(() {
+      _roadDraft = Map<String, String>.from(drafts['road'] ?? const {});
+      _foodDraft = Map<String, String>.from(drafts['food'] ?? const {});
+      _foodPlannerDraft = {
+        'max_targets': '6',
+        ...Map<String, String>.from(drafts['foodPlanner'] ?? const {}),
+      };
+    });
+  }
+
+  void _updateRoadDraft(Map<String, String> draft) {
+    _roadDraft = Map<String, String>.from(draft);
+    _scheduleScannerDraftSave();
+  }
+
+  void _updateFoodDraft(Map<String, String> draft) {
+    _foodDraft = Map<String, String>.from(draft);
+    _scheduleScannerDraftSave();
+  }
+
+  void _updateFoodPlannerDraft(Map<String, String> draft) {
+    _foodPlannerDraft = Map<String, String>.from(draft);
+    _scheduleScannerDraftSave();
+  }
+
+  void _scheduleScannerDraftSave() {
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(const Duration(milliseconds: 550), () {
+      unawaited(_persistScannerDrafts());
+    });
+  }
+
+  Future<void> _persistScannerDrafts() {
+    return NazaVault.instance.writeScannerDrafts({
+      'road': _roadDraft,
+      'food': _foodDraft,
+      'foodPlanner': _foodPlannerDraft,
+    });
   }
 
   Future<void> _send() async {
@@ -6024,6 +6979,44 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     );
   }
 
+  Future<NazaResponse> _runVoiceTurn(String transcript) async {
+    if (_sending) {
+      return NazaResponse(
+        text: 'Hold on, I am finishing the current local response.',
+        score: 0,
+        route: 'voice-busy',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+
+    setState(() {
+      _sending = true;
+      _status = 'voice chat turn';
+    });
+
+    await WidgetsBinding.instance.endOfFrame;
+
+    try {
+      return await NazaLocalGemma.instance.sendVoiceTurn(transcript);
+    } catch (error) {
+      return NazaResponse(
+        text: 'Local voice chat error: $error',
+        score: 0,
+        route: 'voice-error',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _status = _labelForPanel(_panel);
+        });
+      }
+    }
+  }
+
   Future<NazaConvoRenderResult> _runConvoRender(
     Map<String, String> data,
   ) async {
@@ -6091,14 +7084,20 @@ class _NazaStableHomeState extends State<NazaStableHome> {
 
     setState(() {
       _sending = true;
-      _status = riskStatus;
+      _status = '$riskStatus + score';
     });
 
     await WidgetsBinding.instance.endOfFrame;
 
     try {
-      final riskResponse = await NazaLocalGemma.instance.send(
-        riskPrompt,
+      final scannerPrompt = NazaScannerPrompts.buildSinglePassScanner(
+        kind: kind,
+        visibleSummary: visibleSummary,
+        primaryPrompt: riskPrompt,
+        safetyPrompt: safetyPrompt,
+      );
+      final scannerResponse = await NazaLocalGemma.instance.send(
+        scannerPrompt,
         historyUserText: visibleSummary,
       );
 
@@ -6108,17 +7107,12 @@ class _NazaStableHomeState extends State<NazaStableHome> {
 
       await WidgetsBinding.instance.endOfFrame;
 
-      final safetyResponse = await NazaLocalGemma.instance.send(
-        safetyPrompt,
-        historyUserText: '$visibleSummary\n\nSeparate safety score pass.',
-      );
-
       return NazaScannerResult.fromResponses(
         title: title,
         kind: kind,
         visibleSummary: visibleSummary,
-        riskResponse: riskResponse,
-        safetyResponse: safetyResponse,
+        riskResponse: scannerResponse,
+        safetyResponse: scannerResponse,
         trace: trace,
       );
     } catch (error) {
@@ -6228,32 +7222,7 @@ class _NazaStableHomeState extends State<NazaStableHome> {
                       ),
                       Expanded(
                         child: Row(
-                          children: [
-                            Expanded(
-                              child: AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 260),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                transitionBuilder: (child, animation) {
-                                  final slide = Tween<Offset>(
-                                    begin: const Offset(0.018, 0),
-                                    end: Offset.zero,
-                                  ).animate(animation);
-                                  return FadeTransition(
-                                    opacity: animation,
-                                    child: SlideTransition(
-                                      position: slide,
-                                      child: child,
-                                    ),
-                                  );
-                                },
-                                child: KeyedSubtree(
-                                  key: ValueKey<NazaPanel>(_panel),
-                                  child: _buildMainPanel(),
-                                ),
-                              ),
-                            ),
-                          ],
+                          children: [Expanded(child: _buildPanelStack())],
                         ),
                       ),
                       if (_panel == NazaPanel.chat)
@@ -6275,8 +7244,9 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     );
   }
 
-  Widget _buildMainPanel() {
-    switch (_panel) {
+  Widget _buildMainPanel([NazaPanel? panelOverride]) {
+    final panel = panelOverride ?? _panel;
+    switch (panel) {
       case NazaPanel.chat:
         return ValueListenableBuilder<NazaModelStoreStatus>(
           valueListenable: NazaSecureModelStore.status,
@@ -6306,17 +7276,30 @@ class _NazaStableHomeState extends State<NazaStableHome> {
       case NazaPanel.roadScanner:
         return _RoadScannerPanel(
           actionsEnabled: !_sending,
+          initialData: _roadDraft,
+          initialResult: _roadResult,
+          onDraftChanged: _updateRoadDraft,
+          onResultChanged: (result) => _roadResult = result,
           onScan: _runRoadScan,
         );
       case NazaPanel.foodWater:
         return _FoodWaterScannerPanel(
           actionsEnabled: !_sending,
+          initialScanData: _foodDraft,
+          initialPlannerData: _foodPlannerDraft,
+          initialSingleResult: _foodResult,
+          initialPlannerResult: _foodPlannerResult,
+          onScanDraftChanged: _updateFoodDraft,
+          onPlannerDraftChanged: _updateFoodPlannerDraft,
+          onSingleResultChanged: (result) => _foodResult = result,
+          onPlannerResultChanged: (result) => _foodPlannerResult = result,
           onScan: _runFoodWaterScan,
           onPlanner: _runFoodWaterPlanner,
         );
       case NazaPanel.convo:
         return _ConvoBarkPanel(
           actionsEnabled: !_sending,
+          onVoiceTurn: _runVoiceTurn,
           onRender: _runConvoRender,
         );
       case NazaPanel.settings:
@@ -6328,6 +7311,44 @@ class _NazaStableHomeState extends State<NazaStableHome> {
       case NazaPanel.history:
         return const _HistoryPanel();
     }
+  }
+
+  Widget _buildPanelStack() {
+    final activeIndex = _panelIndex(_panel);
+    final children = <Widget>[
+      _tickerPanel(NazaPanel.chat, _buildMainPanelFor(NazaPanel.chat)),
+      _tickerPanel(
+        NazaPanel.roadScanner,
+        _buildMainPanelFor(NazaPanel.roadScanner),
+      ),
+      _tickerPanel(
+        NazaPanel.foodWater,
+        _buildMainPanelFor(NazaPanel.foodWater),
+      ),
+      _tickerPanel(NazaPanel.convo, _buildMainPanelFor(NazaPanel.convo)),
+      _tickerPanel(NazaPanel.settings, _buildMainPanelFor(NazaPanel.settings)),
+      _tickerPanel(NazaPanel.history, _buildMainPanelFor(NazaPanel.history)),
+    ];
+    return IndexedStack(index: activeIndex, children: children);
+  }
+
+  Widget _tickerPanel(NazaPanel panel, Widget child) {
+    return TickerMode(enabled: _panel == panel, child: child);
+  }
+
+  Widget _buildMainPanelFor(NazaPanel panel) {
+    return _buildMainPanel(panel);
+  }
+
+  int _panelIndex(NazaPanel panel) {
+    return switch (panel) {
+      NazaPanel.chat => 0,
+      NazaPanel.roadScanner => 1,
+      NazaPanel.foodWater => 2,
+      NazaPanel.convo => 3,
+      NazaPanel.settings => 4,
+      NazaPanel.history => 5,
+    };
   }
 
   String _labelForPanel(NazaPanel panel) {
@@ -7272,16 +8293,7 @@ class _StableMessageBubble extends StatelessWidget {
                 const _NazaSheen(height: 2),
                 const SizedBox(height: 10),
               ],
-              Text(
-                message.text,
-                style: const TextStyle(
-                  color: NazaPalette.text,
-                  fontSize: 15.8,
-                  height: 1.38,
-                  fontWeight: FontWeight.w600,
-                  fontFamily: NazaFonts.display,
-                ),
-              ),
+              _NazaMarkdownText(text: message.text),
               const SizedBox(height: 7),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -7298,6 +8310,13 @@ class _StableMessageBubble extends StatelessWidget {
                   if (message.isWorking) ...[
                     const SizedBox(width: 8),
                     const _NazaThinkingDots(),
+                  ],
+                  if (!message.isWorking) ...[
+                    const SizedBox(width: 8),
+                    _CopyIconButton(
+                      tooltip: 'Copy message',
+                      text: message.text,
+                    ),
                   ],
                 ],
               ),
@@ -7316,11 +8335,360 @@ class _StableMessageBubble extends StatelessWidget {
   }
 }
 
+class _NazaMarkdownText extends StatelessWidget {
+  final String text;
+  final bool compact;
+
+  const _NazaMarkdownText({required this.text, this.compact = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final blocks = _buildBlocks(context);
+    return SelectionArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: blocks.isEmpty ? const [SizedBox.shrink()] : blocks,
+      ),
+    );
+  }
+
+  List<Widget> _buildBlocks(BuildContext context) {
+    final lines = text.replaceAll('\r\n', '\n').split('\n');
+    final widgets = <Widget>[];
+    final paragraph = <String>[];
+    var inCode = false;
+    final codeLines = <String>[];
+    var inEquation = false;
+    final equationLines = <String>[];
+
+    void flushParagraph() {
+      if (paragraph.isEmpty) return;
+      widgets.add(_paragraph(paragraph.join(' ')));
+      paragraph.clear();
+    }
+
+    for (final rawLine in lines) {
+      final line = rawLine.trimRight();
+      final trimmed = line.trim();
+
+      if (trimmed.startsWith('```')) {
+        flushParagraph();
+        if (inCode) {
+          widgets.add(_codeBlock(codeLines.join('\n')));
+          codeLines.clear();
+          inCode = false;
+        } else {
+          inCode = true;
+        }
+        continue;
+      }
+      if (inCode) {
+        codeLines.add(line);
+        continue;
+      }
+
+      if (trimmed == r'$$' || trimmed.startsWith(r'$$')) {
+        flushParagraph();
+        final inline = trimmed.length > 2 ? trimmed.substring(2).trim() : '';
+        if (inEquation) {
+          if (inline.isNotEmpty) equationLines.add(inline);
+          widgets.add(_equationBlock(equationLines.join('\n')));
+          equationLines.clear();
+          inEquation = false;
+        } else if (inline.endsWith(r'$$') && inline.length > 2) {
+          widgets.add(
+            _equationBlock(inline.substring(0, inline.length - 2).trim()),
+          );
+        } else {
+          inEquation = true;
+          if (inline.isNotEmpty) equationLines.add(inline);
+        }
+        continue;
+      }
+      if (inEquation) {
+        equationLines.add(trimmed);
+        continue;
+      }
+
+      if (trimmed.isEmpty) {
+        flushParagraph();
+        if (widgets.isNotEmpty) widgets.add(SizedBox(height: compact ? 4 : 8));
+        continue;
+      }
+
+      final heading = RegExp(r'^(#{1,3})\s+(.+)$').firstMatch(trimmed);
+      if (heading != null) {
+        flushParagraph();
+        widgets.add(_heading(heading.group(2)!, heading.group(1)!.length));
+        continue;
+      }
+
+      final bullet = RegExp(r'^[-*]\s+(.+)$').firstMatch(trimmed);
+      if (bullet != null) {
+        flushParagraph();
+        widgets.add(_listItem(bullet.group(1)!, bullet: '•'));
+        continue;
+      }
+
+      final numbered = RegExp(r'^(\d+[.)])\s+(.+)$').firstMatch(trimmed);
+      if (numbered != null) {
+        flushParagraph();
+        widgets.add(_listItem(numbered.group(2)!, bullet: numbered.group(1)!));
+        continue;
+      }
+
+      paragraph.add(trimmed);
+    }
+
+    flushParagraph();
+    if (codeLines.isNotEmpty) widgets.add(_codeBlock(codeLines.join('\n')));
+    if (equationLines.isNotEmpty) {
+      widgets.add(_equationBlock(equationLines.join('\n')));
+    }
+    return widgets;
+  }
+
+  Widget _heading(String value, int level) {
+    final size = switch (level) {
+      1 => 19.0,
+      2 => 17.0,
+      _ => 15.5,
+    };
+    return Padding(
+      padding: EdgeInsets.only(top: compact ? 3 : 6, bottom: compact ? 3 : 5),
+      child: Text.rich(
+        TextSpan(children: _inlineSpans(value, _baseStyle(size: size))),
+        style: _baseStyle(size: size).copyWith(fontWeight: FontWeight.w900),
+      ),
+    );
+  }
+
+  Widget _paragraph(String value) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: compact ? 3 : 6),
+      child: Text.rich(
+        TextSpan(children: _inlineSpans(value, _baseStyle())),
+        style: _baseStyle(),
+      ),
+    );
+  }
+
+  Widget _listItem(String value, {required String bullet}) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: compact ? 3 : 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: bullet == '•' ? 18 : 28,
+            child: Text(
+              bullet,
+              style: _baseStyle().copyWith(
+                color: NazaPalette.mintSoft,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text.rich(
+              TextSpan(children: _inlineSpans(value, _baseStyle())),
+              style: _baseStyle(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _codeBlock(String value) {
+    return _blockShell(
+      child: SelectableText(
+        value.trimRight(),
+        style: const TextStyle(
+          color: NazaPalette.mintSoft,
+          fontSize: 12.5,
+          height: 1.35,
+          fontFamily: NazaFonts.mono,
+        ),
+      ),
+    );
+  }
+
+  Widget _equationBlock(String value) {
+    return _blockShell(
+      icon: Icons.functions_rounded,
+      child: SelectableText(
+        value.trim(),
+        style: const TextStyle(
+          color: Color(0xFFFFE4A3),
+          fontSize: 14,
+          height: 1.35,
+          fontWeight: FontWeight.w800,
+          fontFamily: NazaFonts.mono,
+        ),
+      ),
+    );
+  }
+
+  Widget _blockShell({required Widget child, IconData? icon}) {
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.only(bottom: compact ? 5 : 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0x99101E19),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0x22FFFFFF)),
+      ),
+      child: icon == null
+          ? child
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: const Color(0xFFFFE4A3), size: 17),
+                const SizedBox(width: 8),
+                Expanded(child: child),
+              ],
+            ),
+    );
+  }
+
+  List<TextSpan> _inlineSpans(String value, TextStyle base) {
+    final spans = <TextSpan>[];
+    var index = 0;
+
+    while (index < value.length) {
+      final bold = value.indexOf('**', index);
+      final code = value.indexOf('`', index);
+      final math = value.indexOf(r'$', index);
+      final candidates = [bold, code, math].where((i) => i >= 0).toList();
+      if (candidates.isEmpty) {
+        spans.add(TextSpan(text: value.substring(index), style: base));
+        break;
+      }
+
+      final next = candidates.reduce(_minInt);
+      if (next > index) {
+        spans.add(TextSpan(text: value.substring(index, next), style: base));
+      }
+
+      if (next == bold) {
+        final end = value.indexOf('**', next + 2);
+        if (end < 0) {
+          spans.add(TextSpan(text: value.substring(next), style: base));
+          break;
+        }
+        spans.add(
+          TextSpan(
+            text: value.substring(next + 2, end),
+            style: base.copyWith(
+              color: NazaPalette.text,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        );
+        index = end + 2;
+      } else if (next == code) {
+        final end = value.indexOf('`', next + 1);
+        if (end < 0) {
+          spans.add(TextSpan(text: value.substring(next), style: base));
+          break;
+        }
+        spans.add(
+          TextSpan(
+            text: value.substring(next + 1, end),
+            style: base.copyWith(
+              color: NazaPalette.mintSoft,
+              fontFamily: NazaFonts.mono,
+              fontWeight: FontWeight.w800,
+              backgroundColor: const Color(0x44101E19),
+            ),
+          ),
+        );
+        index = end + 1;
+      } else {
+        final end = value.indexOf(r'$', next + 1);
+        if (end < 0) {
+          spans.add(TextSpan(text: value.substring(next), style: base));
+          break;
+        }
+        spans.add(
+          TextSpan(
+            text: value.substring(next + 1, end),
+            style: base.copyWith(
+              color: const Color(0xFFFFE4A3),
+              fontFamily: NazaFonts.mono,
+              fontWeight: FontWeight.w800,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        );
+        index = end + 1;
+      }
+    }
+
+    return spans;
+  }
+
+  TextStyle _baseStyle({double size = 15.8}) {
+    return TextStyle(
+      color: NazaPalette.text,
+      fontSize: compact ? size - 0.8 : size,
+      height: 1.38,
+      fontWeight: FontWeight.w600,
+      fontFamily: NazaFonts.display,
+    );
+  }
+}
+
+int _minInt(int a, int b) => a < b ? a : b;
+
+class _CopyIconButton extends StatelessWidget {
+  final String tooltip;
+  final String text;
+
+  const _CopyIconButton({required this.tooltip, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Clipboard.setData(ClipboardData(text: text));
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            const SnackBar(
+              content: Text('Copied'),
+              duration: Duration(milliseconds: 900),
+            ),
+          );
+        },
+        child: const Padding(
+          padding: EdgeInsets.all(3),
+          child: Icon(Icons.copy_rounded, color: NazaPalette.subtext, size: 14),
+        ),
+      ),
+    );
+  }
+}
+
 class _RoadScannerPanel extends StatefulWidget {
   final bool actionsEnabled;
+  final Map<String, String> initialData;
+  final NazaScannerResult? initialResult;
+  final ValueChanged<Map<String, String>> onDraftChanged;
+  final ValueChanged<NazaScannerResult> onResultChanged;
   final Future<NazaScannerResult> Function(Map<String, String> data) onScan;
 
-  const _RoadScannerPanel({required this.actionsEnabled, required this.onScan});
+  const _RoadScannerPanel({
+    required this.actionsEnabled,
+    required this.initialData,
+    required this.initialResult,
+    required this.onDraftChanged,
+    required this.onResultChanged,
+    required this.onScan,
+  });
 
   @override
   State<_RoadScannerPanel> createState() => _RoadScannerPanelState();
@@ -7339,9 +8707,34 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
 
   NazaScannerResult? _result;
   bool _loading = false;
+  bool _applyingDraft = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _result = widget.initialResult;
+    _applyData(widget.initialData);
+    for (final controller in _controllers) {
+      controller.addListener(_handleDraftChanged);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _RoadScannerPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!mapEquals(widget.initialData, oldWidget.initialData)) {
+      _applyData(widget.initialData);
+    }
+    if (widget.initialResult != oldWidget.initialResult) {
+      _result = widget.initialResult;
+    }
+  }
 
   @override
   void dispose() {
+    for (final controller in _controllers) {
+      controller.removeListener(_handleDraftChanged);
+    }
     _location.dispose();
     _roadType.dispose();
     _weather.dispose();
@@ -7352,6 +8745,44 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
     _nearbyHazards.dispose();
     _sensorNotes.dispose();
     super.dispose();
+  }
+
+  List<TextEditingController> get _controllers {
+    return [
+      _location,
+      _roadType,
+      _weather,
+      _visibility,
+      _trafficDensity,
+      _roadSurface,
+      _speedFlow,
+      _nearbyHazards,
+      _sensorNotes,
+    ];
+  }
+
+  void _applyData(Map<String, String> data) {
+    _applyingDraft = true;
+    _setControllerText(_location, data['location'] ?? '');
+    _setControllerText(_roadType, data['road_type'] ?? '');
+    _setControllerText(_weather, data['weather'] ?? '');
+    _setControllerText(_visibility, data['visibility'] ?? '');
+    _setControllerText(_trafficDensity, data['traffic_density'] ?? '');
+    _setControllerText(_roadSurface, data['road_surface'] ?? '');
+    _setControllerText(_speedFlow, data['speed_flow'] ?? '');
+    _setControllerText(_nearbyHazards, data['nearby_hazards'] ?? '');
+    _setControllerText(_sensorNotes, data['sensor_notes'] ?? '');
+    _applyingDraft = false;
+  }
+
+  void _setControllerText(TextEditingController controller, String value) {
+    if (controller.text == value) return;
+    controller.text = value;
+  }
+
+  void _handleDraftChanged() {
+    if (_applyingDraft) return;
+    widget.onDraftChanged(_data());
   }
 
   Map<String, String> _data() {
@@ -7377,6 +8808,7 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
       _result = result;
       _loading = false;
     });
+    widget.onResultChanged(result);
   }
 
   @override
@@ -7467,11 +8899,27 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
 
 class _FoodWaterScannerPanel extends StatefulWidget {
   final bool actionsEnabled;
+  final Map<String, String> initialScanData;
+  final Map<String, String> initialPlannerData;
+  final NazaScannerResult? initialSingleResult;
+  final NazaScannerResult? initialPlannerResult;
+  final ValueChanged<Map<String, String>> onScanDraftChanged;
+  final ValueChanged<Map<String, String>> onPlannerDraftChanged;
+  final ValueChanged<NazaScannerResult> onSingleResultChanged;
+  final ValueChanged<NazaScannerResult> onPlannerResultChanged;
   final Future<NazaScannerResult> Function(Map<String, String> data) onScan;
   final Future<NazaScannerResult> Function(Map<String, String> data) onPlanner;
 
   const _FoodWaterScannerPanel({
     required this.actionsEnabled,
+    required this.initialScanData,
+    required this.initialPlannerData,
+    required this.initialSingleResult,
+    required this.initialPlannerResult,
+    required this.onScanDraftChanged,
+    required this.onPlannerDraftChanged,
+    required this.onSingleResultChanged,
+    required this.onPlannerResultChanged,
     required this.onScan,
     required this.onPlanner,
   });
@@ -7501,9 +8949,48 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
   bool _plannerLoading = false;
   NazaScannerResult? _singleResult;
   NazaScannerResult? _plannerResult;
+  bool _applyingDraft = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _singleResult = widget.initialSingleResult;
+    _plannerResult = widget.initialPlannerResult;
+    _applyScanData(widget.initialScanData);
+    _applyPlannerData(widget.initialPlannerData);
+    for (final controller in _scanControllers) {
+      controller.addListener(_handleScanDraftChanged);
+    }
+    for (final controller in _plannerControllers) {
+      controller.addListener(_handlePlannerDraftChanged);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _FoodWaterScannerPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!mapEquals(widget.initialScanData, oldWidget.initialScanData)) {
+      _applyScanData(widget.initialScanData);
+    }
+    if (!mapEquals(widget.initialPlannerData, oldWidget.initialPlannerData)) {
+      _applyPlannerData(widget.initialPlannerData);
+    }
+    if (widget.initialSingleResult != oldWidget.initialSingleResult) {
+      _singleResult = widget.initialSingleResult;
+    }
+    if (widget.initialPlannerResult != oldWidget.initialPlannerResult) {
+      _plannerResult = widget.initialPlannerResult;
+    }
+  }
 
   @override
   void dispose() {
+    for (final controller in _scanControllers) {
+      controller.removeListener(_handleScanDraftChanged);
+    }
+    for (final controller in _plannerControllers) {
+      controller.removeListener(_handlePlannerDraftChanged);
+    }
     _location.dispose();
     _foodWaterType.dispose();
     _storageContext.dispose();
@@ -7518,6 +9005,62 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
     _nearbyLocations.dispose();
     _maxTargets.dispose();
     super.dispose();
+  }
+
+  List<TextEditingController> get _scanControllers {
+    return [
+      _location,
+      _foodWaterType,
+      _storageContext,
+      _packagingClarity,
+      _handlingDensity,
+      _containerCondition,
+      _temperatureFlow,
+      _hazards,
+      _sensorNotes,
+    ];
+  }
+
+  List<TextEditingController> get _plannerControllers {
+    return [_baseLocation, _seedItem, _nearbyLocations, _maxTargets];
+  }
+
+  void _applyScanData(Map<String, String> data) {
+    _applyingDraft = true;
+    _setControllerText(_location, data['location'] ?? '');
+    _setControllerText(_foodWaterType, data['food_water_type'] ?? '');
+    _setControllerText(_storageContext, data['storage_context'] ?? '');
+    _setControllerText(_packagingClarity, data['packaging_clarity'] ?? '');
+    _setControllerText(_handlingDensity, data['handling_density'] ?? '');
+    _setControllerText(_containerCondition, data['container_condition'] ?? '');
+    _setControllerText(_temperatureFlow, data['temperature_flow'] ?? '');
+    _setControllerText(_hazards, data['hazards'] ?? '');
+    _setControllerText(_sensorNotes, data['sensor_notes'] ?? '');
+    _applyingDraft = false;
+  }
+
+  void _applyPlannerData(Map<String, String> data) {
+    _applyingDraft = true;
+    _setControllerText(_baseLocation, data['base_location'] ?? '');
+    _setControllerText(_seedItem, data['seed_item'] ?? '');
+    _setControllerText(_nearbyLocations, data['nearby_locations'] ?? '');
+    _setControllerText(_maxTargets, data['max_targets'] ?? '6');
+    _applyingDraft = false;
+  }
+
+  void _setControllerText(TextEditingController controller, String value) {
+    if (controller.text == value) return;
+    controller.text = value;
+  }
+
+  void _handleScanDraftChanged() {
+    if (_applyingDraft) return;
+    widget.onScanDraftChanged(_scanData());
+  }
+
+  void _handlePlannerDraftChanged() {
+    if (_applyingDraft) return;
+    widget.onPlannerDraftChanged(_plannerData());
   }
 
   Map<String, String> _scanData() {
@@ -7554,6 +9097,7 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
       _singleResult = result;
       _singleLoading = false;
     });
+    widget.onSingleResultChanged(result);
   }
 
   Future<void> _runPlanner() async {
@@ -7565,6 +9109,7 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
       _plannerResult = result;
       _plannerLoading = false;
     });
+    widget.onPlannerResultChanged(result);
   }
 
   @override
@@ -7598,30 +9143,23 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
           ],
         ),
         const SizedBox(height: 12),
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 320),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          child: _plannerMode
-              ? _ScannerAnalysisSurface(
-                  key: const ValueKey<String>('food-planner-surface'),
-                  title: 'Multi-scan readiness surface',
-                  icon: Icons.playlist_add_check_rounded,
-                  loading: _plannerLoading,
-                  result: _plannerResult,
-                  idleBody:
-                      'Plan multiple nearby scan targets and score scan-readiness on a separate 0/100 pass.',
-                )
-              : _ScannerAnalysisSurface(
-                  key: const ValueKey<String>('food-single-surface'),
-                  title: 'Food / Water chromographic safety surface',
-                  icon: Icons.water_drop_rounded,
-                  loading: _singleLoading,
-                  result: _singleResult,
-                  idleBody:
-                      'Run a scan to generate source risk plus a separate 0/100 safety score.',
-                ),
-        ),
+        _plannerMode
+            ? _ScannerAnalysisSurface(
+                title: 'Multi-scan readiness surface',
+                icon: Icons.playlist_add_check_rounded,
+                loading: _plannerLoading,
+                result: _plannerResult,
+                idleBody:
+                    'Plan multiple nearby scan targets and score scan-readiness on a separate 0/100 pass.',
+              )
+            : _ScannerAnalysisSurface(
+                title: 'Food / Water chromographic safety surface',
+                icon: Icons.water_drop_rounded,
+                loading: _singleLoading,
+                result: _singleResult,
+                idleBody:
+                    'Run a scan to generate source risk plus a separate 0/100 safety score.',
+              ),
         if (_plannerMode) ..._buildPlanner() else ..._buildSingleScan(),
       ],
     );
@@ -7749,7 +9287,6 @@ class _ScannerAnalysisSurface extends StatelessWidget {
   final String idleBody;
 
   const _ScannerAnalysisSurface({
-    super.key,
     required this.title,
     required this.icon,
     required this.loading,
@@ -7764,28 +9301,11 @@ class _ScannerAnalysisSurface extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       radius: 26,
       active: true,
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 360),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        child: loading
-            ? _ScannerLoadingSurface(
-                key: const ValueKey<String>('scanner-loading'),
-                title: title,
-                icon: icon,
-              )
-            : result == null
-            ? _ScannerIdleSurface(
-                key: const ValueKey<String>('scanner-idle'),
-                title: title,
-                icon: icon,
-                body: idleBody,
-              )
-            : _ScannerResultSurface(
-                key: ValueKey<String>('scanner-${result!.createdAt}'),
-                result: result!,
-              ),
-      ),
+      child: loading
+          ? _ScannerLoadingSurface(title: title, icon: icon)
+          : result == null
+          ? _ScannerIdleSurface(title: title, icon: icon, body: idleBody)
+          : _ScannerResultSurface(result: result!),
     );
   }
 }
@@ -7796,7 +9316,6 @@ class _ScannerIdleSurface extends StatelessWidget {
   final String body;
 
   const _ScannerIdleSurface({
-    super.key,
     required this.title,
     required this.icon,
     required this.body,
@@ -7877,126 +9396,94 @@ class _ScannerIdleSurface extends StatelessWidget {
   }
 }
 
-class _ScannerLoadingSurface extends StatefulWidget {
+class _ScannerLoadingSurface extends StatelessWidget {
   final String title;
   final IconData icon;
 
-  const _ScannerLoadingSurface({
-    super.key,
-    required this.title,
-    required this.icon,
-  });
-
-  @override
-  State<_ScannerLoadingSurface> createState() => _ScannerLoadingSurfaceState();
-}
-
-class _ScannerLoadingSurfaceState extends State<_ScannerLoadingSurface>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  const _ScannerLoadingSurface({required this.title, required this.icon});
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final wide = constraints.maxWidth >= 620;
-            final wheel = _ChromographicWheel(
-              label: 'Scanning',
-              subtitle: 'two-pass local',
-              progress: _controller.value,
-              tone: NazaPalette.mintSoft,
-              loading: true,
-            );
-            final text = Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 620;
+        const wheel = _ChromographicWheel(
+          label: 'Scanning',
+          subtitle: 'one-pass local',
+          progress: 0.64,
+          tone: NazaPalette.mintSoft,
+          loading: true,
+        );
+        final text = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Row(
-                  children: [
-                    Icon(widget.icon, color: NazaPalette.mintSoft, size: 24),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        widget.title,
-                        style: const TextStyle(
-                          color: NazaPalette.text,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: -0.25,
-                          fontFamily: NazaFonts.display,
-                        ),
-                      ),
+                Icon(icon, color: NazaPalette.mintSoft, size: 24),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: NazaPalette.text,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.25,
+                      fontFamily: NazaFonts.display,
                     ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Running classification first, then a separate 0/100 safety score pass.',
-                  style: TextStyle(
-                    color: NazaPalette.subtext,
-                    height: 1.35,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: NazaFonts.display,
                   ),
                 ),
-                const SizedBox(height: 14),
-                const _NazaSheen(height: 2),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: const [
-                    _ScannerMetricPill(
-                      label: 'risk',
-                      value: 'Low / Medium / High',
-                      icon: Icons.stacked_line_chart_rounded,
-                    ),
-                    _ScannerMetricPill(
-                      label: 'safety',
-                      value: '0 / 100',
-                      icon: Icons.speed_rounded,
-                    ),
-                  ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Running one local model pass with combined risk and safety scoring.',
+              style: TextStyle(
+                color: NazaPalette.subtext,
+                height: 1.35,
+                fontWeight: FontWeight.w700,
+                fontFamily: NazaFonts.display,
+              ),
+            ),
+            const SizedBox(height: 14),
+            const _NazaSheen(height: 2),
+            const SizedBox(height: 12),
+            const Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _ScannerMetricPill(
+                  label: 'risk',
+                  value: 'Low / Medium / High',
+                  icon: Icons.stacked_line_chart_rounded,
+                ),
+                _ScannerMetricPill(
+                  label: 'safety',
+                  value: '0 / 100',
+                  icon: Icons.speed_rounded,
                 ),
               ],
-            );
+            ),
+          ],
+        );
 
-            if (!wide) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(child: wheel),
-                  const SizedBox(height: 14),
-                  text,
-                ],
-              );
-            }
+        if (!wide) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(child: wheel),
+              const SizedBox(height: 14),
+              text,
+            ],
+          );
+        }
 
-            return Row(
-              children: [
-                wheel,
-                const SizedBox(width: 18),
-                Expanded(child: text),
-              ],
-            );
-          },
+        return Row(
+          children: [
+            wheel,
+            const SizedBox(width: 18),
+            Expanded(child: text),
+          ],
         );
       },
     );
@@ -8006,7 +9493,7 @@ class _ScannerLoadingSurfaceState extends State<_ScannerLoadingSurface>
 class _ScannerResultSurface extends StatelessWidget {
   final NazaScannerResult result;
 
-  const _ScannerResultSurface({super.key, required this.result});
+  const _ScannerResultSurface({required this.result});
 
   @override
   Widget build(BuildContext context) {
@@ -8607,10 +10094,15 @@ class _SafetyGaugePainter extends CustomPainter {
 
 class _ConvoBarkPanel extends StatefulWidget {
   final bool actionsEnabled;
+  final Future<NazaResponse> Function(String transcript) onVoiceTurn;
   final Future<NazaConvoRenderResult> Function(Map<String, String> data)
   onRender;
 
-  const _ConvoBarkPanel({required this.actionsEnabled, required this.onRender});
+  const _ConvoBarkPanel({
+    required this.actionsEnabled,
+    required this.onVoiceTurn,
+    required this.onRender,
+  });
 
   @override
   State<_ConvoBarkPanel> createState() => _ConvoBarkPanelState();
@@ -8629,6 +10121,13 @@ class _ConvoBarkPanelState extends State<_ConvoBarkPanel> {
   );
 
   bool _loading = false;
+  bool _liveActive = false;
+  bool _liveBusy = false;
+  int _liveTurns = 0;
+  String _liveStatus = 'ready';
+  String _liveTranscript = '';
+  String _liveReply = '';
+  String? _liveError;
   NazaConvoRenderResult? _result;
 
   @override
@@ -8647,6 +10146,7 @@ class _ConvoBarkPanelState extends State<_ConvoBarkPanel> {
 
   @override
   void dispose() {
+    unawaited(NazaLiveVoiceBridge.instance.stop());
     _prompt.dispose();
     _voice.dispose();
     _style.dispose();
@@ -8670,6 +10170,137 @@ class _ConvoBarkPanelState extends State<_ConvoBarkPanel> {
     });
   }
 
+  Future<void> _toggleLiveConversation() async {
+    if (_liveActive) {
+      await _stopLiveConversation();
+      return;
+    }
+    await _startLiveConversation();
+  }
+
+  Future<void> _startLiveConversation() async {
+    if (_liveActive || _liveBusy || !widget.actionsEnabled) return;
+    final bridge = NazaLiveVoiceBridge.instance;
+    setState(() {
+      _liveBusy = true;
+      _liveStatus = 'checking audio';
+      _liveError = null;
+    });
+
+    final available = await bridge.isAvailable();
+    if (!mounted) return;
+    if (!available) {
+      setState(() {
+        _liveBusy = false;
+        _liveStatus = 'speech recognizer unavailable';
+        _liveError =
+            'This Android device does not expose a speech recognizer to the app.';
+      });
+      return;
+    }
+
+    final granted = await bridge.requestRecordPermission();
+    if (!mounted) return;
+    if (!granted) {
+      setState(() {
+        _liveBusy = false;
+        _liveStatus = 'microphone permission needed';
+        _liveError = 'Allow microphone permission to use live audio chat.';
+      });
+      return;
+    }
+
+    setState(() {
+      _liveActive = true;
+      _liveBusy = false;
+      _liveStatus = 'listening';
+      _liveError = null;
+    });
+    unawaited(_liveConversationLoop());
+  }
+
+  Future<void> _stopLiveConversation() async {
+    _liveActive = false;
+    NazaLocalGemma.instance.cancelActiveGeneration();
+    await NazaLiveVoiceBridge.instance.stop();
+    if (!mounted) return;
+    setState(() {
+      _liveBusy = false;
+      _liveStatus = 'stopped';
+    });
+  }
+
+  Future<void> _liveConversationLoop() async {
+    final bridge = NazaLiveVoiceBridge.instance;
+    while (mounted && _liveActive) {
+      setState(() {
+        _liveBusy = false;
+        _liveStatus = 'listening';
+        _liveError = null;
+      });
+
+      late final NazaSpeechCapture capture;
+      try {
+        capture = await bridge.listenOnce();
+      } catch (error) {
+        if (!mounted || !_liveActive) return;
+        setState(() {
+          _liveActive = false;
+          _liveBusy = false;
+          _liveStatus = 'listen failed';
+          _liveError = error.toString();
+        });
+        return;
+      }
+
+      if (!mounted || !_liveActive) return;
+      final transcript = capture.transcript.trim();
+      if (transcript.isEmpty) {
+        setState(() => _liveStatus = 'silence');
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        continue;
+      }
+
+      setState(() {
+        _liveBusy = true;
+        _liveStatus = 'thinking';
+        _liveTranscript = transcript;
+        _liveReply = '';
+      });
+
+      final response = await widget.onVoiceTurn(transcript);
+      if (!mounted || !_liveActive) return;
+
+      final spoken = _speechReadyText(response.text);
+      setState(() {
+        _liveTurns++;
+        _liveReply = response.text;
+        _liveStatus = 'speaking';
+      });
+
+      await bridge.speak(spoken);
+      if (!mounted || !_liveActive) return;
+
+      setState(() {
+        _liveBusy = false;
+        _liveStatus = 'listening';
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+  }
+
+  String _speechReadyText(String text) {
+    final withoutBlocks = text
+        .replaceAll(RegExp(r'```[\s\S]*?```'), ' ')
+        .replaceAll(RegExp(r'\$\$[\s\S]*?\$\$'), ' ');
+    final cleaned = withoutBlocks
+        .replaceAll(RegExp(r'[#*_`>$]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (cleaned.length <= 1400) return cleaned;
+    return '${cleaned.substring(0, 1400).trim()}...';
+  }
+
   @override
   Widget build(BuildContext context) {
     return _PanelScaffold(
@@ -8683,6 +10314,19 @@ class _ConvoBarkPanelState extends State<_ConvoBarkPanel> {
         ),
         const _BarkPackStatusCard(),
         const _BarkPerformanceCard(),
+        _LiveVoiceCard(
+          active: _liveActive,
+          busy: _liveBusy,
+          actionsEnabled: widget.actionsEnabled && !_loading,
+          status: _liveStatus,
+          transcript: _liveTranscript,
+          reply: _liveReply,
+          error: _liveError,
+          turns: _liveTurns,
+          partialTranscript: NazaLiveVoiceBridge.instance.partialTranscript,
+          onToggle: () => unawaited(_toggleLiveConversation()),
+          onStopAudio: () => unawaited(NazaLiveVoiceBridge.instance.stop()),
+        ),
         _ConvoRenderSurface(loading: _loading, result: _result),
         _NazaTextInput(
           label: 'Convo prompt',
@@ -8718,6 +10362,170 @@ class _ConvoBarkPanelState extends State<_ConvoBarkPanel> {
         const _InfoRow(label: 'Runtime safety', value: 'HTTPS + SHA-256'),
         const _InfoRow(label: 'Render output', value: 'local WAV preview'),
       ],
+    );
+  }
+}
+
+class _LiveVoiceCard extends StatelessWidget {
+  final bool active;
+  final bool busy;
+  final bool actionsEnabled;
+  final String status;
+  final String transcript;
+  final String reply;
+  final String? error;
+  final int turns;
+  final ValueListenable<String> partialTranscript;
+  final VoidCallback onToggle;
+  final VoidCallback onStopAudio;
+
+  const _LiveVoiceCard({
+    required this.active,
+    required this.busy,
+    required this.actionsEnabled,
+    required this.status,
+    required this.transcript,
+    required this.reply,
+    required this.error,
+    required this.turns,
+    required this.partialTranscript,
+    required this.onToggle,
+    required this.onStopAudio,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = active
+        ? NazaPalette.mintSoft
+        : busy
+        ? const Color(0xFFFFCE78)
+        : NazaPalette.subtext;
+    return _NazaGlassCard(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(15),
+      radius: 20,
+      active: active || busy,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                active ? Icons.record_voice_over_rounded : Icons.mic_rounded,
+                color: color,
+                size: 26,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Live audio chat',
+                  style: TextStyle(
+                    color: NazaPalette.text,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                    fontFamily: NazaFonts.display,
+                  ),
+                ),
+              ),
+              _ScannerMetricPill(
+                label: 'turns',
+                value: turns.toString(),
+                icon: Icons.forum_rounded,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _ScannerMetricPill(
+                label: 'state',
+                value: status,
+                icon: Icons.graphic_eq_rounded,
+              ),
+              _ScannerMetricPill(
+                label: 'input',
+                value: 'SpeechRecognizer',
+                icon: Icons.hearing_rounded,
+              ),
+              _ScannerMetricPill(
+                label: 'voice',
+                value: 'system TTS',
+                icon: Icons.volume_up_rounded,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _NazaActionButton(
+                onPressed: actionsEnabled ? onToggle : null,
+                icon: Icon(
+                  active ? Icons.stop_circle_rounded : Icons.mic_rounded,
+                ),
+                label: Text(active ? 'Stop Live Chat' : 'Start Live Chat'),
+                minimumSize: const Size(188, 46),
+              ),
+              _NazaActionButton(
+                onPressed: active || busy ? onStopAudio : null,
+                icon: const Icon(Icons.volume_off_rounded),
+                label: const Text('Stop Audio'),
+                minimumSize: const Size(150, 46),
+              ),
+            ],
+          ),
+          ValueListenableBuilder<String>(
+            valueListenable: partialTranscript,
+            builder: (context, partial, _) {
+              final visibleTranscript = partial.trim().isNotEmpty
+                  ? partial.trim()
+                  : transcript.trim();
+              if (visibleTranscript.isEmpty && reply.trim().isEmpty) {
+                return const SizedBox(height: 2);
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (visibleTranscript.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    const _HistorySectionLabel('Heard'),
+                    _NazaMarkdownText(text: visibleTranscript, compact: true),
+                  ],
+                  if (reply.trim().isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Expanded(child: _HistorySectionLabel('Reply')),
+                        _CopyIconButton(
+                          tooltip: 'Copy reply',
+                          text: reply.trim(),
+                        ),
+                      ],
+                    ),
+                    _NazaMarkdownText(text: reply, compact: true),
+                  ],
+                ],
+              );
+            },
+          ),
+          if (error != null && error!.trim().isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              error!,
+              style: const TextStyle(
+                color: NazaPalette.danger,
+                height: 1.35,
+                fontWeight: FontWeight.w700,
+                fontFamily: NazaFonts.display,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -10044,28 +11852,106 @@ class _HistoryPanelState extends State<_HistoryPanel> {
             style: TextStyle(color: NazaPalette.subtext),
           )
         else
-          ..._rows!.map((row) {
-            return Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0x99101E19),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0x22FFFFFF)),
-              ),
-              child: Text(
-                row.user,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: NazaPalette.text,
-                  fontWeight: FontWeight.w700,
+          ..._rows!.map((row) => _HistoryRowCard(row: row)),
+      ],
+    );
+  }
+}
+
+class _HistoryRowCard extends StatelessWidget {
+  final NazaHistoryRow row;
+
+  const _HistoryRowCard({required this.row});
+
+  @override
+  Widget build(BuildContext context) {
+    final allText =
+        'Prompt:\n${row.user}\n\nResponse:\n${row.assistant}\n\nRoute: ${row.route}\nScore: ${row.score.toStringAsFixed(3)}';
+    return _NazaGlassCard(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(13),
+      radius: 16,
+      active: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _historyClock(row.timestamp),
+                  style: const TextStyle(
+                    color: NazaPalette.subtext,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    fontFamily: NazaFonts.mono,
+                  ),
                 ),
               ),
-            );
-          }),
-      ],
+              _CopyIconButton(tooltip: 'Copy prompt', text: row.user),
+              const SizedBox(width: 6),
+              _CopyIconButton(tooltip: 'Copy response', text: row.assistant),
+              const SizedBox(width: 6),
+              _CopyIconButton(tooltip: 'Copy all', text: allText),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const _HistorySectionLabel('Prompt'),
+          _NazaMarkdownText(text: row.user, compact: true),
+          const SizedBox(height: 10),
+          const _HistorySectionLabel('Response'),
+          _NazaMarkdownText(text: row.assistant, compact: true),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _ScannerMetricPill(
+                label: 'route',
+                value: row.route,
+                icon: Icons.route_rounded,
+              ),
+              _ScannerMetricPill(
+                label: 'score',
+                value: row.score.toStringAsFixed(2),
+                icon: Icons.speed_rounded,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _historyClock(DateTime t) {
+    final local = t.toLocal();
+    final hour = local.hour > 12
+        ? local.hour - 12
+        : (local.hour == 0 ? 12 : local.hour);
+    final minute = local.minute.toString().padLeft(2, '0');
+    final period = local.hour >= 12 ? 'PM' : 'AM';
+    return '${local.month}/${local.day} $hour:$minute $period';
+  }
+}
+
+class _HistorySectionLabel extends StatelessWidget {
+  final String label;
+
+  const _HistorySectionLabel(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: NazaPalette.mintSoft,
+          fontSize: 11,
+          fontWeight: FontWeight.w900,
+          fontFamily: NazaFonts.mono,
+        ),
+      ),
     );
   }
 }
