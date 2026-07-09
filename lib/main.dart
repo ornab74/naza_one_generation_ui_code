@@ -121,6 +121,7 @@ final class NazaAppConfig {
   static const String desktopCpuEnvironmentVariable = 'NAZA_DESKTOP_CPU';
   static const int contextTokens = 3072;
   static const int outputTokens = 768;
+  static const int continuationOutputTokens = 512;
   static const int liveVoiceOutputTokens = 160;
   static const int continuationJudgeOutputTokens = 8;
   static const int autoContinuationPasses = 4;
@@ -4336,23 +4337,16 @@ final class NazaLocalGemma {
         generation.value = generation.value.copyWith(
           stage: 'submitting continuation prompt',
         );
-        await _addQueryChunkWithTimeout(
-          _chat,
-          Message.text(
-            text: NazaContinuationEngine.buildPrompt(
-              originalUserText: trimmed,
-              actionProfile: actionProfile,
-              decision: continuationDecision,
-              pass: continuationCount,
-              maxPasses: NazaAppConfig.autoContinuationPasses,
-            ),
-            isUser: true,
-          ),
-          label: 'continuation prompt',
+        final continuationPrompt = NazaContinuationEngine.buildPrompt(
+          originalUserText: trimmed,
+          actionProfile: actionProfile,
+          decision: continuationDecision,
+          pass: continuationCount,
+          maxPasses: NazaAppConfig.autoContinuationPasses,
         );
-
-        final continuation = await _streamResponse(
+        final continuation = await _streamContinuationWindow(
           generationId: generationId,
+          prompt: continuationPrompt,
           partialPrefix: prefix,
           onPartial: onPartial,
         );
@@ -4379,6 +4373,9 @@ final class NazaLocalGemma {
         if (joined.trim() == prefix.trim()) break;
         clean = joined;
         stream = continuation;
+      }
+      if (continuationCount > 0) {
+        await _refreshPrimaryChatAfterContinuation();
       }
       clean = NazaContinuationEngine.stripDoneMarker(clean);
 
@@ -4429,6 +4426,70 @@ final class NazaLocalGemma {
         cancelled: false,
         createdAt: DateTime.now(),
       );
+    }
+  }
+
+  Future<NazaStreamResult> _streamContinuationWindow({
+    required int generationId,
+    required String prompt,
+    required String partialPrefix,
+    required void Function(String partialText)? onPartial,
+  }) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      dynamic continuationChat;
+      try {
+        continuationChat = await _createChatWithTimeout(
+          systemInstruction: NazaAppConfig.systemInstruction,
+          maxOutputTokens: NazaAppConfig.continuationOutputTokens,
+        );
+        await _addQueryChunkWithTimeout(
+          continuationChat,
+          Message.text(text: prompt, isUser: true),
+          label: 'continuation prompt',
+        );
+        return await _streamResponse(
+          generationId: generationId,
+          chat: continuationChat,
+          partialPrefix: partialPrefix,
+          onPartial: onPartial,
+          maxTokens: NazaAppConfig.continuationOutputTokens,
+        );
+      } catch (error) {
+        lastError = error;
+        if (!_isClosedSessionError(error) || attempt == 1) rethrow;
+        generation.value = generation.value.copyWith(
+          stage: 'reopening continuation session',
+        );
+      } finally {
+        try {
+          await continuationChat?.session?.close().timeout(
+            const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+          );
+        } catch (_) {}
+      }
+    }
+    throw StateError('Continuation window failed: $lastError');
+  }
+
+  bool _isClosedSessionError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('session is closed') ||
+        text.contains('bad state') && text.contains('closed');
+  }
+
+  Future<void> _refreshPrimaryChatAfterContinuation() async {
+    _chat = null;
+    if (_model == null) return;
+
+    try {
+      _chat = await _createChatWithTimeout(
+        systemInstruction: NazaAppConfig.systemInstruction,
+        maxOutputTokens: NazaAppConfig.outputTokens,
+        timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
+      );
+    } catch (_) {
+      _chat = null;
     }
   }
 
@@ -5026,44 +5087,10 @@ Answer out loud. Keep it natural, short, and useful.
     required NazaContinuationDecision decision,
     required String reply,
   }) async {
-    if (_model == null || _cancelledGeneration == generationId) return null;
-
-    dynamic criticChat;
-    try {
-      criticChat = await _createChatWithTimeout(
-        systemInstruction: NazaAppConfig.continuationAgentSystemInstruction,
-        maxOutputTokens: NazaAppConfig.continuationJudgeOutputTokens,
-        timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
-      );
-      await _addQueryChunkWithTimeout(
-        criticChat,
-        Message.text(
-          text: NazaContinuationEngine.buildJudgePrompt(
-            originalUserText: originalUserText,
-            actionProfile: actionProfile,
-            decision: decision,
-            reply: reply,
-          ),
-          isUser: true,
-        ),
-        label: 'continuation judge prompt',
-      );
-      final verdict = await _streamResponse(
-        generationId: generationId,
-        chat: criticChat,
-        maxTokens: NazaAppConfig.continuationJudgeOutputTokens,
-        updateTelemetry: false,
-      );
-      return NazaContinuationEngine.parseJudgeReply(verdict.text);
-    } catch (_) {
-      return null;
-    } finally {
-      try {
-        await criticChat?.session?.close().timeout(
-          const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
-        );
-      } catch (_) {}
-    }
+    // LiteRT-LM currently treats a newly opened chat as the active native
+    // session. Opening a tiny "critic" chat here can close the main chat, so
+    // continuation relies on the deterministic local heuristic instead.
+    return null;
   }
 
   Future<NazaStreamResult> _streamResponse({
@@ -10074,10 +10101,12 @@ class _NazaStableHomeState extends State<NazaStableHome> {
   NazaScannerResult? _foodResult;
   NazaScannerResult? _foodPlannerResult;
   Timer? _draftSaveTimer;
+  Timer? _startupWarmTimer;
   NazaPanel _panel = NazaPanel.chat;
   bool _sending = false;
   String _status = 'ready';
   DateTime _lastScrollRequestAt = DateTime.fromMillisecondsSinceEpoch(0);
+  final Map<NazaPanel, Widget> _panelCache = <NazaPanel, Widget>{};
 
   @override
   void initState() {
@@ -10085,7 +10114,9 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(NazaLocalGemma.instance.prepareBackendPreference());
       unawaited(NazaSecureModelStore.refresh());
-      unawaited(_prepareBarkPackFastPath());
+      _startupWarmTimer = Timer(const Duration(seconds: 3), () {
+        unawaited(_prepareBarkPackFastPath());
+      });
       unawaited(_loadScannerDrafts());
     });
   }
@@ -10100,6 +10131,7 @@ class _NazaStableHomeState extends State<NazaStableHome> {
   @override
   void dispose() {
     _draftSaveTimer?.cancel();
+    _startupWarmTimer?.cancel();
     unawaited(_persistScannerDrafts());
     _inputController.dispose();
     _inputFocus.dispose();
@@ -10668,18 +10700,15 @@ class _NazaStableHomeState extends State<NazaStableHome> {
   Widget _buildPanelStack() {
     final activeIndex = _panelIndex(_panel);
     final children = <Widget>[
-      _tickerPanel(NazaPanel.chat, _buildMainPanelFor(NazaPanel.chat)),
+      _tickerPanel(NazaPanel.chat, _panelForStack(NazaPanel.chat)),
       _tickerPanel(
         NazaPanel.roadScanner,
-        _buildMainPanelFor(NazaPanel.roadScanner),
+        _panelForStack(NazaPanel.roadScanner),
       ),
-      _tickerPanel(
-        NazaPanel.foodWater,
-        _buildMainPanelFor(NazaPanel.foodWater),
-      ),
-      _tickerPanel(NazaPanel.convo, _buildMainPanelFor(NazaPanel.convo)),
-      _tickerPanel(NazaPanel.settings, _buildMainPanelFor(NazaPanel.settings)),
-      _tickerPanel(NazaPanel.history, _buildMainPanelFor(NazaPanel.history)),
+      _tickerPanel(NazaPanel.foodWater, _panelForStack(NazaPanel.foodWater)),
+      _tickerPanel(NazaPanel.convo, _panelForStack(NazaPanel.convo)),
+      _tickerPanel(NazaPanel.settings, _panelForStack(NazaPanel.settings)),
+      _tickerPanel(NazaPanel.history, _panelForStack(NazaPanel.history)),
     ];
     return IndexedStack(index: activeIndex, children: children);
   }
@@ -10688,8 +10717,13 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     return TickerMode(enabled: _panel == panel, child: child);
   }
 
-  Widget _buildMainPanelFor(NazaPanel panel) {
-    return _buildMainPanel(panel);
+  Widget _panelForStack(NazaPanel panel) {
+    if (_panel == panel) {
+      final child = _buildMainPanel(panel);
+      _panelCache[panel] = child;
+      return child;
+    }
+    return _panelCache[panel] ?? const SizedBox.shrink();
   }
 
   int _panelIndex(NazaPanel panel) {
@@ -11593,86 +11627,91 @@ class _StableMessageBubble extends StatelessWidget {
     final width = MediaQuery.sizeOf(context).width;
     final maxWidth = width >= 760 ? 640.0 : width * 0.84;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 360),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Transform.translate(
-            offset: Offset(isUser ? (1 - value) * 18 : -(1 - value) * 18, 0),
-            child: child,
-          ),
-        );
-      },
-      child: Align(
-        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-          constraints: BoxConstraints(maxWidth: maxWidth),
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.fromLTRB(16, 13, 16, 12),
-          decoration: BoxDecoration(
-            color: isUser ? const Color(0xEE0D4B2C) : const Color(0xD612241D),
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(22),
-              topRight: const Radius.circular(22),
-              bottomLeft: Radius.circular(isUser ? 22 : 7),
-              bottomRight: Radius.circular(isUser ? 7 : 22),
+    return RepaintBoundary(
+      child: TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 360),
+        curve: Curves.easeOutCubic,
+        builder: (context, value, child) {
+          return Opacity(
+            opacity: value,
+            child: Transform.translate(
+              offset: Offset(isUser ? (1 - value) * 18 : -(1 - value) * 18, 0),
+              child: child,
             ),
-            border: Border.all(
-              color: message.isWorking
-                  ? const Color(0x778DFFC4)
-                  : isUser
-                  ? const Color(0x663EFF92)
-                  : const Color(0x24FFFFFF),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: (isUser ? NazaPalette.mintDim : NazaPalette.mintSoft)
-                    .withAlpha(message.isWorking ? 38 : 18),
-                blurRadius: message.isWorking ? 24 : 14,
-                offset: const Offset(0, 8),
+          );
+        },
+        child: Align(
+          alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            constraints: BoxConstraints(maxWidth: maxWidth),
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.fromLTRB(16, 13, 16, 12),
+            decoration: BoxDecoration(
+              color: isUser ? const Color(0xEE0D4B2C) : const Color(0xD612241D),
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(22),
+                topRight: const Radius.circular(22),
+                bottomLeft: Radius.circular(isUser ? 22 : 7),
+                bottomRight: Radius.circular(isUser ? 7 : 22),
               ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (message.isWorking) ...[
-                const _NazaSheen(height: 2),
-                const SizedBox(height: 10),
+              border: Border.all(
+                color: message.isWorking
+                    ? const Color(0x778DFFC4)
+                    : isUser
+                    ? const Color(0x663EFF92)
+                    : const Color(0x24FFFFFF),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: (isUser ? NazaPalette.mintDim : NazaPalette.mintSoft)
+                      .withAlpha(message.isWorking ? 38 : 18),
+                  blurRadius: message.isWorking ? 24 : 14,
+                  offset: const Offset(0, 8),
+                ),
               ],
-              _NazaMarkdownText(text: message.text),
-              const SizedBox(height: 7),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '${_clock(message.createdAt)}${isUser ? '' : ' • ${message.route}'}',
-                    style: const TextStyle(
-                      color: NazaPalette.subtext,
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w800,
-                      fontFamily: NazaFonts.mono,
-                    ),
-                  ),
-                  if (message.isWorking) ...[
-                    const SizedBox(width: 8),
-                    const _NazaThinkingDots(),
-                  ],
-                  if (!message.isWorking) ...[
-                    const SizedBox(width: 8),
-                    _CopyIconButton(
-                      tooltip: 'Copy message',
-                      text: message.text,
-                    ),
-                  ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (message.isWorking) ...[
+                  const _NazaSheen(height: 2),
+                  const SizedBox(height: 10),
                 ],
-              ),
-            ],
+                _NazaMarkdownText(
+                  text: message.text,
+                  selectable: !message.isWorking,
+                ),
+                const SizedBox(height: 7),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '${_clock(message.createdAt)}${isUser ? '' : ' • ${message.route}'}',
+                      style: const TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w800,
+                        fontFamily: NazaFonts.mono,
+                      ),
+                    ),
+                    if (message.isWorking) ...[
+                      const SizedBox(width: 8),
+                      const _NazaThinkingDots(),
+                    ],
+                    if (!message.isWorking) ...[
+                      const SizedBox(width: 8),
+                      _CopyIconButton(
+                        tooltip: 'Copy message',
+                        text: message.text,
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -11688,28 +11727,59 @@ class _StableMessageBubble extends StatelessWidget {
 }
 
 class _NazaMarkdownText extends StatelessWidget {
+  static const int _cacheLimit = 96;
+  static final Map<_NazaMarkdownCacheKey, List<Widget>> _blockCache =
+      <_NazaMarkdownCacheKey, List<Widget>>{};
+  static final RegExp _headingRegExp = RegExp(r'^(#{1,3})\s+(.+)$');
+  static final RegExp _bulletRegExp = RegExp(r'^[-*]\s+(.+)$');
+  static final RegExp _numberedRegExp = RegExp(r'^(\d+[.)])\s+(.+)$');
+  static final RegExp _looseCodeStarterRegExp = RegExp(
+    r'^(async\s+def|def|class|if|elif|else|for|while|try|except|finally|with|import|from|return|await|raise|print)\b|^[A-Za-z_][A-Za-z0-9_]*\s*=',
+  );
+  static final RegExp _looseCodeSignalRegExp = RegExp(
+    r'(\(|\)|\[|\]|\{|\}|=|==|!=|<=|>=|=>|->|:|,)$',
+  );
+
   final String text;
   final bool compact;
+  final bool selectable;
 
-  const _NazaMarkdownText({required this.text, this.compact = false});
+  const _NazaMarkdownText({
+    required this.text,
+    this.compact = false,
+    this.selectable = true,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final blocks = _buildBlocks(context);
-    return SelectionArea(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: blocks.isEmpty ? const [SizedBox.shrink()] : blocks,
-      ),
+    final blocks = _cachedBlocks();
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: blocks.isEmpty ? const [SizedBox.shrink()] : blocks,
     );
+    return selectable ? SelectionArea(child: content) : content;
   }
 
-  List<Widget> _buildBlocks(BuildContext context) {
+  List<Widget> _cachedBlocks() {
+    final key = _NazaMarkdownCacheKey(text, compact, selectable);
+    final cached = _blockCache[key];
+    if (cached != null) return cached;
+
+    final blocks = _buildBlocks();
+    _blockCache[key] = blocks;
+    if (_blockCache.length > _cacheLimit) {
+      _blockCache.remove(_blockCache.keys.first);
+    }
+    return blocks;
+  }
+
+  List<Widget> _buildBlocks() {
     final lines = text.replaceAll('\r\n', '\n').split('\n');
     final widgets = <Widget>[];
     final paragraph = <String>[];
     var inCode = false;
     final codeLines = <String>[];
+    final looseCodeLines = <String>[];
     var inEquation = false;
     final equationLines = <String>[];
 
@@ -11717,6 +11787,12 @@ class _NazaMarkdownText extends StatelessWidget {
       if (paragraph.isEmpty) return;
       widgets.add(_paragraph(paragraph.join(' ')));
       paragraph.clear();
+    }
+
+    void flushLooseCode() {
+      if (looseCodeLines.isEmpty) return;
+      widgets.add(_codeBlock(looseCodeLines.join('\n')));
+      looseCodeLines.clear();
     }
 
     for (final rawLine in lines) {
@@ -11764,25 +11840,36 @@ class _NazaMarkdownText extends StatelessWidget {
 
       if (trimmed.isEmpty) {
         flushParagraph();
+        flushLooseCode();
         if (widgets.isNotEmpty) widgets.add(SizedBox(height: compact ? 4 : 8));
         continue;
       }
 
-      final heading = RegExp(r'^(#{1,3})\s+(.+)$').firstMatch(trimmed);
+      if (_looksLikeLooseCodeLine(
+        line,
+        continuing: looseCodeLines.isNotEmpty,
+      )) {
+        flushParagraph();
+        looseCodeLines.add(line);
+        continue;
+      }
+      flushLooseCode();
+
+      final heading = _headingRegExp.firstMatch(trimmed);
       if (heading != null) {
         flushParagraph();
         widgets.add(_heading(heading.group(2)!, heading.group(1)!.length));
         continue;
       }
 
-      final bullet = RegExp(r'^[-*]\s+(.+)$').firstMatch(trimmed);
+      final bullet = _bulletRegExp.firstMatch(trimmed);
       if (bullet != null) {
         flushParagraph();
         widgets.add(_listItem(bullet.group(1)!, bullet: '•'));
         continue;
       }
 
-      final numbered = RegExp(r'^(\d+[.)])\s+(.+)$').firstMatch(trimmed);
+      final numbered = _numberedRegExp.firstMatch(trimmed);
       if (numbered != null) {
         flushParagraph();
         widgets.add(_listItem(numbered.group(2)!, bullet: numbered.group(1)!));
@@ -11793,11 +11880,34 @@ class _NazaMarkdownText extends StatelessWidget {
     }
 
     flushParagraph();
+    flushLooseCode();
     if (codeLines.isNotEmpty) widgets.add(_codeBlock(codeLines.join('\n')));
     if (equationLines.isNotEmpty) {
       widgets.add(_equationBlock(equationLines.join('\n')));
     }
     return widgets;
+  }
+
+  bool _looksLikeLooseCodeLine(String line, {required bool continuing}) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) return false;
+    if (line.startsWith('  ') || line.startsWith('\t')) {
+      return _looseCodeSignalRegExp.hasMatch(trimmed) ||
+          _looseCodeStarterRegExp.hasMatch(trimmed) ||
+          trimmed.startsWith('#') ||
+          trimmed.startsWith('"') ||
+          trimmed.startsWith("'") ||
+          trimmed.startsWith(')');
+    }
+    if (_looseCodeStarterRegExp.hasMatch(trimmed)) return true;
+    if (!continuing) return false;
+    return trimmed.startsWith('"') ||
+        trimmed.startsWith("'") ||
+        trimmed.startsWith(')') ||
+        trimmed.startsWith(']') ||
+        trimmed.startsWith('}') ||
+        trimmed.endsWith(',') ||
+        _looseCodeSignalRegExp.hasMatch(trimmed);
   }
 
   Widget _heading(String value, int level) {
@@ -11853,16 +11963,17 @@ class _NazaMarkdownText extends StatelessWidget {
   }
 
   Widget _codeBlock(String value) {
+    final code = value.trimRight();
+    final style = const TextStyle(
+      color: NazaPalette.mintSoft,
+      fontSize: 12.5,
+      height: 1.35,
+      fontFamily: NazaFonts.mono,
+    );
     return _blockShell(
-      child: SelectableText(
-        value.trimRight(),
-        style: const TextStyle(
-          color: NazaPalette.mintSoft,
-          fontSize: 12.5,
-          height: 1.35,
-          fontFamily: NazaFonts.mono,
-        ),
-      ),
+      child: selectable
+          ? SelectableText(code, style: style)
+          : Text(code, style: style),
     );
   }
 
@@ -12023,6 +12134,25 @@ class _CopyIconButton extends StatelessWidget {
       ),
     );
   }
+}
+
+final class _NazaMarkdownCacheKey {
+  final String text;
+  final bool compact;
+  final bool selectable;
+
+  const _NazaMarkdownCacheKey(this.text, this.compact, this.selectable);
+
+  @override
+  bool operator ==(Object other) {
+    return other is _NazaMarkdownCacheKey &&
+        other.text == text &&
+        other.compact == compact &&
+        other.selectable == selectable;
+  }
+
+  @override
+  int get hashCode => Object.hash(text, compact, selectable);
 }
 
 class _RoadScannerPanel extends StatefulWidget {
