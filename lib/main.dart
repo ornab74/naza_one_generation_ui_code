@@ -134,18 +134,35 @@ final class NazaAppConfig {
   static const int autoContinuationPasses = 0;
   static const int streamPaintThrottleMs = 360;
   static const int telemetryThrottleMs = 500;
+  static const int generationIdleTimeoutSeconds = 90;
+  static const int chatRecoveryTimeoutSeconds = 8;
   static const String liveVoiceChannel = 'com.qroadscan.lightcal/live_voice';
   static const String vaultAad = 'naza-one-vault-v2-generation-ui';
   static const String keyFileName = 'naza_one_vault.key';
   static const String historyFileName = 'naza_one_history.aesgcm.json';
   static const String scannerDraftsFileName =
       'naza_scanner_drafts.sqlite.aesgcm.json';
+  static const String memoryFileName = 'naza_one_vector_memory.aesgcm.json';
+  static const String memorySettingsFileName = 'naza_memory_settings.json';
   static const String runtimeFileName = 'naza_runtime_state.json';
   static const String verificationStateFileName =
       'naza_verification_state.aesgcm.json';
   static const String backendPreferenceFileName =
       'naza_backend_preference.json';
   static const String barkPerformanceFileName = 'naza_bark_performance.json';
+  static const int memoryEmbeddingDimensions = 128;
+  static const int memoryMaxChunks = 1800;
+  static const int memoryRetrievalCandidates = 72;
+  static const int memoryAllocationChunks = 16;
+  static const int memoryContextBudgetChars = 6200;
+  static const int memorySummaryChars = 560;
+  static const int memoryKeywordCount = 18;
+  static const int ragPromptSurfaceChars = 7600;
+  static const int contextInputBudgetChars = 9300;
+  static const int contextShrinkTargetChars = 1800;
+  static const double contextTargetFillRatio = 0.74;
+  static const String memoryClassName = 'NazaChatMemory';
+  static const String memoryTenant = 'local-private';
 
   static const String systemInstruction = '''
 You are Naza One, a private on-device assistant running inside a Flutter Android app.
@@ -165,6 +182,13 @@ Style:
 - For long answers, finish the current thought before stopping.
 - Avoid reflexive refusal phrasing. Decline only for a real safety, privacy, legal, or device limitation.
 - When something is blocked, briefly say what is possible instead and keep moving.
+
+Prompt surface:
+- You may receive [router], [action], [format], [context], [rag], [shrink], [summary_model], and [current_task] blocks.
+- Treat [action] and [format] as backend task instructions, not visible text to repeat.
+- Treat [context], [shrink], and [summary_model] as local context-management guidance.
+- Use [rag] memory only when it helps the current task.
+- Prefer useful action and bounded assumptions over saying you cannot help.
 
 Safety:
 - Be practical and non-alarmist.
@@ -2319,6 +2343,871 @@ final class NazaSecureBarkPackStore {
   }
 }
 
+enum NazaActionMode {
+  answer,
+  implement,
+  debug,
+  explain,
+  plan,
+  summarize,
+  create,
+  compare,
+  configure,
+  voice,
+  scan;
+
+  String get label {
+    return switch (this) {
+      NazaActionMode.answer => 'direct-answer',
+      NazaActionMode.implement => 'implementation',
+      NazaActionMode.debug => 'debug-fix',
+      NazaActionMode.explain => 'explanation',
+      NazaActionMode.plan => 'planning',
+      NazaActionMode.summarize => 'summarization',
+      NazaActionMode.create => 'creative-generation',
+      NazaActionMode.compare => 'comparison',
+      NazaActionMode.configure => 'configuration',
+      NazaActionMode.voice => 'voice-bark-convo',
+      NazaActionMode.scan => 'scanner-analysis',
+    };
+  }
+}
+
+final class NazaActionProfile {
+  final NazaActionMode mode;
+  final double confidence;
+  final String taskSummary;
+  final List<String> actions;
+  final List<String> formatDirectives;
+  final List<String> retrievalFocus;
+  final List<String> constraints;
+
+  const NazaActionProfile({
+    required this.mode,
+    required this.confidence,
+    required this.taskSummary,
+    required this.actions,
+    required this.formatDirectives,
+    required this.retrievalFocus,
+    required this.constraints,
+  });
+
+  String get label => mode.label;
+
+  String toPromptBlock() {
+    final lines = <String>[
+      '[action]',
+      'mode=${mode.label}',
+      'confidence=${confidence.toStringAsFixed(3)}',
+      'task=${taskSummary.isEmpty ? 'respond to the current user request' : taskSummary}',
+      'required=',
+      for (final action in actions) '- $action',
+      'policy=',
+      '- Prefer concrete completion over refusal.',
+      '- If a tool, file, network, sensor, or live fact is unavailable, name the exact blocker once and continue with the best local fallback.',
+      '- Do not answer with a vague capability denial. Convert uncertainty into assumptions, options, or next steps.',
+      '- Ask a clarifying question only when proceeding would be risky or materially wrong.',
+      for (final constraint in constraints) '- $constraint',
+      '[/action]',
+      '',
+      '[format]',
+      for (final directive in formatDirectives) '- $directive',
+      '- Keep the answer tight unless the user requested depth.',
+      '- Put the useful artifact or action result first.',
+      '[/format]',
+    ];
+    return lines.join('\n');
+  }
+}
+
+final class NazaActionSelector {
+  NazaActionSelector._();
+
+  static final RegExp _wordRegExp = RegExp(r"[A-Za-z0-9_']+");
+
+  static NazaActionProfile select(String userText, NazaRoute route) {
+    final lower = userText.toLowerCase();
+    final words = _keywords(userText, max: 10);
+    final mode = _modeFor(lower);
+    final actions = _actionsFor(mode, lower);
+    final format = _formatFor(mode, lower);
+    final constraints = _constraintsFor(mode, lower);
+    final confidence = _confidenceFor(mode, lower, route);
+
+    return NazaActionProfile(
+      mode: mode,
+      confidence: confidence,
+      taskSummary: _taskSummary(userText),
+      actions: actions,
+      formatDirectives: format,
+      retrievalFocus: [
+        mode.label,
+        route.label,
+        ...words,
+      ].where((item) => item.trim().isNotEmpty).toList(growable: false),
+      constraints: constraints,
+    );
+  }
+
+  static NazaActionMode _modeFor(String lower) {
+    if (_hasAny(lower, const [
+      'voice',
+      'bark',
+      'convo',
+      'wav',
+      'audio',
+      'speech',
+      'tts',
+      'speaker',
+    ])) {
+      return NazaActionMode.voice;
+    }
+    if (_hasAny(lower, const [
+      'null',
+      'hang',
+      'crash',
+      'bug',
+      'error',
+      'failing',
+      'failed',
+      'fix',
+      'broken',
+      'stuck',
+      'debug',
+    ])) {
+      return NazaActionMode.debug;
+    }
+    if (_hasAny(lower, const [
+      'implement',
+      'implan',
+      'add',
+      'build',
+      'wire',
+      'integrate',
+      'upgrade',
+      'create',
+      'make',
+      'feature',
+      'backend',
+    ])) {
+      return NazaActionMode.implement;
+    }
+    if (_hasAny(lower, const [
+      'summarize',
+      'summary',
+      'summerize',
+      'compress',
+      'recap',
+      'tldr',
+    ])) {
+      return NazaActionMode.summarize;
+    }
+    if (_hasAny(lower, const [
+      'plan',
+      'architecture',
+      'design',
+      'roadmap',
+      'approach',
+    ])) {
+      return NazaActionMode.plan;
+    }
+    if (_hasAny(lower, const [
+      'compare',
+      'versus',
+      ' vs ',
+      'which is better',
+    ])) {
+      return NazaActionMode.compare;
+    }
+    if (_hasAny(lower, const [
+      'setting',
+      'config',
+      'configure',
+      'toggle',
+      'enable',
+      'disable',
+    ])) {
+      return NazaActionMode.configure;
+    }
+    if (_hasAny(lower, const [
+      'scan',
+      'risk',
+      'safety',
+      'road',
+      'food',
+      'water',
+    ])) {
+      return NazaActionMode.scan;
+    }
+    if (_hasAny(lower, const ['explain', 'why', 'how does', 'what is'])) {
+      return NazaActionMode.explain;
+    }
+    if (_hasAny(lower, const ['write', 'draft', 'story', 'script', 'prompt'])) {
+      return NazaActionMode.create;
+    }
+    return NazaActionMode.answer;
+  }
+
+  static List<String> _actionsFor(NazaActionMode mode, String lower) {
+    final common = <String>[
+      'Identify the user goal and the concrete deliverable.',
+      'Use available local context, memory, and current prompt details.',
+      'Proceed with reasonable assumptions when safe.',
+    ];
+    final modeActions = switch (mode) {
+      NazaActionMode.implement => <String>[
+        'Design the smallest viable implementation path.',
+        'Describe or produce the code/config changes needed.',
+        'Call out verification steps and residual risks.',
+      ],
+      NazaActionMode.debug => <String>[
+        'Localize the likely failure path from symptoms.',
+        'Prefer fixes, guardrails, and recovery behavior over abstract advice.',
+        'Include what to verify after the fix.',
+      ],
+      NazaActionMode.explain => <String>[
+        'Explain the mechanism directly.',
+        'Use examples only when they reduce ambiguity.',
+      ],
+      NazaActionMode.plan => <String>[
+        'Break the work into ordered phases.',
+        'Name tradeoffs and dependencies.',
+      ],
+      NazaActionMode.summarize => <String>[
+        'Extract durable facts, decisions, requirements, and open issues.',
+        'Compress aggressively without losing user intent.',
+      ],
+      NazaActionMode.create => <String>[
+        'Generate the requested artifact.',
+        'Preserve the requested tone, domain, and constraints.',
+      ],
+      NazaActionMode.compare => <String>[
+        'Compare options against the user goal.',
+        'End with a recommendation when enough context exists.',
+      ],
+      NazaActionMode.configure => <String>[
+        'Translate the requested behavior into settings or state changes.',
+        'Mention side effects of enabling or disabling the feature.',
+      ],
+      NazaActionMode.voice => <String>[
+        'Treat Bark/Convo, voice mode, WAV rendering, and prompt scripts as first-class task context.',
+        'Prefer concrete voice/render/debug steps over generic audio disclaimers.',
+      ],
+      NazaActionMode.scan => <String>[
+        'Apply conservative risk and safety reasoning.',
+        'Separate observations, risk label, and next action.',
+      ],
+      NazaActionMode.answer => <String>[
+        'Answer the user directly.',
+        'Add brief next steps only if useful.',
+      ],
+    };
+    if (lower.contains('[action]') || lower.contains('[format]')) {
+      modeActions.add(
+        'Respect user-specified prompt tags as requested output/backend structure, not executable app commands.',
+      );
+    }
+    return [...common, ...modeActions];
+  }
+
+  static List<String> _formatFor(NazaActionMode mode, String lower) {
+    return switch (mode) {
+      NazaActionMode.implement => const [
+        'Use sections: Implementation, Behavior, Verification.',
+        'Prefer concrete names, files, functions, and settings.',
+      ],
+      NazaActionMode.debug => const [
+        'Use sections: Cause, Fix, Verification.',
+        'Keep symptom-to-fix mapping explicit.',
+      ],
+      NazaActionMode.summarize => const [
+        'Use sections: Summary, Durable Memory, Open Threads.',
+        'Favor compact bullets.',
+      ],
+      NazaActionMode.plan => const [
+        'Use numbered phases.',
+        'Keep each phase actionable.',
+      ],
+      NazaActionMode.compare => const [
+        'Use a concise comparison table if there are three or more criteria.',
+        'End with a recommendation.',
+      ],
+      NazaActionMode.voice => const [
+        'Use sections: Voice Path, Prompt Surface, Verification.',
+        'Include Bark/Convo-specific state when relevant.',
+      ],
+      NazaActionMode.scan => const [
+        'Use labels: Observations, Risk, Safety Score, Next Action.',
+        'State uncertainty plainly.',
+      ],
+      _ =>
+        lower.contains('code')
+            ? const [
+                'Use a short explanation followed by code or exact config.',
+              ]
+            : const [
+                'Use short paragraphs.',
+                'Avoid filler and generic limitations.',
+              ],
+    };
+  }
+
+  static List<String> _constraintsFor(NazaActionMode mode, String lower) {
+    final constraints = <String>[
+      'Stay local-first and privacy-preserving.',
+      'Do not invent completed external actions.',
+    ];
+    if (lower.contains('latest') || lower.contains('today')) {
+      constraints.add(
+        'If live data is required, say local knowledge may be stale and offer a local fallback.',
+      );
+    }
+    if (mode == NazaActionMode.implement || mode == NazaActionMode.debug) {
+      constraints.add('Prefer patch-sized, testable changes.');
+    }
+    return constraints;
+  }
+
+  static double _confidenceFor(
+    NazaActionMode mode,
+    String lower,
+    NazaRoute route,
+  ) {
+    var confidence = 0.52 + route.score.clamp(0.0, 1.0) * 0.22;
+    if (mode != NazaActionMode.answer) confidence += 0.12;
+    if (lower.length > 80) confidence += 0.06;
+    if (lower.contains('?')) confidence += 0.03;
+    return confidence.clamp(0.0, 0.96).toDouble();
+  }
+
+  static String _taskSummary(String text) {
+    final clean = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (clean.length <= 220) return clean;
+    return '${clean.substring(0, 220).trimRight()}...';
+  }
+
+  static List<String> _keywords(String text, {required int max}) {
+    const stop = {
+      'the',
+      'and',
+      'for',
+      'with',
+      'that',
+      'this',
+      'from',
+      'when',
+      'what',
+      'have',
+      'want',
+      'need',
+      'into',
+      'your',
+      'user',
+      'model',
+    };
+    final counts = <String, int>{};
+    for (final match in _wordRegExp.allMatches(text.toLowerCase())) {
+      final token = match.group(0) ?? '';
+      if (token.length < 3 || stop.contains(token)) continue;
+      counts[token] = (counts[token] ?? 0) + 1;
+    }
+    final sorted = counts.entries.toList()
+      ..sort((a, b) {
+        final byCount = b.value.compareTo(a.value);
+        if (byCount != 0) return byCount;
+        return b.key.length.compareTo(a.key.length);
+      });
+    return sorted.take(max).map((entry) => entry.key).toList(growable: false);
+  }
+
+  static bool _hasAny(String lower, List<String> needles) {
+    for (final needle in needles) {
+      if (lower.contains(needle)) return true;
+    }
+    return false;
+  }
+}
+
+final class NazaSummaryResult {
+  final String summary;
+  final List<String> keywords;
+  final String algorithm;
+  final String promptSurface;
+
+  const NazaSummaryResult({
+    required this.summary,
+    required this.keywords,
+    required this.algorithm,
+    required this.promptSurface,
+  });
+}
+
+final class NazaSummaGemmaSummarizer {
+  NazaSummaGemmaSummarizer._();
+
+  static final RegExp _sentenceBoundaryRegExp = RegExp(r'(?<=[.!?;])\s+');
+  static final RegExp _wordRegExp = RegExp(r"[A-Za-z0-9_./'-]+");
+  static final RegExp _spaceRegExp = RegExp(r'\s+');
+  static const Set<String> _stopWords = {
+    'the',
+    'and',
+    'for',
+    'that',
+    'this',
+    'with',
+    'from',
+    'into',
+    'when',
+    'what',
+    'where',
+    'which',
+    'while',
+    'would',
+    'could',
+    'should',
+    'there',
+    'their',
+    'about',
+    'have',
+    'has',
+    'had',
+    'you',
+    'your',
+    'user',
+    'assistant',
+    'model',
+    'naza',
+    'one',
+  };
+
+  static NazaSummaryResult summarize(
+    String text, {
+    required String role,
+    NazaActionProfile? actionProfile,
+    int maxChars = NazaAppConfig.memorySummaryChars,
+  }) {
+    final clean = _normalize(text);
+    if (clean.isEmpty) {
+      return const NazaSummaryResult(
+        summary: '',
+        keywords: [],
+        algorithm: 'summa-gemma4-empty',
+        promptSurface: '',
+      );
+    }
+
+    final sentences = _sentences(clean);
+    final keywords = _keywords(clean, max: NazaAppConfig.memoryKeywordCount);
+    final promptSurface = gemmaPromptSurface(
+      role: role,
+      actionMode: actionProfile?.label ?? 'memory-index',
+      keywords: keywords,
+      maxChars: maxChars,
+    );
+    if (clean.length <= maxChars || sentences.length <= 1) {
+      return NazaSummaryResult(
+        summary: _clip(clean, maxChars: maxChars),
+        keywords: keywords,
+        algorithm: 'summa-gemma4-direct',
+        promptSurface: promptSurface,
+      );
+    }
+
+    final ranks = _rankSentences(sentences, keywords.toSet());
+    final ranked = <({int index, String sentence, double score})>[];
+    for (var i = 0; i < sentences.length; i++) {
+      final sentence = sentences[i];
+      final cueBoost =
+          RegExp(
+            r'\b(remember|decision|bug|error|fix|implement|preference|todo|action|required|format|setting|voice|memory|context|rag|vector)\b',
+            caseSensitive: false,
+          ).hasMatch(sentence)
+          ? 0.42
+          : 0.0;
+      final edgeBoost = i == 0
+          ? 0.18
+          : i == sentences.length - 1
+          ? 0.08
+          : 0.0;
+      ranked.add((
+        index: i,
+        sentence: sentence,
+        score: ranks[i] + cueBoost + edgeBoost,
+      ));
+    }
+    ranked.sort((a, b) => b.score.compareTo(a.score));
+
+    final selected = <({int index, String sentence, double score})>[];
+    var used = 0;
+    for (final item in ranked) {
+      if (selected.length >= 5) break;
+      final cost = item.sentence.length + 1;
+      if (selected.isNotEmpty && used + cost > maxChars) continue;
+      selected.add(item);
+      used += cost;
+      if (used >= maxChars * 0.84) break;
+    }
+    selected.sort((a, b) => a.index.compareTo(b.index));
+
+    final summary = selected.isEmpty
+        ? _clip(clean, maxChars: maxChars)
+        : _clip(
+            selected.map((item) => item.sentence).join(' '),
+            maxChars: maxChars,
+          );
+    return NazaSummaryResult(
+      summary: summary,
+      keywords: keywords,
+      algorithm: 'summa-gemma4-textrank-v2',
+      promptSurface: promptSurface,
+    );
+  }
+
+  static String shrinkText(
+    String text, {
+    required String role,
+    required String actionMode,
+    int maxChars = NazaAppConfig.contextShrinkTargetChars,
+  }) {
+    final result = summarize(
+      text,
+      role: role,
+      actionProfile: null,
+      maxChars: maxChars,
+    );
+    if (result.summary.isEmpty) return '';
+    return '''
+[shrink]
+engine=gemma4-guided-summa-rank
+action_mode=$actionMode
+algorithm=${result.algorithm}
+budget_chars=$maxChars
+keywords=${result.keywords.take(12).join(', ')}
+summary=${result.summary}
+[/shrink]''';
+  }
+
+  static String gemmaPromptSurface({
+    required String role,
+    required String actionMode,
+    required List<String> keywords,
+    required int maxChars,
+  }) {
+    return '''
+[summary_model]
+engine=gemma4-guided-summa-rank
+role=$role
+action_mode=$actionMode
+target_chars=$maxChars
+keywords=${keywords.take(12).join(', ')}
+instructions=Preserve durable facts, user intent, decisions, constraints, file names, errors, and unresolved actions. Compress wording without deleting obligations. Prefer exact nouns over vague summaries.
+[/summary_model]''';
+  }
+
+  static List<double> _rankSentences(
+    List<String> sentences,
+    Set<String> globalKeywords,
+  ) {
+    final vectors = sentences.map(_weightedTerms).toList(growable: false);
+    final n = sentences.length;
+    final matrix = List<List<double>>.generate(
+      n,
+      (_) => List<double>.filled(n, 0),
+    );
+    for (var i = 0; i < n; i++) {
+      for (var j = i + 1; j < n; j++) {
+        final sim = _similarity(vectors[i], vectors[j], globalKeywords);
+        matrix[i][j] = sim;
+        matrix[j][i] = sim;
+      }
+    }
+
+    var ranks = List<double>.filled(n, 1 / n);
+    const damping = 0.86;
+    for (var iter = 0; iter < 18; iter++) {
+      final next = List<double>.filled(n, (1 - damping) / n);
+      for (var i = 0; i < n; i++) {
+        final out = matrix[i].fold<double>(0, (sum, value) => sum + value);
+        if (out <= 0) continue;
+        for (var j = 0; j < n; j++) {
+          if (matrix[i][j] <= 0) continue;
+          next[j] += damping * ranks[i] * (matrix[i][j] / out);
+        }
+      }
+      ranks = next;
+    }
+    return ranks;
+  }
+
+  static Map<String, double> _weightedTerms(String text) {
+    final terms = <String, double>{};
+    for (final match in _wordRegExp.allMatches(text.toLowerCase())) {
+      final token = match.group(0) ?? '';
+      if (token.length < 3 || _stopWords.contains(token)) continue;
+      final weight =
+          1.0 +
+          (token.length >= 8 ? 0.25 : 0.0) +
+          (RegExp(r'[0-9_./-]').hasMatch(token) ? 0.25 : 0.0);
+      terms[token] = (terms[token] ?? 0) + weight;
+    }
+    return terms;
+  }
+
+  static double _similarity(
+    Map<String, double> a,
+    Map<String, double> b,
+    Set<String> globalKeywords,
+  ) {
+    if (a.isEmpty || b.isEmpty) return 0;
+    var dot = 0.0;
+    var aNorm = 0.0;
+    var bNorm = 0.0;
+    for (final entry in a.entries) {
+      final boost = globalKeywords.contains(entry.key) ? 1.18 : 1.0;
+      final av = entry.value * boost;
+      aNorm += av * av;
+      dot += av * (b[entry.key] ?? 0) * boost;
+    }
+    for (final entry in b.entries) {
+      final boost = globalKeywords.contains(entry.key) ? 1.18 : 1.0;
+      final bv = entry.value * boost;
+      bNorm += bv * bv;
+    }
+    if (aNorm <= 0 || bNorm <= 0) return 0;
+    return (dot / (math.sqrt(aNorm) * math.sqrt(bNorm)))
+        .clamp(0.0, 1.0)
+        .toDouble();
+  }
+
+  static List<String> _keywords(String text, {required int max}) {
+    final counts = <String, double>{};
+    for (final match in _wordRegExp.allMatches(text.toLowerCase())) {
+      final token = match.group(0) ?? '';
+      if (token.length < 3 || _stopWords.contains(token)) continue;
+      final shapeBoost =
+          RegExp(r'[0-9_./-]').hasMatch(token) || token.length >= 8
+          ? 0.35
+          : 0.0;
+      counts[token] = (counts[token] ?? 0) + 1 + shapeBoost;
+    }
+    final sorted = counts.entries.toList()
+      ..sort((a, b) {
+        final byScore = b.value.compareTo(a.value);
+        if (byScore != 0) return byScore;
+        return b.key.length.compareTo(a.key.length);
+      });
+    return sorted.take(max).map((entry) => entry.key).toList(growable: false);
+  }
+
+  static List<String> _sentences(String text) {
+    return text
+        .split(_sentenceBoundaryRegExp)
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  static String _normalize(String text) {
+    return text.replaceAll(_spaceRegExp, ' ').trim();
+  }
+
+  static String _clip(String text, {required int maxChars}) {
+    final clean = _normalize(text);
+    if (clean.length <= maxChars) return clean;
+    return clean.substring(0, maxChars).trimRight();
+  }
+}
+
+final class NazaContextFrame {
+  final String prompt;
+  final int budgetChars;
+  final int usedChars;
+  final double fillRatio;
+  final bool shrinkApplied;
+  final int rotatedChunks;
+
+  const NazaContextFrame({
+    required this.prompt,
+    required this.budgetChars,
+    required this.usedChars,
+    required this.fillRatio,
+    required this.shrinkApplied,
+    required this.rotatedChunks,
+  });
+}
+
+final class NazaContextManager {
+  NazaContextManager._();
+
+  static NazaContextFrame compose({
+    required String userText,
+    required NazaRoute route,
+    required NazaActionProfile actionProfile,
+    NazaMemoryAllocation? memoryAllocation,
+  }) {
+    final memoryBlock = memoryAllocation?.contextBlock.trim() ?? '';
+    var ragSection = memoryBlock.isEmpty
+        ? '''
+[rag]
+source=local-encrypted-vector-memory
+status=no relevant memory allocated
+[/rag]'''
+        : memoryBlock;
+    var shrinkApplied = false;
+
+    final baseWithoutRag = _basePrompt(
+      userText: userText,
+      route: route,
+      actionProfile: actionProfile,
+      contextSection: '',
+      ragSection: '',
+    );
+    final ragBudget = math.max(
+      900,
+      NazaAppConfig.contextInputBudgetChars - baseWithoutRag.length - 300,
+    );
+    if (ragSection.length > ragBudget) {
+      ragSection = _shrinkRag(
+        ragSection,
+        actionMode: actionProfile.label,
+        maxChars: math.min(
+          ragBudget,
+          math.max(900, NazaAppConfig.contextShrinkTargetChars),
+        ),
+      );
+      shrinkApplied = true;
+    }
+
+    var prompt = _basePrompt(
+      userText: userText,
+      route: route,
+      actionProfile: actionProfile,
+      contextSection: _contextBlock(
+        actionProfile: actionProfile,
+        memoryAllocation: memoryAllocation,
+        ragChars: ragSection.length,
+        shrinkApplied: shrinkApplied,
+      ),
+      ragSection: ragSection,
+    );
+
+    if (prompt.length > NazaAppConfig.contextInputBudgetChars) {
+      final remaining = math.max(
+        700,
+        NazaAppConfig.contextInputBudgetChars - baseWithoutRag.length - 420,
+      );
+      ragSection = _shrinkRag(
+        ragSection,
+        actionMode: actionProfile.label,
+        maxChars: remaining,
+      );
+      shrinkApplied = true;
+      prompt = _basePrompt(
+        userText: userText,
+        route: route,
+        actionProfile: actionProfile,
+        contextSection: _contextBlock(
+          actionProfile: actionProfile,
+          memoryAllocation: memoryAllocation,
+          ragChars: ragSection.length,
+          shrinkApplied: shrinkApplied,
+        ),
+        ragSection: ragSection,
+      );
+    }
+
+    final used = math.min(prompt.length, NazaAppConfig.contextInputBudgetChars);
+    return NazaContextFrame(
+      prompt: prompt.length <= NazaAppConfig.contextInputBudgetChars
+          ? prompt
+          : prompt.substring(0, NazaAppConfig.contextInputBudgetChars),
+      budgetChars: NazaAppConfig.contextInputBudgetChars,
+      usedChars: used,
+      fillRatio: (used / NazaAppConfig.contextInputBudgetChars)
+          .clamp(0.0, 1.0)
+          .toDouble(),
+      shrinkApplied: shrinkApplied,
+      rotatedChunks: memoryAllocation?.rotatedChunks ?? 0,
+    );
+  }
+
+  static String _basePrompt({
+    required String userText,
+    required NazaRoute route,
+    required NazaActionProfile actionProfile,
+    required String contextSection,
+    required String ragSection,
+  }) {
+    return '''
+[router]
+local_route=${route.label}
+chromatic_ribbon_score=${route.score.toStringAsFixed(5)}
+chromatic_signal=${route.explanation}
+[/router]
+
+${actionProfile.toPromptBlock()}
+
+$contextSection
+
+$ragSection
+
+[current_task]
+$userText
+[/current_task]
+''';
+  }
+
+  static String _contextBlock({
+    required NazaActionProfile actionProfile,
+    required NazaMemoryAllocation? memoryAllocation,
+    required int ragChars,
+    required bool shrinkApplied,
+  }) {
+    final fillTarget = NazaAppConfig.contextTargetFillRatio.toStringAsFixed(2);
+    final indexed = memoryAllocation?.indexedChunks ?? 0;
+    final allocated = memoryAllocation?.chunks.length ?? 0;
+    final rotated = memoryAllocation?.rotatedChunks ?? 0;
+    final score = (memoryAllocation?.averageScore ?? 0).toStringAsFixed(3);
+    return '''
+[context]
+manager=naza-rotating-window-v1
+budget_chars=${NazaAppConfig.contextInputBudgetChars}
+target_fill_ratio=$fillTarget
+action_mode=${actionProfile.label}
+indexed_chunks=$indexed
+allocated_chunks=$allocated
+rotated_chunks=$rotated
+average_certainty=$score
+rag_chars=$ragChars
+shrink_applied=$shrinkApplied
+policy=Fill the active window with valid task context, rotated memory, and compressed summaries. Prefer current task over stale memory.
+[/context]''';
+  }
+
+  static String _shrinkRag(
+    String ragSection, {
+    required String actionMode,
+    required int maxChars,
+  }) {
+    final clean = ragSection
+        .replaceAll('[rag]', '')
+        .replaceAll('[/rag]', '')
+        .trim();
+    final shrink = NazaSummaGemmaSummarizer.shrinkText(
+      clean,
+      role: 'rag-memory',
+      actionMode: actionMode,
+      maxChars: maxChars,
+    );
+    return '''
+[rag]
+source=local-encrypted-vector-memory
+status=compressed-by-context-manager
+$shrink
+[/rag]''';
+  }
+}
+
 final class NazaLocalGemma {
   NazaLocalGemma._();
 
@@ -2593,6 +3482,12 @@ final class NazaLocalGemma {
     }
 
     final route = NazaQuantumRouter.route(trimmed);
+    final actionProfile = NazaActionSelector.select(trimmed, route);
+    final memoryAllocation = await NazaVectorMemory.instance.allocate(
+      userText: trimmed,
+      route: route,
+      actionProfile: actionProfile,
+    );
 
     try {
       await ensureReady();
@@ -2620,8 +3515,23 @@ final class NazaLocalGemma {
     );
 
     try {
+      final contextFrame = _buildContextFrame(
+        trimmed,
+        route,
+        actionProfile: actionProfile,
+        memoryAllocation: memoryAllocation,
+      );
+      if (memoryAllocation.shouldResetNativeContext) {
+        generation.value = generation.value.copyWith(
+          stage: contextFrame.shrinkApplied
+              ? 'shrinking rotating context'
+              : 'allocating rotating context',
+        );
+        await _replaceChatSessionForAllocatedMemory();
+      }
+
       await _chat.addQueryChunk(
-        Message.text(text: _buildPrompt(trimmed, route), isUser: true),
+        Message.text(text: contextFrame.prompt, isUser: true),
       );
 
       var clean = await _streamResponse(
@@ -2723,6 +3633,7 @@ final class NazaLocalGemma {
       return out;
     } catch (error) {
       _stopGenerationTelemetry(cancelled: false);
+      await _recoverChatAfterGenerationError();
       snapshot.value = snapshot.value.copyWith(
         busy: false,
         phase: 'generation failed',
@@ -2737,6 +3648,62 @@ final class NazaLocalGemma {
         createdAt: DateTime.now(),
       );
     }
+  }
+
+  Future<void> _recoverChatAfterGenerationError() async {
+    final chat = _chat;
+    _chat = null;
+
+    try {
+      await chat?.stopGeneration().timeout(
+        const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+      );
+    } catch (_) {}
+
+    try {
+      await chat?.session?.close().timeout(
+        const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+      );
+    } catch (_) {}
+
+    if (_model == null) return;
+
+    try {
+      _chat = await _model
+          .createChat(
+            systemInstruction: NazaAppConfig.systemInstruction,
+            maxOutputTokens: NazaAppConfig.outputTokens,
+          )
+          .timeout(
+            const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+          );
+    } catch (_) {
+      _chat = null;
+    }
+  }
+
+  Future<void> _replaceChatSessionForAllocatedMemory() async {
+    final chat = _chat;
+    _chat = null;
+
+    try {
+      await chat?.session?.close().timeout(
+        const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+      );
+    } catch (_) {}
+
+    if (_model == null) {
+      throw StateError('Model closed while allocating long-session memory.');
+    }
+
+    _chat = await _model
+        .createChat(
+          systemInstruction: NazaAppConfig.systemInstruction,
+          maxOutputTokens: NazaAppConfig.outputTokens,
+        )
+        .timeout(
+          const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+        );
   }
 
   Future<NazaResponse> sendVoiceTurn(
@@ -2766,6 +3733,9 @@ final class NazaLocalGemma {
         systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
         maxOutputTokens: NazaAppConfig.liveVoiceOutputTokens,
       );
+      if (_voiceChat == null) {
+        throw StateError('Voice chat session did not open.');
+      }
     } catch (error) {
       return NazaResponse(
         text:
@@ -2794,13 +3764,18 @@ final class NazaLocalGemma {
     );
 
     try {
-      await _voiceChat.addQueryChunk(
+      final voiceChat = _voiceChat;
+      if (voiceChat == null) {
+        throw StateError('Voice chat session is not open.');
+      }
+
+      await voiceChat.addQueryChunk(
         Message.text(text: _buildVoicePrompt(trimmed, route), isUser: true),
       );
 
       final clean = await _streamResponse(
         generationId: generationId,
-        chat: _voiceChat,
+        chat: voiceChat,
         onPartial: onPartial,
         maxTokens: NazaAppConfig.liveVoiceOutputTokens,
       );
@@ -2845,6 +3820,10 @@ final class NazaLocalGemma {
       return out;
     } catch (error) {
       _stopGenerationTelemetry(cancelled: false);
+      try {
+        await _voiceChat?.session?.close();
+      } catch (_) {}
+      _voiceChat = null;
       snapshot.value = snapshot.value.copyWith(
         busy: false,
         phase: 'voice generation failed',
@@ -3112,15 +4091,18 @@ final class NazaLocalGemma {
     );
   }
 
-  String _buildPrompt(String userText, NazaRoute route) {
-    return '''
-Local route: ${route.label}
-Chromatic ribbon score: ${route.score.toStringAsFixed(5)}
-Chromatic signal: ${route.explanation}
-
-User request:
-$userText
-''';
+  NazaContextFrame _buildContextFrame(
+    String userText,
+    NazaRoute route, {
+    required NazaActionProfile actionProfile,
+    NazaMemoryAllocation? memoryAllocation,
+  }) {
+    return NazaContextManager.compose(
+      userText: userText,
+      route: route,
+      actionProfile: actionProfile,
+      memoryAllocation: memoryAllocation,
+    );
   }
 
   String _buildVoicePrompt(String userText, NazaRoute route) {
@@ -3148,7 +4130,23 @@ Answer out loud. Keep it natural, short, and useful.
     var lastEstimatedTokens = 0;
 
     final activeChat = chat ?? _chat;
-    await for (final chunk in activeChat.generateChatResponseAsync()) {
+    if (activeChat == null) {
+      throw StateError('Local chat session is not open.');
+    }
+    final responseStream = activeChat.generateChatResponseAsync().timeout(
+      const Duration(seconds: NazaAppConfig.generationIdleTimeoutSeconds),
+      onTimeout: (sink) {
+        sink.addError(
+          TimeoutException(
+            'Local generation stalled for '
+            '${NazaAppConfig.generationIdleTimeoutSeconds}s.',
+          ),
+        );
+        sink.close();
+      },
+    );
+
+    await for (final chunk in responseStream) {
       if (_cancelledGeneration == generationId) break;
 
       late final String token;
@@ -3297,6 +4295,12 @@ Answer out loud. Keep it natural, short, and useful.
         route: response.route,
         score: response.score,
       );
+      await NazaVectorMemory.instance.rememberMessagePair(
+        user: user,
+        assistant: response.text,
+        route: response.route,
+        score: response.score,
+      );
     } catch (_) {
       // A storage failure must never replace an already generated answer.
     }
@@ -3352,6 +4356,8 @@ final class NazaLiveVoiceBridge {
       return await _channel.invokeMethod<bool>('isAvailable') ?? false;
     } on MissingPluginException {
       return false;
+    } on PlatformException {
+      return false;
     }
   }
 
@@ -3360,6 +4366,8 @@ final class NazaLiveVoiceBridge {
       return await _channel.invokeMethod<bool>('requestRecordPermission') ??
           false;
     } on MissingPluginException {
+      return false;
+    } on PlatformException {
       return false;
     }
   }
@@ -3371,14 +4379,22 @@ final class NazaLiveVoiceBridge {
     bool preferOffline = true,
   }) async {
     partialTranscript.value = '';
-    final raw = await _channel
-        .invokeMethod<Map<Object?, Object?>>('listenOnce', {
+    try {
+      final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'listenOnce',
+        {
           'completeSilenceMs': completeSilenceMs,
           'possibleSilenceMs': possibleSilenceMs,
           'minimumSpeechMs': minimumSpeechMs,
           'preferOffline': preferOffline,
-        });
-    return NazaSpeechCapture.fromMap(raw ?? const {});
+        },
+      );
+      return NazaSpeechCapture.fromMap(raw ?? const {});
+    } on MissingPluginException {
+      return const NazaSpeechCapture(transcript: '');
+    } on PlatformException catch (error) {
+      throw StateError(_platformMessage(error));
+    }
   }
 
   Future<bool> speak(
@@ -3397,6 +4413,8 @@ final class NazaLiveVoiceBridge {
           false;
     } on MissingPluginException {
       return false;
+    } on PlatformException {
+      return false;
     }
   }
 
@@ -3406,7 +4424,16 @@ final class NazaLiveVoiceBridge {
       await _channel.invokeMethod<void>('stop');
     } on MissingPluginException {
       // Desktop/tests have no Android speech bridge.
+    } on PlatformException {
+      // Stop is best-effort; ignore platform-side shutdown races.
     }
+  }
+
+  static String _platformMessage(PlatformException error) {
+    final message = error.message?.trim();
+    if (message != null && message.isNotEmpty) return message;
+    final code = error.code.trim();
+    return code.isEmpty ? 'Android voice bridge failed.' : code;
   }
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
@@ -4848,6 +5875,1135 @@ final class NazaVault {
   Future<File> _scannerDraftsFile() async {
     final dir = await getApplicationSupportDirectory();
     return File('${dir.path}/${NazaAppConfig.scannerDraftsFileName}');
+  }
+}
+
+final class NazaMemorySettings {
+  final bool enabled;
+
+  const NazaMemorySettings({required this.enabled});
+
+  factory NazaMemorySettings.defaults() {
+    return const NazaMemorySettings(enabled: true);
+  }
+
+  factory NazaMemorySettings.fromJson(Map<String, dynamic> json) {
+    return NazaMemorySettings(enabled: json['enabled'] != false);
+  }
+
+  NazaMemorySettings copyWith({bool? enabled}) {
+    return NazaMemorySettings(enabled: enabled ?? this.enabled);
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'format': 'naza-memory-settings-v1',
+      'enabled': enabled,
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+  }
+}
+
+final class NazaMemorySnapshot {
+  final bool enabled;
+  final int chunks;
+  final int lastAllocationChunks;
+  final double lastAllocationScore;
+  final String lastActionMode;
+  final String phase;
+  final String? error;
+  final DateTime updatedAt;
+
+  const NazaMemorySnapshot({
+    required this.enabled,
+    required this.chunks,
+    required this.lastAllocationChunks,
+    required this.lastAllocationScore,
+    required this.lastActionMode,
+    required this.phase,
+    required this.error,
+    required this.updatedAt,
+  });
+
+  factory NazaMemorySnapshot.initial() {
+    return NazaMemorySnapshot(
+      enabled: true,
+      chunks: 0,
+      lastAllocationChunks: 0,
+      lastAllocationScore: 0,
+      lastActionMode: 'none',
+      phase: 'memory cold-start',
+      error: null,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  NazaMemorySnapshot copyWith({
+    bool? enabled,
+    int? chunks,
+    int? lastAllocationChunks,
+    double? lastAllocationScore,
+    String? lastActionMode,
+    String? phase,
+    String? error,
+    bool clearError = false,
+  }) {
+    return NazaMemorySnapshot(
+      enabled: enabled ?? this.enabled,
+      chunks: chunks ?? this.chunks,
+      lastAllocationChunks: lastAllocationChunks ?? this.lastAllocationChunks,
+      lastAllocationScore: lastAllocationScore ?? this.lastAllocationScore,
+      lastActionMode: lastActionMode ?? this.lastActionMode,
+      phase: phase ?? this.phase,
+      error: clearError ? null : (error ?? this.error),
+      updatedAt: DateTime.now(),
+    );
+  }
+}
+
+final class NazaMemoryChunk {
+  final String id;
+  final String turnId;
+  final String role;
+  final String text;
+  final String summary;
+  final List<String> keywords;
+  final String className;
+  final String tenant;
+  final List<String> tags;
+  final int tokenEstimate;
+  final String summaryModel;
+  final String route;
+  final double routeScore;
+  final double importance;
+  final DateTime createdAt;
+  final List<double> embedding;
+
+  const NazaMemoryChunk({
+    required this.id,
+    required this.turnId,
+    required this.role,
+    required this.text,
+    required this.summary,
+    required this.keywords,
+    required this.className,
+    required this.tenant,
+    required this.tags,
+    required this.tokenEstimate,
+    required this.summaryModel,
+    required this.route,
+    required this.routeScore,
+    required this.importance,
+    required this.createdAt,
+    required this.embedding,
+  });
+
+  factory NazaMemoryChunk.fromJson(Map<String, dynamic> json) {
+    return NazaMemoryChunk(
+      id: json['id']?.toString() ?? NazaHistoryRow._id(),
+      turnId: json['turnId']?.toString() ?? NazaHistoryRow._id(),
+      role: json['role']?.toString() ?? 'memory',
+      text: json['text']?.toString() ?? '',
+      summary: json['summary']?.toString() ?? '',
+      keywords: ((json['keywords'] as List?) ?? const [])
+          .map((item) => item.toString())
+          .where((item) => item.trim().isNotEmpty)
+          .toList(growable: false),
+      className: json['className']?.toString() ?? NazaAppConfig.memoryClassName,
+      tenant: json['tenant']?.toString() ?? NazaAppConfig.memoryTenant,
+      tags: ((json['tags'] as List?) ?? const [])
+          .map((item) => item.toString())
+          .where((item) => item.trim().isNotEmpty)
+          .toList(growable: false),
+      tokenEstimate: ((json['tokenEstimate'] as num?) ?? 0).toInt(),
+      summaryModel: json['summaryModel']?.toString() ?? 'summa-gemma4-legacy',
+      route: json['route']?.toString() ?? 'unknown',
+      routeScore: double.tryParse(json['routeScore']?.toString() ?? '') ?? 0,
+      importance: double.tryParse(json['importance']?.toString() ?? '') ?? 0.4,
+      createdAt:
+          DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
+          DateTime.now(),
+      embedding: ((json['embedding'] as List?) ?? const [])
+          .map((item) => double.tryParse(item.toString()) ?? 0.0)
+          .toList(growable: false),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'turnId': turnId,
+      'role': role,
+      'text': text,
+      'summary': summary,
+      'keywords': keywords,
+      'className': className,
+      'tenant': tenant,
+      'tags': tags,
+      'tokenEstimate': tokenEstimate,
+      'summaryModel': summaryModel,
+      'route': route,
+      'routeScore': routeScore,
+      'importance': importance,
+      'createdAt': createdAt.toIso8601String(),
+      'embedding': embedding
+          .map((value) => double.parse(value.toStringAsFixed(6)))
+          .toList(growable: false),
+    };
+  }
+}
+
+final class NazaMemoryAllocation {
+  final bool enabled;
+  final List<NazaMemoryChunk> chunks;
+  final String contextBlock;
+  final double averageScore;
+  final int indexedChunks;
+  final int candidateCount;
+  final int rotatedChunks;
+
+  const NazaMemoryAllocation({
+    required this.enabled,
+    required this.chunks,
+    required this.contextBlock,
+    required this.averageScore,
+    required this.indexedChunks,
+    required this.candidateCount,
+    required this.rotatedChunks,
+  });
+
+  factory NazaMemoryAllocation.disabled() {
+    return const NazaMemoryAllocation(
+      enabled: false,
+      chunks: [],
+      contextBlock: '',
+      averageScore: 0,
+      indexedChunks: 0,
+      candidateCount: 0,
+      rotatedChunks: 0,
+    );
+  }
+
+  factory NazaMemoryAllocation.empty({required bool enabled}) {
+    return NazaMemoryAllocation(
+      enabled: enabled,
+      chunks: const [],
+      contextBlock: '',
+      averageScore: 0,
+      indexedChunks: 0,
+      candidateCount: 0,
+      rotatedChunks: 0,
+    );
+  }
+
+  bool get hasContext => enabled && contextBlock.trim().isNotEmpty;
+  bool get shouldResetNativeContext => enabled && chunks.isNotEmpty;
+}
+
+final class _ScoredMemoryChunk {
+  final NazaMemoryChunk chunk;
+  final double score;
+  final double vectorScore;
+  final double keywordScore;
+  final double recencyScore;
+  final double certainty;
+  final bool rotated;
+
+  const _ScoredMemoryChunk({
+    required this.chunk,
+    required this.score,
+    required this.vectorScore,
+    required this.keywordScore,
+    required this.recencyScore,
+    required this.certainty,
+    this.rotated = false,
+  });
+
+  _ScoredMemoryChunk asRotated() {
+    return _ScoredMemoryChunk(
+      chunk: chunk,
+      score: score,
+      vectorScore: vectorScore,
+      keywordScore: keywordScore,
+      recencyScore: recencyScore,
+      certainty: certainty,
+      rotated: true,
+    );
+  }
+}
+
+final class NazaVectorMemory {
+  NazaVectorMemory._();
+
+  static final NazaVectorMemory instance = NazaVectorMemory._();
+  static final RegExp _wordRegExp = RegExp(r"[A-Za-z0-9_']+");
+  static final RegExp _spaceRegExp = RegExp(r'\s+');
+  static final RegExp _sentenceBoundaryRegExp = RegExp(r'(?<=[.!?;])\s+');
+  static const Set<String> _stopWords = {
+    'the',
+    'and',
+    'for',
+    'that',
+    'this',
+    'with',
+    'from',
+    'into',
+    'when',
+    'what',
+    'where',
+    'which',
+    'while',
+    'would',
+    'could',
+    'should',
+    'there',
+    'their',
+    'about',
+    'have',
+    'has',
+    'had',
+    'you',
+    'your',
+    'user',
+    'assistant',
+    'model',
+    'naza',
+    'one',
+  };
+
+  final AesGcm _aes = AesGcm.with256bits();
+  final ValueNotifier<NazaMemorySettings> settings =
+      ValueNotifier<NazaMemorySettings>(NazaMemorySettings.defaults());
+  final ValueNotifier<NazaMemorySnapshot> snapshot =
+      ValueNotifier<NazaMemorySnapshot>(NazaMemorySnapshot.initial());
+
+  Future<void>? _settingsLoadFuture;
+  Future<void> _storageTail = Future<void>.value();
+  List<NazaMemoryChunk>? _chunks;
+  int _rotationCursor = 0;
+
+  Future<void> prepareSettings() {
+    _settingsLoadFuture ??= _loadSettings();
+    return _settingsLoadFuture!;
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    await prepareSettings();
+    final next = settings.value.copyWith(enabled: enabled);
+    settings.value = next;
+    snapshot.value = snapshot.value.copyWith(
+      enabled: enabled,
+      phase: enabled ? 'vector memory enabled' : 'vector memory paused',
+      clearError: true,
+    );
+    await _persistSettings(next);
+  }
+
+  Future<void> clear() {
+    final operation = _storageTail.then((_) async {
+      final file = await _memoryFile();
+      if (await file.exists()) await file.delete();
+      _chunks = <NazaMemoryChunk>[];
+      snapshot.value = snapshot.value.copyWith(
+        chunks: 0,
+        lastAllocationChunks: 0,
+        lastAllocationScore: 0,
+        phase: 'vector memory cleared',
+        clearError: true,
+      );
+    });
+    _storageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<NazaMemoryAllocation> allocate({
+    required String userText,
+    required NazaRoute route,
+    required NazaActionProfile actionProfile,
+  }) async {
+    try {
+      await prepareSettings();
+      if (!settings.value.enabled) {
+        snapshot.value = snapshot.value.copyWith(
+          enabled: false,
+          lastAllocationChunks: 0,
+          lastAllocationScore: 0,
+          lastActionMode: actionProfile.label,
+          phase: 'vector memory disabled',
+          clearError: true,
+        );
+        return NazaMemoryAllocation.disabled();
+      }
+
+      final chunks = await _readChunksSafe();
+      if (chunks.isEmpty) {
+        snapshot.value = snapshot.value.copyWith(
+          enabled: true,
+          chunks: 0,
+          lastAllocationChunks: 0,
+          lastAllocationScore: 0,
+          lastActionMode: actionProfile.label,
+          phase: 'vector memory empty',
+          clearError: true,
+        );
+        return NazaMemoryAllocation.empty(enabled: true);
+      }
+
+      final queryEmbedding = _embed(
+        '${actionProfile.label}\n${route.label}\n'
+        '${actionProfile.retrievalFocus.join(' ')}\n$userText',
+      );
+      final queryTokens = _tokenSet(
+        '$userText ${actionProfile.retrievalFocus.join(' ')}',
+      );
+      final focus = actionProfile.retrievalFocus
+          .map((item) => item.toLowerCase())
+          .toSet();
+      final now = DateTime.now();
+      final scored = <_ScoredMemoryChunk>[];
+      for (final chunk in chunks) {
+        if (chunk.embedding.length != NazaAppConfig.memoryEmbeddingDimensions) {
+          continue;
+        }
+        final similarity = _cosine(queryEmbedding, chunk.embedding);
+        final ageHours = now
+            .difference(chunk.createdAt)
+            .inHours
+            .clamp(0, 24 * 3650)
+            .toDouble();
+        final recency = 1.0 / (1.0 + ageHours / 96.0);
+        final routeAffinity = chunk.route == route.label ? 0.08 : 0.0;
+        final keywordAffinity = _keywordAffinity(
+          queryTokens: queryTokens,
+          focus: focus,
+          chunk: chunk,
+        );
+        final tagAffinity = _tagAffinity(focus: focus, chunk: chunk);
+        final roleBias = chunk.role == 'user' ? 0.04 : 0.0;
+        final score =
+            similarity * 0.48 +
+            keywordAffinity * 0.19 +
+            tagAffinity * 0.07 +
+            recency * 0.10 +
+            chunk.importance * 0.12 +
+            routeAffinity +
+            roleBias;
+        final certainty = score.clamp(0.0, 1.0).toDouble();
+        scored.add(
+          _ScoredMemoryChunk(
+            chunk: chunk,
+            score: score,
+            vectorScore: similarity,
+            keywordScore: keywordAffinity,
+            recencyScore: recency,
+            certainty: certainty,
+          ),
+        );
+      }
+      scored.sort((a, b) => b.score.compareTo(a.score));
+
+      final selected = _allocateChunks(scored);
+      final rotatedChunks = selected.where((item) => item.rotated).length;
+      final averageScore = selected.isEmpty
+          ? 0.0
+          : selected.map((item) => item.score).reduce((a, b) => a + b) /
+                selected.length;
+      final block = _buildContextBlock(selected);
+
+      snapshot.value = snapshot.value.copyWith(
+        enabled: true,
+        chunks: chunks.length,
+        lastAllocationChunks: selected.length,
+        lastAllocationScore: averageScore.clamp(0.0, 1.0).toDouble(),
+        lastActionMode: actionProfile.label,
+        phase: selected.isEmpty
+            ? 'no memory allocated'
+            : 'allocated ${selected.length} memory chunks, rotated $rotatedChunks',
+        clearError: true,
+      );
+
+      return NazaMemoryAllocation(
+        enabled: true,
+        chunks: selected.map((item) => item.chunk).toList(growable: false),
+        contextBlock: block,
+        averageScore: averageScore,
+        indexedChunks: chunks.length,
+        candidateCount: scored.length,
+        rotatedChunks: rotatedChunks,
+      );
+    } catch (error) {
+      snapshot.value = snapshot.value.copyWith(
+        phase: 'memory allocation failed',
+        error: error.toString(),
+      );
+      return NazaMemoryAllocation.empty(enabled: settings.value.enabled);
+    }
+  }
+
+  Future<void> rememberMessagePair({
+    required String user,
+    required String assistant,
+    required String route,
+    required double score,
+  }) {
+    final operation = _storageTail.then((_) async {
+      await prepareSettings();
+      if (!settings.value.enabled) return;
+      final chunks = await _readChunksNow();
+      final turnId = NazaHistoryRow._id();
+      final createdAt = DateTime.now();
+      final next = <NazaMemoryChunk>[
+        ...chunks,
+        ..._chunksForMessage(
+          turnId: turnId,
+          role: 'user',
+          text: user,
+          route: route,
+          routeScore: score,
+          createdAt: createdAt,
+        ),
+        ..._chunksForMessage(
+          turnId: turnId,
+          role: 'assistant',
+          text: assistant,
+          route: route,
+          routeScore: score,
+          createdAt: createdAt,
+        ),
+      ];
+
+      while (next.length > NazaAppConfig.memoryMaxChunks) {
+        next.removeAt(0);
+      }
+
+      await _writeChunksNow(next);
+      _chunks = next;
+      snapshot.value = snapshot.value.copyWith(
+        enabled: true,
+        chunks: next.length,
+        phase: 'vector memory indexed',
+        clearError: true,
+      );
+    });
+    _storageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<void> _loadSettings() async {
+    try {
+      final file = await _settingsFile();
+      if (await file.exists()) {
+        final raw = jsonDecode(await file.readAsString());
+        if (raw is Map<String, dynamic>) {
+          settings.value = NazaMemorySettings.fromJson(raw);
+        }
+      }
+      snapshot.value = snapshot.value.copyWith(
+        enabled: settings.value.enabled,
+        phase: settings.value.enabled
+            ? 'vector memory ready'
+            : 'vector memory paused',
+        clearError: true,
+      );
+    } catch (error) {
+      snapshot.value = snapshot.value.copyWith(
+        phase: 'memory settings load failed',
+        error: error.toString(),
+      );
+    } finally {
+      _settingsLoadFuture = null;
+    }
+  }
+
+  Future<void> _persistSettings(NazaMemorySettings value) async {
+    try {
+      final file = await _settingsFile();
+      await file.parent.create(recursive: true);
+      await file.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(value.toJson()),
+        flush: true,
+      );
+    } catch (error) {
+      snapshot.value = snapshot.value.copyWith(
+        phase: 'memory settings save failed',
+        error: error.toString(),
+      );
+    }
+  }
+
+  Future<List<NazaMemoryChunk>> _readChunksSafe() {
+    return _storageTail.then((_) => _readChunksNow());
+  }
+
+  Future<List<NazaMemoryChunk>> _readChunksNow() async {
+    final cached = _chunks;
+    if (cached != null) return cached;
+
+    final file = await _memoryFile();
+    if (!await file.exists()) {
+      _chunks = <NazaMemoryChunk>[];
+      return _chunks!;
+    }
+
+    try {
+      final wrapper = jsonDecode(await file.readAsString());
+      if (wrapper is! Map) return <NazaMemoryChunk>[];
+      final nonce = base64Decode(wrapper['nonce'] as String);
+      final cipherText = base64Decode(wrapper['cipherText'] as String);
+      final mac = base64Decode(wrapper['mac'] as String);
+      final key = await NazaVault.instance._getOrCreateKey();
+      final clear = await _aes.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
+        secretKey: key,
+        aad: utf8.encode(NazaAppConfig.vaultAad),
+      );
+      final payload = jsonDecode(utf8.decode(clear));
+      if (payload is! Map) return <NazaMemoryChunk>[];
+      final rows = ((payload['chunks'] as List?) ?? const [])
+          .whereType<Map>()
+          .map(
+            (item) => NazaMemoryChunk.fromJson(Map<String, dynamic>.from(item)),
+          )
+          .where((chunk) => chunk.text.trim().isNotEmpty)
+          .map(_hydrateChunk)
+          .toList(growable: false);
+      _chunks = rows;
+      snapshot.value = snapshot.value.copyWith(chunks: rows.length);
+      return rows;
+    } catch (error) {
+      snapshot.value = snapshot.value.copyWith(
+        phase: 'memory index read failed',
+        error: error.toString(),
+      );
+      _chunks = <NazaMemoryChunk>[];
+      return _chunks!;
+    }
+  }
+
+  Future<void> _writeChunksNow(List<NazaMemoryChunk> chunks) async {
+    final file = await _memoryFile();
+    await file.parent.create(recursive: true);
+    final key = await NazaVault.instance._getOrCreateKey();
+    final clear = utf8.encode(
+      jsonEncode({
+        'format': 'naza-vector-memory-v1',
+        'dimensions': NazaAppConfig.memoryEmbeddingDimensions,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'chunks': chunks.map((chunk) => chunk.toJson()).toList(),
+      }),
+    );
+
+    final box = await _aes.encrypt(
+      clear,
+      secretKey: key,
+      aad: utf8.encode(NazaAppConfig.vaultAad),
+    );
+
+    final wrapper = {
+      'version': 1,
+      'cipher': 'AES-256-GCM',
+      'nonce': base64Encode(box.nonce),
+      'cipherText': base64Encode(box.cipherText),
+      'mac': base64Encode(box.mac.bytes),
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+
+    await file.writeAsString(jsonEncode(wrapper), flush: true);
+  }
+
+  List<NazaMemoryChunk> _chunksForMessage({
+    required String turnId,
+    required String role,
+    required String text,
+    required String route,
+    required double routeScore,
+    required DateTime createdAt,
+  }) {
+    final parts = _chunkText(text);
+    final chunks = <NazaMemoryChunk>[];
+    for (var i = 0; i < parts.length; i++) {
+      final summaryResult = NazaSummaGemmaSummarizer.summarize(
+        parts[i],
+        role: role,
+      );
+      final summary = summaryResult.summary;
+      final keywords = summaryResult.keywords.isEmpty
+          ? _keywordsFor(parts[i], summary: summary)
+          : summaryResult.keywords;
+      final tags = _tagsFor(
+        role: role,
+        route: route,
+        text: parts[i],
+        keywords: keywords,
+      );
+      chunks.add(
+        NazaMemoryChunk(
+          id: '$turnId-$role-$i',
+          turnId: turnId,
+          role: role,
+          text: parts[i],
+          summary: summary,
+          keywords: keywords,
+          className: NazaAppConfig.memoryClassName,
+          tenant: NazaAppConfig.memoryTenant,
+          tags: tags,
+          tokenEstimate: _estimateTokens(parts[i]),
+          summaryModel: summaryResult.algorithm,
+          route: route,
+          routeScore: routeScore,
+          importance: _importanceFor(
+            role: role,
+            text: parts[i],
+            summary: summary,
+            keywords: keywords,
+            score: routeScore,
+          ),
+          createdAt: createdAt,
+          embedding: _embed(
+            '$role\n$route\n$summary\n${keywords.join(' ')}\n${parts[i]}',
+          ),
+        ),
+      );
+    }
+    return chunks;
+  }
+
+  List<String> _chunkText(String text) {
+    final normalized = _normalize(text);
+    if (normalized.isEmpty) return const [];
+    const maxChars = 900;
+    if (normalized.length <= maxChars) return [normalized];
+
+    final sentences = normalized.split(_sentenceBoundaryRegExp);
+    final chunks = <String>[];
+    final current = StringBuffer();
+    for (final sentence in sentences) {
+      final clean = sentence.trim();
+      if (clean.isEmpty) continue;
+      if (current.isNotEmpty && current.length + clean.length + 1 > maxChars) {
+        chunks.add(current.toString().trim());
+        final tail = _tailWords(current.toString(), maxWords: 24);
+        current
+          ..clear()
+          ..write(tail);
+      }
+      if (current.isNotEmpty) current.write(' ');
+      current.write(clean);
+    }
+    if (current.isNotEmpty) chunks.add(current.toString().trim());
+    return chunks.take(6).toList(growable: false);
+  }
+
+  NazaMemoryChunk _hydrateChunk(NazaMemoryChunk chunk) {
+    final needsSummary = chunk.summary.trim().isEmpty;
+    final needsKeywords = chunk.keywords.isEmpty;
+    final needsTags = chunk.tags.isEmpty;
+    final needsTokens = chunk.tokenEstimate <= 0;
+    if (!needsSummary && !needsKeywords && !needsTags && !needsTokens) {
+      return chunk;
+    }
+
+    final summaryResult = NazaSummaGemmaSummarizer.summarize(
+      chunk.text,
+      role: chunk.role,
+    );
+    final summary = needsSummary ? summaryResult.summary : chunk.summary;
+    final keywords = needsKeywords ? summaryResult.keywords : chunk.keywords;
+    return NazaMemoryChunk(
+      id: chunk.id,
+      turnId: chunk.turnId,
+      role: chunk.role,
+      text: chunk.text,
+      summary: summary,
+      keywords: keywords,
+      className: chunk.className,
+      tenant: chunk.tenant,
+      tags: needsTags
+          ? _tagsFor(
+              role: chunk.role,
+              route: chunk.route,
+              text: chunk.text,
+              keywords: keywords,
+            )
+          : chunk.tags,
+      tokenEstimate: needsTokens
+          ? _estimateTokens(chunk.text)
+          : chunk.tokenEstimate,
+      summaryModel: needsSummary ? summaryResult.algorithm : chunk.summaryModel,
+      route: chunk.route,
+      routeScore: chunk.routeScore,
+      importance: chunk.importance,
+      createdAt: chunk.createdAt,
+      embedding: chunk.embedding,
+    );
+  }
+
+  List<String> _tagsFor({
+    required String role,
+    required String route,
+    required String text,
+    required List<String> keywords,
+  }) {
+    final lower = text.toLowerCase();
+    final tags = <String>{
+      role,
+      route,
+      if (lower.contains('voice') || lower.contains('bark')) 'voice',
+      if (lower.contains('error') ||
+          lower.contains('bug') ||
+          lower.contains('fix'))
+        'debug',
+      if (lower.contains('memory') ||
+          lower.contains('rag') ||
+          lower.contains('vector'))
+        'memory',
+      if (lower.contains('[action]') || lower.contains('[format]'))
+        'prompt-surface',
+      ...keywords.take(5),
+    };
+    return tags
+        .where((tag) => tag.trim().isNotEmpty)
+        .take(12)
+        .toList(growable: false);
+  }
+
+  int _estimateTokens(String text) {
+    return math.max(1, (text.length / 4).ceil());
+  }
+
+  List<_ScoredMemoryChunk> _allocateChunks(List<_ScoredMemoryChunk> scored) {
+    final selected = <_ScoredMemoryChunk>[];
+    var remaining = NazaAppConfig.memoryContextBudgetChars;
+    final candidates = scored
+        .take(NazaAppConfig.memoryRetrievalCandidates)
+        .toList(growable: false);
+    for (final item in candidates) {
+      if (selected.length >=
+          math.max(4, NazaAppConfig.memoryAllocationChunks ~/ 2)) {
+        break;
+      }
+      final text = item.chunk.text.trim();
+      if (text.isEmpty) continue;
+      if (item.certainty < 0.34 && selected.isNotEmpty) continue;
+      final cost = _contextCost(item.chunk);
+      if (cost > remaining && selected.isNotEmpty) continue;
+      if (_tooSimilarToSelected(item.chunk, selected)) continue;
+      selected.add(item);
+      remaining -= cost;
+      if (remaining <= 420) break;
+    }
+
+    if (remaining > 420 &&
+        selected.length < NazaAppConfig.memoryAllocationChunks) {
+      final pool = candidates
+          .where((item) => item.certainty >= 0.26)
+          .where((item) => !selected.any((s) => s.chunk.id == item.chunk.id))
+          .toList(growable: false);
+      if (pool.isNotEmpty) {
+        final start = _rotationCursor % pool.length;
+        _rotationCursor++;
+        for (var step = 0; step < pool.length; step++) {
+          if (selected.length >= NazaAppConfig.memoryAllocationChunks) break;
+          final item = pool[(start + step) % pool.length];
+          final cost = _contextCost(item.chunk);
+          if (cost > remaining && selected.isNotEmpty) continue;
+          if (_tooSimilarToSelected(item.chunk, selected)) continue;
+          selected.add(item.asRotated());
+          remaining -= cost;
+          if (remaining <= 420) break;
+        }
+      }
+    }
+    selected.sort((a, b) => a.chunk.createdAt.compareTo(b.chunk.createdAt));
+    return selected;
+  }
+
+  int _contextCost(NazaMemoryChunk chunk) {
+    final summaryCost = chunk.summary.isEmpty ? 0 : chunk.summary.length;
+    final detailCost = math.min(chunk.text.length, 760);
+    return math.max(180, math.min(960, summaryCost + detailCost + 160));
+  }
+
+  bool _tooSimilarToSelected(
+    NazaMemoryChunk chunk,
+    List<_ScoredMemoryChunk> selected,
+  ) {
+    final tokens = _tokenSet(chunk.text);
+    if (tokens.length < 8) return false;
+    for (final item in selected) {
+      final other = _tokenSet(item.chunk.text);
+      if (other.isEmpty) continue;
+      final overlap =
+          tokens.intersection(other).length /
+          math.min(tokens.length, other.length);
+      if (overlap >= 0.78) return true;
+    }
+    return false;
+  }
+
+  String _buildContextBlock(List<_ScoredMemoryChunk> selected) {
+    if (selected.isEmpty) return '';
+    final lines = <String>[
+      '[rag]',
+      'source=local-encrypted-vector-memory',
+      'policy=Use retrieved memory only when relevant. The current user request remains the source of truth.',
+    ];
+    for (var i = 0; i < selected.length; i++) {
+      final item = selected[i];
+      final chunk = item.chunk;
+      final summary = chunk.summary.trim().isEmpty
+          ? _clip(chunk.text, maxChars: NazaAppConfig.memorySummaryChars)
+          : chunk.summary.trim();
+      lines
+        ..add('')
+        ..add(
+          'M${i + 1} class=${chunk.className} tenant=${chunk.tenant} '
+          'role=${chunk.role} route=${chunk.route} '
+          'certainty=${item.certainty.toStringAsFixed(3)} '
+          'distance=${(1 - item.certainty).toStringAsFixed(3)} '
+          'hybrid=${item.score.toStringAsFixed(3)} '
+          'vector=${item.vectorScore.toStringAsFixed(3)} '
+          'keyword=${item.keywordScore.toStringAsFixed(3)} '
+          'recency=${item.recencyScore.toStringAsFixed(3)} '
+          'rotated=${item.rotated} '
+          'tokens=${chunk.tokenEstimate} '
+          'at=${chunk.createdAt.toIso8601String()}',
+        )
+        ..add('summary_model=${chunk.summaryModel}')
+        ..add('summary=$summary');
+      if (chunk.keywords.isNotEmpty) {
+        lines.add('keywords=${chunk.keywords.take(10).join(', ')}');
+      }
+      if (chunk.tags.isNotEmpty) {
+        lines.add('tags=${chunk.tags.take(10).join(', ')}');
+      }
+      lines.add(
+        'detail=${_clip(chunk.text, maxChars: math.max(220, 760 - summary.length))}',
+      );
+    }
+    lines.add('[/rag]');
+    return lines.join('\n');
+  }
+
+  double _keywordAffinity({
+    required Set<String> queryTokens,
+    required Set<String> focus,
+    required NazaMemoryChunk chunk,
+  }) {
+    if (queryTokens.isEmpty && focus.isEmpty) return 0;
+    final chunkTokens = _tokenSet(
+      '${chunk.summary} ${chunk.keywords.join(' ')} ${chunk.text}',
+    );
+    if (chunkTokens.isEmpty) return 0;
+    final queryOverlap = queryTokens.isEmpty
+        ? 0.0
+        : queryTokens.intersection(chunkTokens).length /
+              math.max(1, math.min(queryTokens.length, chunkTokens.length));
+    final focusOverlap = focus.isEmpty
+        ? 0.0
+        : focus.intersection(chunkTokens).length / math.max(1, focus.length);
+    return (queryOverlap * 0.68 + focusOverlap * 0.32)
+        .clamp(0.0, 1.0)
+        .toDouble();
+  }
+
+  double _tagAffinity({
+    required Set<String> focus,
+    required NazaMemoryChunk chunk,
+  }) {
+    if (focus.isEmpty || chunk.tags.isEmpty) return 0;
+    final tags = chunk.tags.map((tag) => tag.toLowerCase()).toSet();
+    return (focus.intersection(tags).length / math.max(1, focus.length))
+        .clamp(0.0, 1.0)
+        .toDouble();
+  }
+
+  List<String> _keywordsFor(
+    String text, {
+    required String summary,
+    int max = NazaAppConfig.memoryKeywordCount,
+  }) {
+    final counts = <String, double>{};
+    final source = '$summary $text'.toLowerCase();
+    for (final match in _wordRegExp.allMatches(source)) {
+      final token = match.group(0) ?? '';
+      if (token.length < 3 || _stopWords.contains(token)) continue;
+      final boost = summary.toLowerCase().contains(token) ? 1.45 : 1.0;
+      final shapeBoost =
+          RegExp(r'[0-9_/-]').hasMatch(token) || token.length >= 8 ? 0.25 : 0.0;
+      counts[token] = (counts[token] ?? 0) + boost + shapeBoost;
+    }
+    final sorted = counts.entries.toList()
+      ..sort((a, b) {
+        final score = b.value.compareTo(a.value);
+        if (score != 0) return score;
+        return b.key.length.compareTo(a.key.length);
+      });
+    return sorted.take(max).map((entry) => entry.key).toList(growable: false);
+  }
+
+  double _importanceFor({
+    required String role,
+    required String text,
+    required String summary,
+    required List<String> keywords,
+    required double score,
+  }) {
+    final lower = '$text $summary ${keywords.join(' ')}'.toLowerCase();
+    var importance =
+        0.26 +
+        score.clamp(0.0, 1.0) * 0.20 +
+        (text.length / 2800).clamp(0, 0.22);
+    if (role == 'user') importance += 0.07;
+    if (summary.isNotEmpty) importance += 0.04;
+    if (keywords.length >= 6) importance += 0.04;
+    if (lower.contains('remember') ||
+        lower.contains('preference') ||
+        lower.contains('my name') ||
+        lower.contains('project') ||
+        lower.contains('bug') ||
+        lower.contains('error') ||
+        lower.contains('todo') ||
+        lower.contains('decision')) {
+      importance += 0.18;
+    }
+    if (RegExp(
+      r'\b[A-Za-z0-9_./-]+\.(dart|json|yaml|md|cpp|h|kt|swift)\b',
+    ).hasMatch(text)) {
+      importance += 0.14;
+    }
+    return importance.clamp(0.0, 1.0).toDouble();
+  }
+
+  List<double> _embed(String text) {
+    final vector = List<double>.filled(
+      NazaAppConfig.memoryEmbeddingDimensions,
+      0,
+    );
+    final normalized = _normalize(text).toLowerCase();
+    final tokens = _wordRegExp
+        .allMatches(normalized)
+        .map((match) => match.group(0) ?? '')
+        .where((token) => token.length > 1)
+        .take(600)
+        .toList(growable: false);
+
+    if (normalized.contains('[action]')) {
+      _addFeature(vector, 'prompt-tag:action', 2.2);
+    }
+    if (normalized.contains('[format]')) {
+      _addFeature(vector, 'prompt-tag:format', 2.0);
+    }
+    if (normalized.contains('[rag]')) {
+      _addFeature(vector, 'prompt-tag:rag', 1.8);
+    }
+    for (final match in RegExp(
+      r'\b[A-Za-z0-9_./-]+\.(dart|json|yaml|yml|md|cpp|h|kt|swift|gradle)\b',
+    ).allMatches(normalized)) {
+      _addFeature(vector, 'file:${match.group(0)}', 1.8);
+    }
+    for (final match in RegExp(
+      r'\b(null|error|fix|build|implement|summary|voice|memory|vector|rag|backend|setting|test)\b',
+    ).allMatches(normalized)) {
+      _addFeature(vector, 'intent:${match.group(0)}', 1.35);
+    }
+
+    for (var i = 0; i < tokens.length; i++) {
+      final token = tokens[i];
+      final weight = token.length > 6 ? 1.14 : 1.0;
+      _addFeature(vector, 'tok:$token', weight);
+      if (i + 1 < tokens.length) {
+        _addFeature(vector, 'bi:$token ${tokens[i + 1]}', 0.72);
+      }
+      if (token.length >= 5) {
+        for (var j = 0; j <= token.length - 3 && j < 5; j++) {
+          _addFeature(vector, 'tri:${token.substring(j, j + 3)}', 0.18);
+        }
+      }
+    }
+
+    var norm = 0.0;
+    for (final value in vector) {
+      norm += value * value;
+    }
+    norm = math.sqrt(norm);
+    if (norm <= 0) return vector;
+    for (var i = 0; i < vector.length; i++) {
+      vector[i] = vector[i] / norm;
+    }
+    return vector;
+  }
+
+  void _addFeature(List<double> vector, String feature, double weight) {
+    final h1 = _hash32(feature);
+    final h2 = _hash32('$feature#alt');
+    final i1 = h1 % vector.length;
+    final i2 = h2 % vector.length;
+    final s1 = ((h1 >> 9) & 1) == 0 ? 1.0 : -1.0;
+    final s2 = ((h2 >> 11) & 1) == 0 ? 1.0 : -1.0;
+    vector[i1] += weight * s1;
+    vector[i2] += weight * 0.45 * s2;
+  }
+
+  double _cosine(List<double> a, List<double> b) {
+    final n = math.min(a.length, b.length);
+    var dot = 0.0;
+    for (var i = 0; i < n; i++) {
+      dot += a[i] * b[i];
+    }
+    return ((dot + 1.0) / 2.0).clamp(0.0, 1.0).toDouble();
+  }
+
+  Set<String> _tokenSet(String text) {
+    return _wordRegExp
+        .allMatches(text.toLowerCase())
+        .map((match) => match.group(0) ?? '')
+        .where((token) => token.length > 2)
+        .toSet();
+  }
+
+  String _normalize(String text) {
+    return text.replaceAll(_spaceRegExp, ' ').trim();
+  }
+
+  String _tailWords(String text, {required int maxWords}) {
+    final words = text
+        .split(_spaceRegExp)
+        .where((word) => word.trim().isNotEmpty)
+        .toList(growable: false);
+    if (words.length <= maxWords) return words.join(' ');
+    return words.skip(words.length - maxWords).join(' ');
+  }
+
+  String _clip(String text, {required int maxChars}) {
+    final clean = _normalize(text);
+    if (clean.length <= maxChars) return clean;
+    return clean.substring(0, maxChars).trimRight();
+  }
+
+  int _hash32(String text) {
+    var hash = 0x811C9DC5;
+    for (final unit in text.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return hash & 0x7FFFFFFF;
+  }
+
+  Future<File> _memoryFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/${NazaAppConfig.memoryFileName}');
+  }
+
+  Future<File> _settingsFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/${NazaAppConfig.memorySettingsFileName}');
   }
 }
 
@@ -7165,6 +9321,7 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     setState(() => _status = 'clearing history');
     try {
       await NazaVault.instance.clearHistory();
+      await NazaVectorMemory.instance.clear();
     } catch (error) {
       if (!mounted) return;
       setState(() => _status = 'clear failed: $error');
@@ -11395,6 +13552,180 @@ class _ConvoWaveformPainter extends CustomPainter {
   }
 }
 
+class _VectorMemorySettingsCard extends StatefulWidget {
+  const _VectorMemorySettingsCard();
+
+  @override
+  State<_VectorMemorySettingsCard> createState() =>
+      _VectorMemorySettingsCardState();
+}
+
+class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
+  @override
+  void initState() {
+    super.initState();
+    unawaited(NazaVectorMemory.instance.prepareSettings());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NazaMemorySettings>(
+      valueListenable: NazaVectorMemory.instance.settings,
+      builder: (_, settings, _) {
+        return ValueListenableBuilder<NazaMemorySnapshot>(
+          valueListenable: NazaVectorMemory.instance.snapshot,
+          builder: (_, snap, _) {
+            final enabled = settings.enabled;
+            final accent = enabled
+                ? NazaPalette.mintSoft
+                : const Color(0xFFFFCE78);
+            return _NazaGlassCard(
+              padding: const EdgeInsets.all(13),
+              radius: 18,
+              active: enabled,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        enabled
+                            ? Icons.account_tree_rounded
+                            : Icons.pause_circle_rounded,
+                        color: accent,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          enabled
+                              ? 'Encrypted vector memory enabled'
+                              : 'Encrypted vector memory paused',
+                          style: const TextStyle(
+                            color: NazaPalette.text,
+                            fontWeight: FontWeight.w900,
+                            fontFamily: NazaFonts.display,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Prior turns are summarized with a Summa-style ranker, keyworded, and embedded into a local AES-GCM vector object index. The context manager rotates valid memory, shrinks overflow, and fills the active Gemma window with [action], [format], [context], and [rag] prompt blocks.',
+                    style: TextStyle(
+                      color: NazaPalette.subtext,
+                      height: 1.35,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: NazaFonts.display,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _InfoRow(
+                    label: 'Indexed chunks',
+                    value: snap.chunks.toString(),
+                  ),
+                  _InfoRow(
+                    label: 'Embedding dimensions',
+                    value: NazaAppConfig.memoryEmbeddingDimensions.toString(),
+                  ),
+                  const _InfoRow(
+                    label: 'Vector class',
+                    value: NazaAppConfig.memoryClassName,
+                  ),
+                  const _InfoRow(
+                    label: 'Tenant',
+                    value: NazaAppConfig.memoryTenant,
+                  ),
+                  _InfoRow(
+                    label: 'Summary budget',
+                    value: '${NazaAppConfig.memorySummaryChars} chars',
+                  ),
+                  _InfoRow(
+                    label: 'Keyword budget',
+                    value: '${NazaAppConfig.memoryKeywordCount} terms',
+                  ),
+                  _InfoRow(
+                    label: 'Context budget',
+                    value: '${NazaAppConfig.memoryContextBudgetChars} chars',
+                  ),
+                  _InfoRow(
+                    label: 'Input window budget',
+                    value: '${NazaAppConfig.contextInputBudgetChars} chars',
+                  ),
+                  _InfoRow(
+                    label: 'Shrink target',
+                    value: '${NazaAppConfig.contextShrinkTargetChars} chars',
+                  ),
+                  _InfoRow(
+                    label: 'Fill target',
+                    value:
+                        '${(NazaAppConfig.contextTargetFillRatio * 100).round()}%',
+                  ),
+                  _InfoRow(
+                    label: 'Prompt surface cap',
+                    value: '${NazaAppConfig.ragPromptSurfaceChars} chars',
+                  ),
+                  _InfoRow(
+                    label: 'Last action mode',
+                    value: snap.lastActionMode,
+                  ),
+                  _InfoRow(
+                    label: 'Last allocation',
+                    value:
+                        '${snap.lastAllocationChunks} chunks / ${snap.lastAllocationScore.toStringAsFixed(3)}',
+                  ),
+                  _InfoRow(label: 'Phase', value: snap.phase),
+                  if (snap.error != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      snap.error!,
+                      style: const TextStyle(
+                        color: NazaPalette.danger,
+                        height: 1.35,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      _NazaActionButton(
+                        onPressed: () => unawaited(
+                          NazaVectorMemory.instance.setEnabled(!enabled),
+                        ),
+                        icon: Icon(
+                          enabled
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
+                        ),
+                        label: Text(enabled ? 'Pause Memory' : 'Enable Memory'),
+                        minimumSize: const Size(160, 42),
+                      ),
+                      _NazaActionButton(
+                        onPressed: () =>
+                            unawaited(NazaVectorMemory.instance.clear()),
+                        icon: const Icon(Icons.delete_sweep_rounded),
+                        label: const Text('Clear Memory'),
+                        filled: false,
+                        minimumSize: const Size(150, 42),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
 class _SettingsPanel extends StatelessWidget {
   final bool actionsEnabled;
   final Future<void> Function() onResetChat;
@@ -11420,6 +13751,9 @@ class _SettingsPanel extends StatelessWidget {
         const _InfoRow(label: 'Scroll throttle', value: '240 ms'),
         const _InfoRow(label: 'Display font', value: 'Inter'),
         const _InfoRow(label: 'Telemetry font', value: 'JetBrains Mono'),
+        const SizedBox(height: 14),
+        const _SettingsSectionTitle('Vector memory / long context'),
+        const _VectorMemorySettingsCard(),
         const SizedBox(height: 14),
         const _SettingsSectionTitle('Model status'),
         const _ModelStatusSection(),
