@@ -588,6 +588,405 @@ final class NazaContinuationDecision {
   }
 }
 
+final class NazaContinuationTaskMemory {
+  final String taskType;
+  final String targetLanguage;
+  final String domain;
+  final String deliverable;
+  final int progressPercent;
+  final List<String> completedItems;
+  final List<String> remainingItems;
+  final String cursorState;
+  final String nextTokenPolicy;
+  final String driftGuard;
+
+  const NazaContinuationTaskMemory({
+    required this.taskType,
+    required this.targetLanguage,
+    required this.domain,
+    required this.deliverable,
+    required this.progressPercent,
+    required this.completedItems,
+    required this.remainingItems,
+    required this.cursorState,
+    required this.nextTokenPolicy,
+    required this.driftGuard,
+  });
+
+  String toPromptBlock() {
+    return '''
+[task_memory]
+source=local-continuation-task-memory-agent-v2
+task_type=$taskType
+target_language=$targetLanguage
+domain=$domain
+deliverable=$deliverable
+progress_estimate=$progressPercent%
+cursor_state=$cursorState
+next_token_policy=$nextTokenPolicy
+drift_guard=$driftGuard
+completed_items=
+${_bullets(completedItems)}
+remaining_items=
+${_bullets(remainingItems)}
+[/task_memory]''';
+  }
+
+  static String _bullets(List<String> items) {
+    if (items.isEmpty) return '- none recorded yet';
+    return items.map((item) => '- $item').join('\n');
+  }
+}
+
+final class NazaContinuationTaskAgent {
+  NazaContinuationTaskAgent._();
+
+  static final RegExp _lineTargetRegExp = RegExp(
+    r'\b(\d{2,5})\s*(?:line|lines)\b',
+    caseSensitive: false,
+  );
+  static final RegExp _spaceRegExp = RegExp(r'\s+');
+  static final RegExp _headingRegExp = RegExp(r'^\s{0,3}#{1,6}\s+(.+)$');
+  static final RegExp _numberedRegExp = RegExp(r'^\s*\d+[.)]\s+(.+)$');
+  static final RegExp _functionRegExp = RegExp(
+    r'^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)|^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)|^\s*(?:function|const|final|var|let)\s+([A-Za-z_][A-Za-z0-9_]*)',
+  );
+  static final RegExp _codeFenceRegExp = RegExp(r'```');
+
+  static NazaContinuationTaskMemory build({
+    required String originalUserText,
+    required NazaActionProfile actionProfile,
+    required String accumulatedReply,
+    required NazaContinuationDecision decision,
+    required int pass,
+    required int maxPasses,
+  }) {
+    final original = _normalize(originalUserText);
+    final reply = accumulatedReply.trimRight();
+    final lowerOriginal = original.toLowerCase();
+    final lowerReply = reply.toLowerCase();
+    final targetLanguage = _targetLanguage(lowerOriginal, lowerReply);
+    final taskType = _taskType(actionProfile, lowerOriginal, targetLanguage);
+    final domain = _domain(lowerOriginal, lowerReply, taskType);
+    final progress = _progressPercent(
+      original: lowerOriginal,
+      reply: reply,
+      decision: decision,
+      pass: pass,
+      maxPasses: maxPasses,
+    );
+
+    return NazaContinuationTaskMemory(
+      taskType: taskType,
+      targetLanguage: targetLanguage,
+      domain: domain,
+      deliverable: _oneLine(original, maxChars: 320),
+      progressPercent: progress,
+      completedItems: _completedItems(reply, taskType, targetLanguage),
+      remainingItems: _remainingItems(
+        original: lowerOriginal,
+        reply: lowerReply,
+        taskType: taskType,
+        targetLanguage: targetLanguage,
+        progressPercent: progress,
+        decision: decision,
+      ),
+      cursorState: _cursorState(reply),
+      nextTokenPolicy: _nextTokenPolicy(reply),
+      driftGuard: _driftGuard(taskType, targetLanguage, domain),
+    );
+  }
+
+  static String _taskType(
+    NazaActionProfile actionProfile,
+    String original,
+    String targetLanguage,
+  ) {
+    if (targetLanguage != 'unspecified' ||
+        _hasAny(original, const [
+          'code',
+          'script',
+          'program',
+          'function',
+          'api',
+          'sdk',
+          'cli',
+          'python',
+          'dart',
+          'javascript',
+          'typescript',
+        ])) {
+      return 'coding';
+    }
+    if (_hasAny(original, const [
+      'teach',
+      'lesson',
+      'explain',
+      'tutorial',
+      'walk me through',
+    ])) {
+      return 'teaching';
+    }
+    if (_hasAny(original, const [
+      'research',
+      'science',
+      'paper',
+      'hypothesis',
+      'experiment',
+      'study',
+    ])) {
+      return 'research-science';
+    }
+    if (_hasAny(original, const ['story', 'book', 'novel', 'chapter'])) {
+      return 'long-form-writing';
+    }
+    if (_hasAny(original, const ['plan', 'roadmap', 'architecture'])) {
+      return 'planning';
+    }
+    return switch (actionProfile.mode) {
+      NazaActionMode.implement || NazaActionMode.debug => 'coding',
+      NazaActionMode.create => 'creative-writing',
+      NazaActionMode.summarize => 'summarization',
+      NazaActionMode.explain => 'teaching',
+      NazaActionMode.scan => 'scanner-analysis',
+      NazaActionMode.voice => 'voice-script',
+      _ => 'direct-answer',
+    };
+  }
+
+  static String _targetLanguage(String original, String reply) {
+    final source = '$original\n$reply';
+    const languages = <String, List<String>>{
+      'Python': [
+        'python',
+        '.py',
+        'pip ',
+        'openai api',
+        'def ',
+        'import openai',
+      ],
+      'Dart/Flutter': ['dart', 'flutter', '.dart', 'widget ', 'future<'],
+      'JavaScript': ['javascript', 'node.js', 'node ', '.js'],
+      'TypeScript': ['typescript', '.ts', 'tsx'],
+      'Swift': ['swift', 'swiftui'],
+      'Kotlin': ['kotlin', 'android'],
+      'C++': ['c++', 'cpp', '.cpp'],
+      'Bash': ['bash', 'shell script', '#!/bin/bash'],
+      'SQL': ['sql', 'postgres', 'sqlite'],
+    };
+    for (final entry in languages.entries) {
+      if (_hasAny(source, entry.value)) return entry.key;
+    }
+    return 'unspecified';
+  }
+
+  static String _domain(String original, String reply, String taskType) {
+    final source = '$original\n$reply';
+    final domains = <String>[
+      if (_hasAny(source, const ['openai', 'chat.completions', 'api key']))
+        'openai-api',
+      if (_hasAny(source, const ['book', 'novel', 'chapter'])) 'book-writing',
+      if (_hasAny(source, const ['gemma', 'litert', 'local model']))
+        'local-llm',
+      if (_hasAny(source, const ['vector', 'memory', 'rag'])) 'memory-rag',
+      if (_hasAny(source, const ['science', 'research', 'experiment']))
+        'science',
+    ];
+    if (domains.isEmpty) return taskType;
+    return domains.take(4).join('+');
+  }
+
+  static int _progressPercent({
+    required String original,
+    required String reply,
+    required NazaContinuationDecision decision,
+    required int pass,
+    required int maxPasses,
+  }) {
+    final targetLines = _targetLineCount(original);
+    final nonEmptyLines = reply
+        .split(RegExp(r'\r\n?|\n'))
+        .where((line) => line.trim().isNotEmpty)
+        .length;
+    if (targetLines != null && targetLines > 0) {
+      return ((nonEmptyLines / targetLines) * 100).round().clamp(1, 98);
+    }
+    if (decision.reason == 'explicit-done') return 100;
+    final structural = math.min(55, (nonEmptyLines / 3).round());
+    final passProgress = ((pass / math.max(1, maxPasses)) * 42).round();
+    return math.max(8, math.min(96, structural + passProgress));
+  }
+
+  static int? _targetLineCount(String text) {
+    final match = _lineTargetRegExp.firstMatch(text);
+    if (match == null) return null;
+    return int.tryParse(match.group(1) ?? '');
+  }
+
+  static List<String> _completedItems(
+    String reply,
+    String taskType,
+    String targetLanguage,
+  ) {
+    final items = <String>[];
+    final lines = reply.split(RegExp(r'\r\n?|\n'));
+    var sawCode = false;
+    for (final line in lines) {
+      final clean = line.trim();
+      if (clean.isEmpty) continue;
+      if (clean.startsWith('```')) sawCode = true;
+      final heading = _headingRegExp.firstMatch(clean);
+      if (heading != null) {
+        items.add(
+          'section: ${_oneLine(heading.group(1) ?? clean, maxChars: 96)}',
+        );
+      }
+      final numbered = _numberedRegExp.firstMatch(clean);
+      if (numbered != null) {
+        items.add(
+          'step: ${_oneLine(numbered.group(1) ?? clean, maxChars: 96)}',
+        );
+      }
+      final fn = _functionRegExp.firstMatch(line);
+      if (fn != null) {
+        items.add(
+          'symbol: ${_oneLine(fn.group(1) ?? fn.group(2) ?? fn.group(3) ?? clean, maxChars: 80)}',
+        );
+      }
+      if (items.length >= 8) break;
+    }
+    if (items.isEmpty && sawCode) {
+      items.add('$targetLanguage code block started');
+    }
+    if (items.isEmpty && reply.trim().isNotEmpty) {
+      items.add('${taskType.replaceAll('-', ' ')} response started');
+    }
+    return _dedupe(items).take(8).toList(growable: false);
+  }
+
+  static List<String> _remainingItems({
+    required String original,
+    required String reply,
+    required String taskType,
+    required String targetLanguage,
+    required int progressPercent,
+    required NazaContinuationDecision decision,
+  }) {
+    final remaining = <String>[];
+    final targetLines = _targetLineCount(original);
+    if (targetLines != null) {
+      remaining.add(
+        'continue toward requested $targetLines-line deliverable; current estimate $progressPercent%',
+      );
+    }
+    if (decision.reason.contains('open-code-scope') ||
+        decision.reason.contains('open-code-fence')) {
+      remaining.add('complete the currently open code/string/list structure');
+    }
+    if (decision.reason.contains('partial-token')) {
+      remaining.add('complete the truncated token before adding new content');
+    }
+    if (taskType == 'coding') {
+      if (!reply.contains('if __name__') && targetLanguage == 'Python') {
+        remaining.add('finish Python main execution path if it belongs next');
+      }
+      if (!reply.contains('```') && targetLanguage != 'unspecified') {
+        remaining.add('keep output in $targetLanguage code style');
+      }
+      remaining.add(
+        'do not switch to Dart/Flutter unless the original task asked for it',
+      );
+    } else if (taskType.contains('writing')) {
+      remaining.add('continue the requested prose artifact in the same voice');
+    } else if (taskType == 'research-science') {
+      remaining.add('preserve claim/evidence/uncertainty structure');
+    } else if (taskType == 'teaching') {
+      remaining.add('continue the lesson from the next concept, not a recap');
+    }
+    if (remaining.isEmpty) {
+      remaining.add('continue the current answer from the exact cursor');
+    }
+    return _dedupe(remaining).take(8).toList(growable: false);
+  }
+
+  static String _cursorState(String reply) {
+    final trimmed = reply.trimRight();
+    if (trimmed.isEmpty) return 'empty-answer';
+    final lastLine = trimmed.split(RegExp(r'\r\n?|\n')).last.trimRight();
+    final openFence = _codeFenceRegExp.allMatches(trimmed).length.isOdd;
+    final fragment = _trailingFragment(trimmed);
+    final parts = <String>[
+      if (openFence) 'inside-code-fence',
+      if (fragment.isNotEmpty) 'open_fragment=$fragment',
+      'last_line=${_oneLine(lastLine, maxChars: 160)}',
+    ];
+    return parts.join(' | ');
+  }
+
+  static String _nextTokenPolicy(String reply) {
+    final trimmed = reply.trimRight();
+    final fragment = _trailingFragment(trimmed);
+    if (fragment.isNotEmpty && !trimmed.endsWith(' ')) {
+      return 'begin with the remaining letters for "$fragment"; do not insert a newline first';
+    }
+    final last = trimmed.isEmpty ? '' : trimmed[trimmed.length - 1];
+    if ('([{'.contains(last)) {
+      return 'continue inside the open delimiter immediately';
+    }
+    if (trimmed.endsWith(',') || trimmed.endsWith('=')) {
+      return 'continue the same statement immediately';
+    }
+    return 'continue at the exact next word after the tail';
+  }
+
+  static String _driftGuard(
+    String taskType,
+    String targetLanguage,
+    String domain,
+  ) {
+    final lang = targetLanguage == 'unspecified'
+        ? 'preserve the language/domain implied by the current answer'
+        : 'stay in $targetLanguage';
+    return '$lang; stay on $taskType/$domain; do not introduce a different app/framework/task unless the original user asked for it';
+  }
+
+  static String _trailingFragment(String text) {
+    final match = RegExp(
+      r'([A-Za-z_/$][A-Za-z0-9_/$]{0,48})$',
+    ).firstMatch(text);
+    return match?.group(1) ?? '';
+  }
+
+  static bool _hasAny(String text, List<String> needles) {
+    for (final needle in needles) {
+      if (text.contains(needle)) return true;
+    }
+    return false;
+  }
+
+  static List<String> _dedupe(List<String> items) {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final item in items) {
+      final clean = _oneLine(item, maxChars: 140);
+      final key = clean.toLowerCase();
+      if (clean.isEmpty || !seen.add(key)) continue;
+      out.add(clean);
+    }
+    return out;
+  }
+
+  static String _normalize(String text) {
+    return text.replaceAll(_spaceRegExp, ' ').trim();
+  }
+
+  static String _oneLine(String text, {required int maxChars}) {
+    final clean = _normalize(text);
+    if (clean.length <= maxChars) return clean;
+    return clean.substring(0, maxChars).trimRight();
+  }
+}
+
 final class NazaVerifiedModelFile {
   final File file;
   final String sha256;
@@ -3338,27 +3737,39 @@ final class NazaContinuationEngine {
     required NazaContinuationDecision decision,
     required int pass,
     required int maxPasses,
+    String accumulatedReply = '',
   }) {
+    final taskMemory = NazaContinuationTaskAgent.build(
+      originalUserText: originalUserText,
+      actionProfile: actionProfile,
+      accumulatedReply: accumulatedReply.trim().isEmpty
+          ? '${decision.completedSummary}\n${decision.tail}'
+          : accumulatedReply,
+      decision: decision,
+      pass: pass,
+      maxPasses: maxPasses,
+    );
     return '''
-[continuation_state]
+[continuation_window]
 pass=$pass/$maxPasses
 reason=${decision.reason}
 confidence=${decision.confidence.toStringAsFixed(3)}
-action_mode=${actionProfile.label}
-original_task=${_oneLine(originalUserText, maxChars: 420)}
-completed_summary=${_oneLine(decision.completedSummary, maxChars: NazaAppConfig.continuationSummaryChars)}
+${taskMemory.toPromptBlock()}
+compressed_completed_summary=${_oneLine(decision.completedSummary, maxChars: NazaAppConfig.continuationSummaryChars)}
 exact_tail_start
 <<<NAZA_CONTINUATION_TAIL
 ${decision.tail}
 NAZA_CONTINUATION_TAIL
 exact_tail_end
-[/continuation_state]
+[/continuation_window]
 
 Continue the same assistant answer from the exact next token after exact_tail.
 Rules:
-- Do not repeat exact_tail, restart, recap, apologize, or mention continuation.
+- First silently reconcile task_memory, compressed_completed_summary, and exact_tail.
+- Do not repeat exact_tail, restart, recap, apologize, or mention continuation/task memory.
 - If exact_tail ends mid-word, mid-string, mid-code expression, or mid-list item, complete that token first.
-- Preserve indentation, numbering, code fences, variable names, markdown tables, and the user's requested format.
+- Preserve target_language, task_type, indentation, numbering, code fences, variable names, markdown tables, and the user's requested format.
+- Never drift to Dart/Flutter/app repair unless task_memory says that was the original task.
 - Continue until the current artifact or task reaches a natural stop.
 - When the task is fully complete, end with ${NazaAppConfig.continuationDoneMarker}.
 ''';
@@ -4343,6 +4754,7 @@ final class NazaLocalGemma {
           decision: continuationDecision,
           pass: continuationCount,
           maxPasses: NazaAppConfig.autoContinuationPasses,
+          accumulatedReply: prefix,
         );
         final continuation = await _streamContinuationWindow(
           generationId: generationId,

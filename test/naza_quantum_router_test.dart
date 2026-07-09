@@ -196,6 +196,50 @@ class Runner {
       expect(NazaContinuationEngine.parseJudgeReply('No.'), isFalse);
       expect(NazaContinuationEngine.parseJudgeReply('continue'), isTrue);
     });
+
+    test('continuation prompt preserves task type and target language', () {
+      const userText =
+          'write a python script thats 600 lines, calling openai api with a long prompt for writing a book';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```python
+from openai import OpenAI
+
+BOOK_PROMPT = """
+Write an epic fantasy book.
+"""
+
+def generate_book():
+    client = OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-scope+partial-token',
+        confidence: 0.92,
+        completedSummary:
+            'The answer has started a Python OpenAI book-generation script.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('task_type=coding'));
+      expect(prompt, contains('target_language=Python'));
+      expect(prompt, contains('domain=openai-api+book-writing'));
+      expect(prompt, contains('600-line deliverable'));
+      expect(prompt, contains('do not switch to Dart/Flutter'));
+      expect(prompt, contains('complete the currently open code/string/list'));
+    });
   });
 
   group('NazaContextManager', () {
