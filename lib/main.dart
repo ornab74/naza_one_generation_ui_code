@@ -134,6 +134,13 @@ final class NazaAppConfig {
   static const int telemetryThrottleMs = 500;
   static const int generationIdleTimeoutSeconds = 90;
   static const int chatRecoveryTimeoutSeconds = 8;
+  static const int runtimeInitTimeoutSeconds = 30;
+  static const int modelInstallTimeoutSeconds = 300;
+  static const int modelLoadTimeoutSeconds = 90;
+  static const int chatOpenTimeoutSeconds = 20;
+  static const int chatAddQueryTimeoutSeconds = 30;
+  static const int continuationJudgeTimeoutSeconds = 18;
+  static const int memoryAllocationTimeoutSeconds = 4;
   static const String liveVoiceChannel = 'com.nazaone/live_voice';
   static const String vaultAad = 'naza-one-vault-v2-generation-ui';
   static const String keyFileName = 'naza_one_vault.key';
@@ -969,6 +976,7 @@ final class NazaSecureModelStore {
         ?.trim();
     final executableModelsDir =
         '${File(Platform.resolvedExecutable).parent.path}/models';
+    final workingModelsDir = '${Directory.current.path}/models';
 
     return <String>[
       if (configured != null &&
@@ -981,6 +989,8 @@ final class NazaSecureModelStore {
         '$configured/model.litertlm',
       '$executableModelsDir/${NazaAppConfig.modelFileName}',
       '$executableModelsDir/model.litertlm',
+      '$workingModelsDir/${NazaAppConfig.modelFileName}',
+      '$workingModelsDir/model.litertlm',
     ].where((path) => path.trim().isNotEmpty).toSet().toList();
   }
 
@@ -1045,8 +1055,15 @@ final class NazaSecureModelStore {
       await sink.close();
       sink = null;
 
-      onProgress?.call(95, 'verifying model SHA-256');
-      final actual = await _sha256(part);
+      onProgress?.call(95, 'verifying downloaded model SHA-256');
+      final actual = await _sha256WithProgress(
+        part,
+        onProgress: onProgress,
+        progressStart: 95,
+        progressEnd: 99,
+        phase: 'verifying downloaded model SHA-256',
+        validateExtension: false,
+      );
       if (actual != NazaAppConfig.modelSha256) {
         throw FormatException(
           'Downloaded model SHA-256 mismatch. Expected '
@@ -1193,11 +1210,6 @@ final class NazaSecureModelStore {
 
   static String get _modelTrustMarker {
     return '${NazaAppConfig.modelFileName}|${NazaAppConfig.modelDownloadUrl}';
-  }
-
-  static Future<String> _sha256(File file) async {
-    final digest = await crypto.sha256.bind(file.openRead()).first;
-    return digest.toString().toLowerCase();
   }
 
   static Future<String> _sha256WithProgress(
@@ -1464,9 +1476,7 @@ final class NazaVerificationStateStore {
         raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
         raw['sha256'] == expected &&
         (raw['marker'] ?? '') == marker;
-    if (!metadataMatches) return false;
-
-    return await _sha256(file) == expected;
+    return metadataMatches;
   }
 
   Future<void> _trustFileNow({
@@ -1510,9 +1520,7 @@ final class NazaVerificationStateStore {
         raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
         raw['sha256'] == expected &&
         raw['modelFileName'] == NazaAppConfig.modelFileName;
-    if (!metadataMatches) return false;
-
-    return await _sha256(file) == expected;
+    return metadataMatches;
   }
 
   Future<void> _trustRuntimeModelNow({
@@ -4084,6 +4092,14 @@ final class NazaLocalGemma {
       await FlutterGemma.initialize(
         inferenceEngines: const [LiteRtLmEngine()],
         maxDownloadRetries: 0,
+      ).timeout(
+        const Duration(seconds: NazaAppConfig.runtimeInitTimeoutSeconds),
+        onTimeout: () {
+          throw TimeoutException(
+            'LiteRT-LM runtime initialization timed out after '
+            '${NazaAppConfig.runtimeInitTimeoutSeconds}s.',
+          );
+        },
       );
 
       _runtimeBootstrapped = true;
@@ -4145,7 +4161,7 @@ final class NazaLocalGemma {
         await _loadActiveModelForBackend(backendPreference.value);
       }
 
-      _chat = await _model.createChat(
+      _chat = await _createChatWithTimeout(
         systemInstruction: NazaAppConfig.systemInstruction,
         maxOutputTokens: NazaAppConfig.outputTokens,
       );
@@ -4193,7 +4209,7 @@ final class NazaLocalGemma {
 
     final route = NazaQuantumRouter.route(trimmed);
     final actionProfile = NazaActionSelector.select(trimmed, route);
-    final memoryAllocation = await NazaVectorMemory.instance.allocate(
+    final memoryAllocation = await _allocateMemoryForTurn(
       userText: trimmed,
       route: route,
       actionProfile: actionProfile,
@@ -4240,8 +4256,11 @@ final class NazaLocalGemma {
         await _replaceChatSessionForAllocatedMemory();
       }
 
-      await _chat.addQueryChunk(
+      generation.value = generation.value.copyWith(stage: 'submitting prompt');
+      await _addQueryChunkWithTimeout(
+        _chat,
         Message.text(text: contextFrame.prompt, isUser: true),
+        label: 'local prompt',
       );
 
       var stream = await _streamResponse(
@@ -4275,13 +4294,19 @@ final class NazaLocalGemma {
           actionProfile: actionProfile,
           pass: continuationCount + 1,
         );
-        final agentNeedsContinuation = await _continuationAgentNeedsChunk(
-          generationId: generationId,
-          originalUserText: trimmed,
-          actionProfile: actionProfile,
-          decision: continuationDecision,
-          reply: clean,
-        );
+        final agentNeedsContinuation =
+            await _continuationAgentNeedsChunk(
+              generationId: generationId,
+              originalUserText: trimmed,
+              actionProfile: actionProfile,
+              decision: continuationDecision,
+              reply: clean,
+            ).timeout(
+              const Duration(
+                seconds: NazaAppConfig.continuationJudgeTimeoutSeconds,
+              ),
+              onTimeout: () => null,
+            );
         final hardSignal = NazaContinuationEngine.hasHardContinuationSignal(
           continuationDecision,
         );
@@ -4308,7 +4333,11 @@ final class NazaLocalGemma {
         );
 
         final prefix = clean;
-        await _chat.addQueryChunk(
+        generation.value = generation.value.copyWith(
+          stage: 'submitting continuation prompt',
+        );
+        await _addQueryChunkWithTimeout(
+          _chat,
           Message.text(
             text: NazaContinuationEngine.buildPrompt(
               originalUserText: trimmed,
@@ -4319,6 +4348,7 @@ final class NazaLocalGemma {
             ),
             isUser: true,
           ),
+          label: 'continuation prompt',
         );
 
         final continuation = await _streamResponse(
@@ -4421,14 +4451,11 @@ final class NazaLocalGemma {
     if (_model == null) return;
 
     try {
-      _chat = await _model
-          .createChat(
-            systemInstruction: NazaAppConfig.systemInstruction,
-            maxOutputTokens: NazaAppConfig.outputTokens,
-          )
-          .timeout(
-            const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
-          );
+      _chat = await _createChatWithTimeout(
+        systemInstruction: NazaAppConfig.systemInstruction,
+        maxOutputTokens: NazaAppConfig.outputTokens,
+        timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
+      );
     } catch (_) {
       _chat = null;
     }
@@ -4448,14 +4475,11 @@ final class NazaLocalGemma {
       throw StateError('Model closed while allocating long-session memory.');
     }
 
-    _chat = await _model
-        .createChat(
-          systemInstruction: NazaAppConfig.systemInstruction,
-          maxOutputTokens: NazaAppConfig.outputTokens,
-        )
-        .timeout(
-          const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
-        );
+    _chat = await _createChatWithTimeout(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      maxOutputTokens: NazaAppConfig.outputTokens,
+      timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
+    );
   }
 
   Future<NazaResponse> sendVoiceTurn(
@@ -4477,14 +4501,7 @@ final class NazaLocalGemma {
 
     try {
       await ensureReady();
-      _voiceChat ??= await _model.openChat(
-        temperature: .9,
-        topK: 40,
-        topP: .92,
-        tokenBuffer: 128,
-        systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
-        maxOutputTokens: NazaAppConfig.liveVoiceOutputTokens,
-      );
+      _voiceChat ??= await _openVoiceChatWithTimeout();
       if (_voiceChat == null) {
         throw StateError('Voice chat session did not open.');
       }
@@ -4521,8 +4538,13 @@ final class NazaLocalGemma {
         throw StateError('Voice chat session is not open.');
       }
 
-      await voiceChat.addQueryChunk(
+      generation.value = generation.value.copyWith(
+        stage: 'submitting voice prompt',
+      );
+      await _addQueryChunkWithTimeout(
+        voiceChat,
         Message.text(text: _buildVoicePrompt(trimmed, route), isUser: true),
+        label: 'voice prompt',
       );
 
       final stream = await _streamResponse(
@@ -4678,7 +4700,7 @@ final class NazaLocalGemma {
       await _chat?.session?.close();
     } catch (_) {}
 
-    _chat = await _model.createChat(
+    _chat = await _createChatWithTimeout(
       systemInstruction: NazaAppConfig.systemInstruction,
       maxOutputTokens: NazaAppConfig.outputTokens,
     );
@@ -4739,7 +4761,18 @@ final class NazaLocalGemma {
       clearError: true,
     );
 
-    await installer.fromFile(verified.file.path).install();
+    await installer
+        .fromFile(verified.file.path)
+        .install()
+        .timeout(
+          const Duration(seconds: NazaAppConfig.modelInstallTimeoutSeconds),
+          onTimeout: () {
+            throw TimeoutException(
+              'Verified model install timed out after '
+              '${NazaAppConfig.modelInstallTimeoutSeconds}s.',
+            );
+          },
+        );
     await NazaVerificationStateStore.instance.trustRuntimeModel(
       file: verified.file,
       sha256: NazaAppConfig.modelSha256,
@@ -4752,10 +4785,7 @@ final class NazaLocalGemma {
   ) async {
     switch (preference) {
       case NazaModelBackendPreference.cpuOnly:
-        _model = await FlutterGemma.getActiveModel(
-          maxTokens: NazaAppConfig.contextTokens,
-          preferredBackend: PreferredBackend.cpu,
-        );
+        _model = await _getActiveModelWithTimeout(PreferredBackend.cpu);
         snapshot.value = snapshot.value.copyWith(
           usingGpu: false,
           phase: 'model loaded on CPU backend',
@@ -4764,10 +4794,7 @@ final class NazaLocalGemma {
         return;
       case NazaModelBackendPreference.gpuOnly:
         try {
-          _model = await FlutterGemma.getActiveModel(
-            maxTokens: NazaAppConfig.contextTokens,
-            preferredBackend: PreferredBackend.gpu,
-          );
+          _model = await _getActiveModelWithTimeout(PreferredBackend.gpu);
           snapshot.value = snapshot.value.copyWith(
             usingGpu: true,
             phase: 'model loaded on GPU backend',
@@ -4787,10 +4814,7 @@ final class NazaLocalGemma {
         }
       case NazaModelBackendPreference.gpuFirst:
         try {
-          _model = await FlutterGemma.getActiveModel(
-            maxTokens: NazaAppConfig.contextTokens,
-            preferredBackend: PreferredBackend.gpu,
-          );
+          _model = await _getActiveModelWithTimeout(PreferredBackend.gpu);
 
           snapshot.value = snapshot.value.copyWith(
             usingGpu: true,
@@ -4799,10 +4823,7 @@ final class NazaLocalGemma {
           );
           return;
         } catch (_) {
-          _model = await FlutterGemma.getActiveModel(
-            maxTokens: NazaAppConfig.contextTokens,
-            preferredBackend: PreferredBackend.cpu,
-          );
+          _model = await _getActiveModelWithTimeout(PreferredBackend.cpu);
 
           snapshot.value = snapshot.value.copyWith(
             usingGpu: false,
@@ -4811,6 +4832,132 @@ final class NazaLocalGemma {
           );
           return;
         }
+    }
+  }
+
+  Future<NazaMemoryAllocation> _allocateMemoryForTurn({
+    required String userText,
+    required NazaRoute route,
+    required NazaActionProfile actionProfile,
+  }) async {
+    final memory = NazaVectorMemory.instance;
+    try {
+      return await memory
+          .allocate(
+            userText: userText,
+            route: route,
+            actionProfile: actionProfile,
+          )
+          .timeout(
+            const Duration(
+              seconds: NazaAppConfig.memoryAllocationTimeoutSeconds,
+            ),
+            onTimeout: () {
+              throw TimeoutException(
+                'Vector memory allocation timed out after '
+                '${NazaAppConfig.memoryAllocationTimeoutSeconds}s.',
+              );
+            },
+          );
+    } catch (error) {
+      memory.snapshot.value = memory.snapshot.value.copyWith(
+        phase: 'memory allocation skipped',
+        error: error.toString(),
+      );
+      return NazaMemoryAllocation.empty(enabled: memory.settings.value.enabled);
+    }
+  }
+
+  Future<dynamic> _getActiveModelWithTimeout(PreferredBackend backend) {
+    return FlutterGemma.getActiveModel(
+      maxTokens: NazaAppConfig.contextTokens,
+      preferredBackend: backend,
+    ).timeout(
+      const Duration(seconds: NazaAppConfig.modelLoadTimeoutSeconds),
+      onTimeout: () {
+        throw TimeoutException(
+          '${backend.name.toUpperCase()} model load timed out after '
+          '${NazaAppConfig.modelLoadTimeoutSeconds}s.',
+        );
+      },
+    );
+  }
+
+  Future<dynamic> _createChatWithTimeout({
+    required String systemInstruction,
+    required int maxOutputTokens,
+    int timeoutSeconds = NazaAppConfig.chatOpenTimeoutSeconds,
+  }) async {
+    final model = _model;
+    if (model == null) {
+      throw StateError('Model is not loaded.');
+    }
+
+    final opened = model.createChat(
+      systemInstruction: systemInstruction,
+      maxOutputTokens: maxOutputTokens,
+    );
+    if (opened is Future) {
+      return opened.timeout(
+        Duration(seconds: timeoutSeconds),
+        onTimeout: () {
+          throw TimeoutException(
+            'Chat session open timed out after ${timeoutSeconds}s.',
+          );
+        },
+      );
+    }
+    return opened;
+  }
+
+  Future<dynamic> _openVoiceChatWithTimeout() async {
+    final model = _model;
+    if (model == null) {
+      throw StateError('Model is not loaded.');
+    }
+
+    final opened = model.openChat(
+      temperature: .9,
+      topK: 40,
+      topP: .92,
+      tokenBuffer: 128,
+      systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
+      maxOutputTokens: NazaAppConfig.liveVoiceOutputTokens,
+    );
+    if (opened is Future) {
+      return opened.timeout(
+        const Duration(seconds: NazaAppConfig.chatOpenTimeoutSeconds),
+        onTimeout: () {
+          throw TimeoutException(
+            'Voice chat session open timed out after '
+            '${NazaAppConfig.chatOpenTimeoutSeconds}s.',
+          );
+        },
+      );
+    }
+    return opened;
+  }
+
+  Future<void> _addQueryChunkWithTimeout(
+    dynamic chat,
+    Message message, {
+    required String label,
+  }) async {
+    if (chat == null) {
+      throw StateError('Local chat session is not open.');
+    }
+
+    final added = chat.addQueryChunk(message);
+    if (added is Future) {
+      await added.timeout(
+        const Duration(seconds: NazaAppConfig.chatAddQueryTimeoutSeconds),
+        onTimeout: () {
+          throw TimeoutException(
+            'Submitting $label timed out after '
+            '${NazaAppConfig.chatAddQueryTimeoutSeconds}s.',
+          );
+        },
+      );
     }
   }
 
@@ -4883,15 +5030,13 @@ Answer out loud. Keep it natural, short, and useful.
 
     dynamic criticChat;
     try {
-      criticChat = await _model
-          .createChat(
-            systemInstruction: NazaAppConfig.continuationAgentSystemInstruction,
-            maxOutputTokens: NazaAppConfig.continuationJudgeOutputTokens,
-          )
-          .timeout(
-            const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
-          );
-      await criticChat.addQueryChunk(
+      criticChat = await _createChatWithTimeout(
+        systemInstruction: NazaAppConfig.continuationAgentSystemInstruction,
+        maxOutputTokens: NazaAppConfig.continuationJudgeOutputTokens,
+        timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
+      );
+      await _addQueryChunkWithTimeout(
+        criticChat,
         Message.text(
           text: NazaContinuationEngine.buildJudgePrompt(
             originalUserText: originalUserText,
@@ -4901,11 +5046,13 @@ Answer out loud. Keep it natural, short, and useful.
           ),
           isUser: true,
         ),
+        label: 'continuation judge prompt',
       );
       final verdict = await _streamResponse(
         generationId: generationId,
         chat: criticChat,
         maxTokens: NazaAppConfig.continuationJudgeOutputTokens,
+        updateTelemetry: false,
       );
       return NazaContinuationEngine.parseJudgeReply(verdict.text);
     } catch (_) {
@@ -4925,6 +5072,7 @@ Answer out loud. Keep it natural, short, and useful.
     void Function(String partialText)? onPartial,
     String partialPrefix = '',
     int maxTokens = NazaAppConfig.outputTokens,
+    bool updateTelemetry = true,
   }) async {
     final rawResponse = StringBuffer();
     var lastPartialAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -4979,7 +5127,7 @@ Answer out loud. Keep it natural, short, and useful.
                     milliseconds: NazaAppConfig.telemetryThrottleMs,
                   ) ||
               tokenClosedPhrase);
-      if (shouldUpdateTelemetry) {
+      if (updateTelemetry && shouldUpdateTelemetry) {
         lastTelemetryAt = now;
         lastEstimatedTokens = estimatedTokens;
         generation.value = generation.value.copyWith(
@@ -5013,7 +5161,7 @@ Answer out loud. Keep it natural, short, and useful.
         .ceil()
         .clamp(0, maxTokens)
         .toInt();
-    if (finalEstimatedTokens != lastEstimatedTokens) {
+    if (updateTelemetry && finalEstimatedTokens != lastEstimatedTokens) {
       generation.value = generation.value.copyWith(
         tokens: finalEstimatedTokens,
         progress: (finalEstimatedTokens / maxTokens)
