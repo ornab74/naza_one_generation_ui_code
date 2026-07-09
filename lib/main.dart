@@ -6802,6 +6802,8 @@ final class NazaMemoryChunk {
   final double routeScore;
   final double importance;
   final DateTime createdAt;
+  final int accessCount;
+  final DateTime lastAccessedAt;
   final List<double> embedding;
 
   const NazaMemoryChunk({
@@ -6820,10 +6822,15 @@ final class NazaMemoryChunk {
     required this.routeScore,
     required this.importance,
     required this.createdAt,
+    required this.accessCount,
+    required this.lastAccessedAt,
     required this.embedding,
   });
 
   factory NazaMemoryChunk.fromJson(Map<String, dynamic> json) {
+    final createdAt =
+        DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
+        DateTime.now();
     return NazaMemoryChunk(
       id: json['id']?.toString() ?? NazaHistoryRow._id(),
       turnId: json['turnId']?.toString() ?? NazaHistoryRow._id(),
@@ -6845,9 +6852,11 @@ final class NazaMemoryChunk {
       route: json['route']?.toString() ?? 'unknown',
       routeScore: double.tryParse(json['routeScore']?.toString() ?? '') ?? 0,
       importance: double.tryParse(json['importance']?.toString() ?? '') ?? 0.4,
-      createdAt:
-          DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
-          DateTime.now(),
+      createdAt: createdAt,
+      accessCount: ((json['accessCount'] as num?) ?? 0).toInt(),
+      lastAccessedAt:
+          DateTime.tryParse(json['lastAccessedAt']?.toString() ?? '') ??
+          createdAt,
       embedding: ((json['embedding'] as List?) ?? const [])
           .map((item) => double.tryParse(item.toString()) ?? 0.0)
           .toList(growable: false),
@@ -6871,10 +6880,54 @@ final class NazaMemoryChunk {
       'routeScore': routeScore,
       'importance': importance,
       'createdAt': createdAt.toIso8601String(),
+      'accessCount': accessCount,
+      'lastAccessedAt': lastAccessedAt.toIso8601String(),
       'embedding': embedding
           .map((value) => double.parse(value.toStringAsFixed(6)))
           .toList(growable: false),
     };
+  }
+
+  NazaMemoryChunk copyWith({
+    String? id,
+    String? turnId,
+    String? role,
+    String? text,
+    String? summary,
+    List<String>? keywords,
+    String? className,
+    String? tenant,
+    List<String>? tags,
+    int? tokenEstimate,
+    String? summaryModel,
+    String? route,
+    double? routeScore,
+    double? importance,
+    DateTime? createdAt,
+    int? accessCount,
+    DateTime? lastAccessedAt,
+    List<double>? embedding,
+  }) {
+    return NazaMemoryChunk(
+      id: id ?? this.id,
+      turnId: turnId ?? this.turnId,
+      role: role ?? this.role,
+      text: text ?? this.text,
+      summary: summary ?? this.summary,
+      keywords: keywords ?? this.keywords,
+      className: className ?? this.className,
+      tenant: tenant ?? this.tenant,
+      tags: tags ?? this.tags,
+      tokenEstimate: tokenEstimate ?? this.tokenEstimate,
+      summaryModel: summaryModel ?? this.summaryModel,
+      route: route ?? this.route,
+      routeScore: routeScore ?? this.routeScore,
+      importance: importance ?? this.importance,
+      createdAt: createdAt ?? this.createdAt,
+      accessCount: accessCount ?? this.accessCount,
+      lastAccessedAt: lastAccessedAt ?? this.lastAccessedAt,
+      embedding: embedding ?? this.embedding,
+    );
   }
 }
 
@@ -6933,6 +6986,7 @@ final class _ScoredMemoryChunk {
   final double recencyScore;
   final double certainty;
   final bool rotated;
+  final bool workingMemory;
 
   const _ScoredMemoryChunk({
     required this.chunk,
@@ -6942,6 +6996,7 @@ final class _ScoredMemoryChunk {
     required this.recencyScore,
     required this.certainty,
     this.rotated = false,
+    this.workingMemory = false,
   });
 
   _ScoredMemoryChunk asRotated() {
@@ -6953,6 +7008,7 @@ final class _ScoredMemoryChunk {
       recencyScore: recencyScore,
       certainty: certainty,
       rotated: true,
+      workingMemory: workingMemory,
     );
   }
 }
@@ -6962,6 +7018,10 @@ final class NazaVectorMemory {
 
   static final NazaVectorMemory instance = NazaVectorMemory._();
   static final RegExp _wordRegExp = RegExp(r"[A-Za-z0-9_']+");
+  static final RegExp _fileSymbolRegExp = RegExp(
+    r'\b[A-Za-z0-9_./-]+\.(dart|json|yaml|yml|md|cpp|h|kt|swift|py|txt)\b',
+    caseSensitive: false,
+  );
   static final RegExp _spaceRegExp = RegExp(r'\s+');
   static final RegExp _sentenceBoundaryRegExp = RegExp(r'(?<=[.!?;])\s+');
   static const Set<String> _stopWords = {
@@ -7088,6 +7148,7 @@ final class NazaVectorMemory {
           .map((item) => item.toLowerCase())
           .toSet();
       final now = DateTime.now();
+      final workingTurnIds = _workingMemoryTurnIds(chunks, maxTurns: 4);
       final scored = <_ScoredMemoryChunk>[];
       for (final chunk in chunks) {
         if (chunk.embedding.length != NazaAppConfig.memoryEmbeddingDimensions) {
@@ -7099,7 +7160,8 @@ final class NazaVectorMemory {
             .inHours
             .clamp(0, 24 * 3650)
             .toDouble();
-        final recency = 1.0 / (1.0 + ageHours / 96.0);
+        final workingMemory = workingTurnIds.contains(chunk.turnId);
+        final recency = workingMemory ? 1.0 : 1.0 / (1.0 + ageHours / 96.0);
         final routeAffinity = chunk.route == route.label ? 0.08 : 0.0;
         final keywordAffinity = _keywordAffinity(
           queryTokens: queryTokens,
@@ -7115,7 +7177,8 @@ final class NazaVectorMemory {
             recency * 0.10 +
             chunk.importance * 0.12 +
             routeAffinity +
-            roleBias;
+            roleBias +
+            (workingMemory ? 0.08 : 0.0);
         final certainty = score.clamp(0.0, 1.0).toDouble();
         scored.add(
           _ScoredMemoryChunk(
@@ -7125,6 +7188,7 @@ final class NazaVectorMemory {
             keywordScore: keywordAffinity,
             recencyScore: recency,
             certainty: certainty,
+            workingMemory: workingMemory,
           ),
         );
       }
@@ -7137,6 +7201,7 @@ final class NazaVectorMemory {
           : selected.map((item) => item.score).reduce((a, b) => a + b) /
                 selected.length;
       final block = _buildContextBlock(selected);
+      unawaited(_recordAccess(selected));
 
       snapshot.value = snapshot.value.copyWith(
         enabled: true,
@@ -7200,8 +7265,11 @@ final class NazaVectorMemory {
         ),
       ];
 
-      while (next.length > NazaAppConfig.memoryMaxChunks) {
-        next.removeAt(0);
+      if (next.length > NazaAppConfig.memoryMaxChunks) {
+        final trimmed = _forgetToBudget(next, NazaAppConfig.memoryMaxChunks);
+        next
+          ..clear()
+          ..addAll(trimmed);
       }
 
       await _writeChunksNow(next);
@@ -7342,6 +7410,151 @@ final class NazaVectorMemory {
     await file.writeAsString(jsonEncode(wrapper), flush: true);
   }
 
+  Future<void> _recordAccess(List<_ScoredMemoryChunk> selected) {
+    final selectedIds = selected.map((item) => item.chunk.id).toSet();
+    if (selectedIds.isEmpty) return Future<void>.value();
+
+    final operation = _storageTail.then((_) async {
+      final chunks = await _readChunksNow();
+      if (chunks.isEmpty) return;
+      final now = DateTime.now();
+      var changed = false;
+      final next = chunks
+          .map((chunk) {
+            if (!selectedIds.contains(chunk.id)) return chunk;
+            changed = true;
+            return chunk.copyWith(
+              accessCount: chunk.accessCount + 1,
+              lastAccessedAt: now,
+            );
+          })
+          .toList(growable: false);
+      if (!changed) return;
+      await _writeChunksNow(next);
+      _chunks = next;
+    });
+    _storageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  List<String> _workingMemoryTurnIds(
+    List<NazaMemoryChunk> chunks, {
+    required int maxTurns,
+  }) {
+    final ordered = chunks.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final ids = <String>[];
+    for (final chunk in ordered) {
+      if (chunk.turnId.trim().isEmpty || ids.contains(chunk.turnId)) continue;
+      ids.add(chunk.turnId);
+      if (ids.length >= maxTurns) break;
+    }
+    return ids;
+  }
+
+  List<NazaMemoryChunk> _forgetToBudget(
+    List<NazaMemoryChunk> chunks,
+    int maxChunks,
+  ) {
+    if (chunks.length <= maxChunks) return chunks;
+
+    final documentFrequency = <String, int>{};
+    for (final chunk in chunks) {
+      for (final token in _retentionTokens(chunk).toSet()) {
+        documentFrequency[token] = (documentFrequency[token] ?? 0) + 1;
+      }
+    }
+    final workingTurnIds = _workingMemoryTurnIds(chunks, maxTurns: 4).toSet();
+    final now = DateTime.now();
+    final ranked =
+        chunks
+            .map(
+              (chunk) => (
+                chunk: chunk,
+                score: _retentionScore(
+                  chunk,
+                  documentFrequency: documentFrequency,
+                  totalChunks: chunks.length,
+                  workingTurnIds: workingTurnIds,
+                  now: now,
+                ),
+              ),
+            )
+            .toList(growable: false)
+          ..sort((a, b) {
+            final byScore = b.score.compareTo(a.score);
+            if (byScore != 0) return byScore;
+            return b.chunk.createdAt.compareTo(a.chunk.createdAt);
+          });
+
+    final keepIds = ranked.take(maxChunks).map((item) => item.chunk.id).toSet();
+    return chunks.where((chunk) => keepIds.contains(chunk.id)).toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  }
+
+  double _retentionScore(
+    NazaMemoryChunk chunk, {
+    required Map<String, int> documentFrequency,
+    required int totalChunks,
+    required Set<String> workingTurnIds,
+    required DateTime now,
+  }) {
+    final tokens = _retentionTokens(chunk).toSet();
+    final rarity = tokens.isEmpty
+        ? 0.0
+        : tokens
+                  .map((token) {
+                    final df = math.max(1, documentFrequency[token] ?? 1);
+                    return math.log((totalChunks + 1) / df);
+                  })
+                  .reduce((a, b) => a + b) /
+              tokens.length;
+    final access = math.log(chunk.accessCount + 1) / math.log(10);
+    final ageHours = now
+        .difference(chunk.createdAt)
+        .inHours
+        .clamp(0, 24 * 3650)
+        .toDouble();
+    final recency = 1.0 / (1.0 + ageHours / 168.0);
+    final symbolBoost =
+        _fileSymbolRegExp.hasMatch('${chunk.text} ${chunk.tags.join(' ')}')
+        ? 0.22
+        : 0.0;
+    final workingBoost = workingTurnIds.contains(chunk.turnId) ? 10.0 : 0.0;
+
+    return workingBoost +
+        chunk.importance * 0.34 +
+        rarity.clamp(0.0, 2.8) * 0.30 +
+        access.clamp(0.0, 1.4) * 0.18 +
+        recency * 0.10 +
+        symbolBoost +
+        (chunk.role == 'user' ? 0.04 : 0.0);
+  }
+
+  List<String> _retentionTokens(NazaMemoryChunk chunk) {
+    final source =
+        '${chunk.summary} ${chunk.keywords.join(' ')} ${chunk.tags.join(' ')} ${chunk.text}';
+    final tokens = <String>[
+      ...chunk.keywords,
+      ...chunk.tags,
+      ..._fileSymbolRegExp
+          .allMatches(source)
+          .map((match) => match.group(0) ?? ''),
+      ..._wordRegExp
+          .allMatches(source.toLowerCase())
+          .map((match) => match.group(0) ?? '')
+          .where((token) => token.length > 2 && !_stopWords.contains(token))
+          .take(80),
+    ];
+    return tokens
+        .map((token) => token.toLowerCase().trim())
+        .where((token) => token.isNotEmpty)
+        .toList(growable: false);
+  }
+
   List<NazaMemoryChunk> _chunksForMessage({
     required String turnId,
     required String role,
@@ -7390,6 +7603,8 @@ final class NazaVectorMemory {
             score: routeScore,
           ),
           createdAt: createdAt,
+          accessCount: 0,
+          lastAccessedAt: createdAt,
           embedding: _embed(
             '$role\n$route\n$summary\n${keywords.join(' ')}\n${parts[i]}',
           ),
@@ -7465,6 +7680,8 @@ final class NazaVectorMemory {
       routeScore: chunk.routeScore,
       importance: chunk.importance,
       createdAt: chunk.createdAt,
+      accessCount: chunk.accessCount,
+      lastAccessedAt: chunk.lastAccessedAt,
       embedding: chunk.embedding,
     );
   }
@@ -7476,6 +7693,11 @@ final class NazaVectorMemory {
     required List<String> keywords,
   }) {
     final lower = text.toLowerCase();
+    final fileSymbols = _fileSymbolRegExp
+        .allMatches(text)
+        .map((match) => match.group(0)?.toLowerCase() ?? '')
+        .where((item) => item.trim().isNotEmpty)
+        .take(4);
     final tags = <String>{
       role,
       route,
@@ -7490,6 +7712,7 @@ final class NazaVectorMemory {
         'memory',
       if (lower.contains('[action]') || lower.contains('[format]'))
         'prompt-surface',
+      ...fileSymbols,
       ...keywords.take(5),
     };
     return tags
@@ -7578,6 +7801,7 @@ final class NazaVectorMemory {
       '[rag]',
       'source=local-encrypted-vector-memory',
       'policy=Use retrieved memory only when relevant. The current user request remains the source of truth.',
+      'citation_policy=When you rely on a memory item, cite it inline with its source id like [M2]. Do not cite unused memory.',
     ];
     for (var i = 0; i < selected.length; i++) {
       final item = selected[i];
@@ -7589,6 +7813,7 @@ final class NazaVectorMemory {
         ..add('')
         ..add(
           'M${i + 1} class=${chunk.className} tenant=${chunk.tenant} '
+          'source_id=[M${i + 1}] '
           'role=${chunk.role} route=${chunk.route} '
           'certainty=${item.certainty.toStringAsFixed(3)} '
           'distance=${(1 - item.certainty).toStringAsFixed(3)} '
@@ -7596,6 +7821,8 @@ final class NazaVectorMemory {
           'vector=${item.vectorScore.toStringAsFixed(3)} '
           'keyword=${item.keywordScore.toStringAsFixed(3)} '
           'recency=${item.recencyScore.toStringAsFixed(3)} '
+          'working_memory=${item.workingMemory} '
+          'access_count=${chunk.accessCount} '
           'rotated=${item.rotated} '
           'tokens=${chunk.tokenEstimate} '
           'at=${chunk.createdAt.toIso8601String()}',
