@@ -1,22 +1,3 @@
-// lib/main.dart
-// Naza One — local-first Flutter UI + Gemma LiteRT-LM + AES-GCM vault.
-//
-// Required dependencies:
-//   flutter:
-//     sdk: flutter
-//   flutter_gemma: ^1.2.0
-//   flutter_gemma_litertlm: ^1.0.2
-//   cryptography: ^2.9.0
-//   path_provider: ^2.1.5
-//
-// Required generated assets from the asset pack:
-//   assets/backgrounds/chat_river_forest.png
-//   assets/backgrounds/nature_glass_mesh.png
-//   assets/branding/naza_orb_512.png
-//
-// Required bundled model asset:
-//   android/app/src/main/assets/models/gemma-4-E2B-it.litertlm
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
@@ -38,19 +19,8 @@ import 'package:path_provider/path_provider.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // IMPORTANT DESKTOP FIX:
-  // Do not initialize the vault or Gemma/LiteRT runtime before runApp().
-  // On Linux, the desktop plugin can block the main isolate through a long
-  // platform-channel call, which makes buttons, text fields, drawers, and
-  // bottom sheets feel frozen for 20-30 seconds.
-  //
-  // The UI now starts instantly. The local model initializes lazily only after
-  // the user presses Send. Vault keys also initialize lazily only when history
-  // is written/read.
   if (Platform.isAndroid || Platform.isIOS) {
-    // Finish viewport-affecting platform setup before the first frame. Letting
-    // these futures complete after runApp causes a second layout/inset change
-    // that looks like startup flicker on mobile.
+
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -2240,9 +2210,7 @@ final class NazaSecureBarkPackStore {
   static final NazaSecureBarkPackStore instance = NazaSecureBarkPackStore._();
   static const int _maxIndexBytes = 4 * 1024 * 1024;
   static const int _maxAssetBytes = 3 * 1024 * 1024 * 1024;
-  // Voice-like Bark rendering needs both the acoustic lanes and the conditioning
-  // lanes. The converter generates tiny deterministic sidecars for semantic and
-  // speaker if the source checkpoint does not expose obvious tensor names.
+
   static const List<String> _requiredFamilies = [
     'semantic',
     'coarse',
