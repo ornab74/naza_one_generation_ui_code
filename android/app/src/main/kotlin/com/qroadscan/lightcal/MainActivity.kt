@@ -20,7 +20,7 @@ import java.util.Locale
 
 class MainActivity : FlutterActivity(), RecognitionListener, TextToSpeech.OnInitListener {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val liveVoiceChannelName = "com.qroadscan.lightcal/live_voice"
+    private val liveVoiceChannelName = "com.nazaone/live_voice"
     private val recordPermissionRequest = 4224
 
     private var liveVoiceChannel: MethodChannel? = null
