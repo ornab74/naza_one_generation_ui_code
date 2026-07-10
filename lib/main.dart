@@ -20,7 +20,6 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   if (Platform.isAndroid || Platform.isIOS) {
-
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     await SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -95,6 +94,8 @@ final class NazaAppConfig {
   static const int liveVoiceOutputTokens = 160;
   static const int continuationJudgeOutputTokens = 8;
   static const int autoContinuationPasses = 4;
+  static const int minAutoContinuationPasses = 0;
+  static const int maxAutoContinuationPasses = 12;
   static const int continuationMinChars = 420;
   static const int continuationTailChars = 1200;
   static const int continuationSummaryChars = 760;
@@ -126,6 +127,8 @@ final class NazaAppConfig {
   static const String backendPreferenceFileName =
       'naza_backend_preference.json';
   static const String barkPerformanceFileName = 'naza_bark_performance.json';
+  static const String generationSettingsFileName =
+      'naza_generation_settings.sqlite.aesgcm.json';
   static const int memoryEmbeddingDimensions = 128;
   static const int memoryMaxChunks = 1800;
   static const int memoryRetrievalCandidates = 72;
@@ -4594,6 +4597,9 @@ final class NazaLocalGemma {
       route: route,
       actionProfile: actionProfile,
     );
+    await NazaGenerationSettingsStore.instance.prepare();
+    final maxContinuations =
+        NazaGenerationSettingsStore.instance.settings.value.maxContinuations;
 
     try {
       await ensureReady();
@@ -4667,7 +4673,7 @@ final class NazaLocalGemma {
       }
 
       var continuationCount = 0;
-      while (continuationCount < NazaAppConfig.autoContinuationPasses) {
+      while (continuationCount < maxContinuations) {
         var continuationDecision = NazaContinuationEngine.analyze(
           text: clean,
           stream: stream,
@@ -4709,7 +4715,7 @@ final class NazaLocalGemma {
         generation.value = generation.value.copyWith(
           stage:
               'continuing locally $continuationCount/'
-              '${NazaAppConfig.autoContinuationPasses}',
+              '$maxContinuations',
         );
 
         final prefix = clean;
@@ -4721,7 +4727,7 @@ final class NazaLocalGemma {
           actionProfile: actionProfile,
           decision: continuationDecision,
           pass: continuationCount,
-          maxPasses: NazaAppConfig.autoContinuationPasses,
+          maxPasses: maxContinuations,
           accumulatedReply: prefix,
         );
         final continuation = await _streamContinuationWindow(
@@ -7255,6 +7261,162 @@ final class NazaVault {
   Future<File> _scannerDraftsFile() async {
     final dir = await getApplicationSupportDirectory();
     return File('${dir.path}/${NazaAppConfig.scannerDraftsFileName}');
+  }
+}
+
+final class NazaGenerationSettings {
+  final int maxContinuations;
+
+  const NazaGenerationSettings({required this.maxContinuations});
+
+  factory NazaGenerationSettings.defaults() {
+    return const NazaGenerationSettings(
+      maxContinuations: NazaAppConfig.autoContinuationPasses,
+    );
+  }
+
+  factory NazaGenerationSettings.fromJson(Map<String, dynamic> json) {
+    return NazaGenerationSettings(
+      maxContinuations: normalizeMaxContinuations(json['maxContinuations']),
+    );
+  }
+
+  NazaGenerationSettings copyWith({int? maxContinuations}) {
+    return NazaGenerationSettings(
+      maxContinuations: maxContinuations ?? this.maxContinuations,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'format': 'naza-generation-settings-v1',
+      'maxContinuations': maxContinuations,
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+  }
+
+  static int normalizeMaxContinuations(Object? raw) {
+    final parsed = raw is num
+        ? raw.round()
+        : int.tryParse(raw?.toString() ?? '');
+    return (parsed ?? NazaAppConfig.autoContinuationPasses)
+        .clamp(
+          NazaAppConfig.minAutoContinuationPasses,
+          NazaAppConfig.maxAutoContinuationPasses,
+        )
+        .toInt();
+  }
+}
+
+final class NazaGenerationSettingsStore {
+  NazaGenerationSettingsStore._();
+
+  static final NazaGenerationSettingsStore instance =
+      NazaGenerationSettingsStore._();
+
+  final ValueNotifier<NazaGenerationSettings> settings =
+      ValueNotifier<NazaGenerationSettings>(NazaGenerationSettings.defaults());
+  final ValueNotifier<String?> error = ValueNotifier<String?>(null);
+
+  Future<void>? _loadFuture;
+  Future<void> _storageTail = Future<void>.value();
+
+  Future<void> prepare() {
+    _loadFuture ??= _load();
+    return _loadFuture!;
+  }
+
+  Future<void> setMaxContinuations(int value) async {
+    await prepare();
+    final normalized = NazaGenerationSettings.normalizeMaxContinuations(value);
+    if (settings.value.maxContinuations == normalized) return;
+    final next = settings.value.copyWith(maxContinuations: normalized);
+    settings.value = next;
+    await _persist(next);
+  }
+
+  Future<void> _load() async {
+    try {
+      final file = await _settingsFile();
+      if (!await file.exists()) {
+        settings.value = NazaGenerationSettings.defaults();
+        error.value = null;
+        return;
+      }
+
+      final wrapper = jsonDecode(await file.readAsString());
+      if (wrapper is! Map) {
+        settings.value = NazaGenerationSettings.defaults();
+        return;
+      }
+      final nonce = base64Decode(wrapper['nonce'] as String);
+      final cipherText = base64Decode(wrapper['cipherText'] as String);
+      final mac = base64Decode(wrapper['mac'] as String);
+      final key = await NazaVault.instance._getOrCreateKey();
+      final clear = await NazaVault.instance._aes.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
+        secretKey: key,
+        aad: utf8.encode('${NazaAppConfig.vaultAad}:generation-settings'),
+      );
+      final payload = jsonDecode(utf8.decode(clear));
+      if (payload is Map<String, dynamic>) {
+        settings.value = NazaGenerationSettings.fromJson(payload);
+      } else if (payload is Map) {
+        settings.value = NazaGenerationSettings.fromJson(
+          Map<String, dynamic>.from(payload),
+        );
+      } else {
+        settings.value = NazaGenerationSettings.defaults();
+      }
+      error.value = null;
+    } catch (loadError) {
+      settings.value = NazaGenerationSettings.defaults();
+      error.value = loadError.toString();
+    } finally {
+      _loadFuture = null;
+    }
+  }
+
+  Future<void> _persist(NazaGenerationSettings next) {
+    final operation = _storageTail.then((_) => _persistNow(next));
+    _storageTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<void> _persistNow(NazaGenerationSettings next) async {
+    try {
+      final file = await _settingsFile();
+      final key = await NazaVault.instance._getOrCreateKey();
+      final clear = utf8.encode(jsonEncode(next.toJson()));
+      final box = await NazaVault.instance._aes.encrypt(
+        clear,
+        secretKey: key,
+        aad: utf8.encode('${NazaAppConfig.vaultAad}:generation-settings'),
+      );
+
+      final wrapper = {
+        'version': 1,
+        'cipher': 'AES-256-GCM',
+        'storage': 'generation-settings-sqlite-compatible-map',
+        'nonce': base64Encode(box.nonce),
+        'cipherText': base64Encode(box.cipherText),
+        'mac': base64Encode(box.mac.bytes),
+        'updatedAt': DateTime.now().toIso8601String(),
+      };
+
+      await NazaPrivateFileStore.writeString(file, jsonEncode(wrapper));
+      error.value = null;
+    } catch (saveError) {
+      error.value = saveError.toString();
+    }
+  }
+
+  Future<File> _settingsFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/${NazaAppConfig.generationSettingsFileName}');
   }
 }
 
@@ -10493,6 +10655,7 @@ class _NazaStableHomeState extends State<NazaStableHome> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(NazaLocalGemma.instance.prepareBackendPreference());
+      unawaited(NazaGenerationSettingsStore.instance.prepare());
       unawaited(NazaSecureModelStore.refresh());
       _startupWarmTimer = Timer(const Duration(seconds: 3), () {
         unawaited(_prepareBarkPackFastPath());
@@ -15256,6 +15419,159 @@ class _ConvoWaveformPainter extends CustomPainter {
   }
 }
 
+class _GenerationSettingsCard extends StatefulWidget {
+  const _GenerationSettingsCard();
+
+  @override
+  State<_GenerationSettingsCard> createState() =>
+      _GenerationSettingsCardState();
+}
+
+class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
+  int? _draftMaxContinuations;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(NazaGenerationSettingsStore.instance.prepare());
+  }
+
+  Future<void> _commitMaxContinuations(int value) async {
+    final normalized = NazaGenerationSettings.normalizeMaxContinuations(value);
+    setState(() => _draftMaxContinuations = normalized);
+    await NazaGenerationSettingsStore.instance.setMaxContinuations(normalized);
+    if (mounted) setState(() => _draftMaxContinuations = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NazaGenerationSettings>(
+      valueListenable: NazaGenerationSettingsStore.instance.settings,
+      builder: (_, settings, _) {
+        final value = _draftMaxContinuations ?? settings.maxContinuations;
+        final enabled = value > 0;
+        final label = enabled ? '$value pass${value == 1 ? '' : 'es'}' : 'off';
+        final accent = enabled ? NazaPalette.mintSoft : const Color(0xFFFFCE78);
+        return _NazaGlassCard(
+          padding: const EdgeInsets.all(13),
+          radius: 18,
+          active: enabled,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.low_priority_rounded, color: accent, size: 22),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      'Auto-continuation: $label',
+                      style: const TextStyle(
+                        color: NazaPalette.text,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.display,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Tooltip(
+                    message: 'Decrease continuations',
+                    child: IconButton(
+                      onPressed: value > NazaAppConfig.minAutoContinuationPasses
+                          ? () => unawaited(_commitMaxContinuations(value - 1))
+                          : null,
+                      icon: const Icon(Icons.remove_rounded),
+                      color: NazaPalette.text,
+                      style: IconButton.styleFrom(
+                        fixedSize: const Size(42, 42),
+                        backgroundColor: const Color(0x66101E19),
+                        disabledBackgroundColor: const Color(0x33101E19),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        activeTrackColor: accent,
+                        inactiveTrackColor: const Color(0x335EE8A6),
+                        thumbColor: accent,
+                        overlayColor: accent.withAlpha(35),
+                        valueIndicatorColor: const Color(0xEE0B1B15),
+                        valueIndicatorTextStyle: const TextStyle(
+                          color: NazaPalette.text,
+                          fontWeight: FontWeight.w900,
+                          fontFamily: NazaFonts.mono,
+                        ),
+                      ),
+                      child: Slider(
+                        value: value.toDouble(),
+                        min: NazaAppConfig.minAutoContinuationPasses.toDouble(),
+                        max: NazaAppConfig.maxAutoContinuationPasses.toDouble(),
+                        divisions:
+                            NazaAppConfig.maxAutoContinuationPasses -
+                            NazaAppConfig.minAutoContinuationPasses,
+                        label: label,
+                        onChanged: (next) => setState(
+                          () => _draftMaxContinuations = next.round(),
+                        ),
+                        onChangeEnd: (next) =>
+                            unawaited(_commitMaxContinuations(next.round())),
+                      ),
+                    ),
+                  ),
+                  Tooltip(
+                    message: 'Increase continuations',
+                    child: IconButton(
+                      onPressed: value < NazaAppConfig.maxAutoContinuationPasses
+                          ? () => unawaited(_commitMaxContinuations(value + 1))
+                          : null,
+                      icon: const Icon(Icons.add_rounded),
+                      color: NazaPalette.text,
+                      style: IconButton.styleFrom(
+                        fixedSize: const Size(42, 42),
+                        backgroundColor: const Color(0x66101E19),
+                        disabledBackgroundColor: const Color(0x33101E19),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              _InfoRow(label: 'Saved cap', value: label),
+              const _InfoRow(
+                label: 'Encrypted store',
+                value: NazaAppConfig.generationSettingsFileName,
+              ),
+              ValueListenableBuilder<String?>(
+                valueListenable: NazaGenerationSettingsStore.instance.error,
+                builder: (_, error, _) {
+                  if (error == null) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(
+                      error,
+                      style: const TextStyle(
+                        color: NazaPalette.danger,
+                        height: 1.35,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _VectorMemorySettingsCard extends StatefulWidget {
   const _VectorMemorySettingsCard();
 
@@ -15449,7 +15765,8 @@ class _SettingsPanel extends StatelessWidget {
         const _SettingsSectionTitle('Generation'),
         const _InfoRow(label: 'Context window', value: '3072 tokens'),
         const _InfoRow(label: 'Output cap', value: '768 tokens'),
-        const _InfoRow(label: 'Auto-continuation', value: 'smart / 4 passes'),
+        const _GenerationSettingsCard(),
+        const SizedBox(height: 14),
         const _InfoRow(label: 'Stream paint throttle', value: '360 ms'),
         const _InfoRow(label: 'Telemetry throttle', value: '500 ms'),
         const _InfoRow(label: 'Scroll throttle', value: '240 ms'),
