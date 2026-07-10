@@ -239,6 +239,147 @@ def generate_book():
       expect(prompt, contains('600-line deliverable'));
       expect(prompt, contains('do not switch to Dart/Flutter'));
       expect(prompt, contains('complete the currently open code/string/list'));
+      expect(prompt, contains('completion_tasks='));
+      expect(prompt, contains('load API key or client configuration'));
+      expect(prompt, contains('extract generated text from the API response'));
+      expect(prompt, contains('add a main() orchestration function'));
+      expect(prompt, contains('add if __name__ == "__main__" entrypoint'));
+      expect(prompt, contains('style_rules='));
+      expect(prompt, contains('use valid Python identifiers'));
+      expect(
+        prompt,
+        contains(
+          'next_structural_move=continue the current Python argument/list/dict item',
+        ),
+      );
+      expect(prompt, contains('quality_checks='));
+      expect(prompt, contains('never hardcode an API key'));
+      expect(prompt, contains('OpenAI request shape internally consistent'));
+      expect(prompt, contains('completion_decision_owner=host_application'));
+      expect(prompt, contains('You are not the completion judge'));
+      expect(prompt, contains('Produce substantive continuation content'));
+      expect(prompt, contains('[anti_repeat]'));
+      expect(prompt, contains('recent_completed_tail_lines'));
+      expect(prompt, contains('Do not emit'));
+    });
+
+    test('trims replayed leading lines from continuation chunks', () {
+      const prefix = '''
+```python
+def build_prompt(title):
+    sections = []
+    sections.append(title)
+    return "\\n".join(sections)
+''';
+      const replayingContinuation = '''
+    sections.append(title)
+    return "\\n".join(sections)
+
+def call_model(prompt):
+    return client.responses.create(input=prompt)
+''';
+
+      final joined = NazaContinuationEngine.join(prefix, replayingContinuation);
+
+      expect('sections.append(title)'.allMatches(joined).length, 1);
+      expect(joined, contains('def call_model(prompt):'));
+    });
+
+    test('story continuation prompt carries prose style and structure rules', () {
+      const userText =
+          'write a fantasy novel chapter about Mira entering the glass forest, avoid em dashes';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+Mira stopped where the moonlit path thinned into silver grass. Every tree ahead held a different version of her face in its bark, each reflection watching with a patience that made her hands curl.
+
+The smallest reflection lifted one finger to its lips.
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+unfinished-sentence',
+        confidence: 0.8,
+        completedSummary:
+            'The chapter has begun with Mira at the glass forest.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 5,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('task_type=long-form-writing'));
+      expect(prompt, contains('completion_tasks='));
+      expect(prompt, contains('continue the current scene or section'));
+      expect(prompt, contains('preserve established characters'));
+      expect(prompt, contains('style_rules='));
+      expect(prompt, contains('avoid em dashes'));
+      expect(prompt, contains('same narrative distance, tense, voice'));
+      expect(prompt, contains('do not restate the premise'));
+      expect(
+        prompt,
+        contains('next_structural_move=write the next scene beat'),
+      );
+      expect(prompt, contains('quality_checks='));
+      expect(
+        prompt,
+        contains('add new action, image, decision, or revelation'),
+      );
+      expect(prompt, contains('replace them'));
+      expect(prompt, contains('For story/book tasks'));
+    });
+
+    test('continues underfilled requested long artifacts', () {
+      const userText =
+          'write a python script thats 600 lines, calling openai api with a long prompt for writing a book';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const text = '''
+```python
+from openai import OpenAI
+
+print("started")
+```
+''';
+
+      final decision = NazaContinuationEngine.analyze(
+        text: text,
+        stream: const NazaStreamResult(
+          text: text,
+          estimatedTokens: 40,
+          maxTokens: NazaAppConfig.outputTokens,
+          nearTokenCeiling: false,
+        ),
+        actionProfile: profile,
+        pass: 1,
+        originalUserText: userText,
+      );
+
+      expect(decision.shouldContinue, isTrue);
+      expect(decision.reason, contains('underfilled-requested-artifact'));
+    });
+
+    test('does not accept a marker-only continuation for unfinished work', () {
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'underfilled-requested-artifact',
+        confidence: 0.8,
+        completedSummary: 'A long Python artifact has only started.',
+        tail: 'print("started")',
+      );
+
+      expect(
+        NazaContinuationEngine.shouldIgnoreEmptyContinuation(
+          decision: decision,
+          continuation: NazaAppConfig.continuationDoneMarker,
+        ),
+        isTrue,
+      );
     });
   });
 

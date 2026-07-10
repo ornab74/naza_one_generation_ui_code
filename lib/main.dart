@@ -569,6 +569,10 @@ final class NazaContinuationTaskMemory {
   final int progressPercent;
   final List<String> completedItems;
   final List<String> remainingItems;
+  final List<String> completionTasks;
+  final List<String> styleRules;
+  final String nextStructuralMove;
+  final List<String> qualityChecks;
   final String cursorState;
   final String nextTokenPolicy;
   final String driftGuard;
@@ -581,6 +585,10 @@ final class NazaContinuationTaskMemory {
     required this.progressPercent,
     required this.completedItems,
     required this.remainingItems,
+    required this.completionTasks,
+    required this.styleRules,
+    required this.nextStructuralMove,
+    required this.qualityChecks,
     required this.cursorState,
     required this.nextTokenPolicy,
     required this.driftGuard,
@@ -602,6 +610,13 @@ completed_items=
 ${_bullets(completedItems)}
 remaining_items=
 ${_bullets(remainingItems)}
+completion_tasks=
+${_bullets(completionTasks)}
+style_rules=
+${_bullets(styleRules)}
+next_structural_move=$nextStructuralMove
+quality_checks=
+${_bullets(qualityChecks)}
 [/task_memory]''';
   }
 
@@ -663,6 +678,33 @@ final class NazaContinuationTaskAgent {
         targetLanguage: targetLanguage,
         progressPercent: progress,
         decision: decision,
+      ),
+      completionTasks: _completionTasks(
+        original: lowerOriginal,
+        reply: lowerReply,
+        taskType: taskType,
+        targetLanguage: targetLanguage,
+        domain: domain,
+      ),
+      styleRules: _styleRules(
+        original: lowerOriginal,
+        reply: lowerReply,
+        taskType: taskType,
+        targetLanguage: targetLanguage,
+      ),
+      nextStructuralMove: _nextStructuralMove(
+        original: lowerOriginal,
+        reply: reply,
+        taskType: taskType,
+        targetLanguage: targetLanguage,
+        domain: domain,
+      ),
+      qualityChecks: _qualityChecks(
+        original: lowerOriginal,
+        reply: lowerReply,
+        taskType: taskType,
+        targetLanguage: targetLanguage,
+        domain: domain,
       ),
       cursorState: _cursorState(reply),
       nextTokenPolicy: _nextTokenPolicy(reply),
@@ -826,7 +868,6 @@ final class NazaContinuationTaskAgent {
           'symbol: ${_oneLine(fn.group(1) ?? fn.group(2) ?? fn.group(3) ?? clean, maxChars: 80)}',
         );
       }
-      if (items.length >= 8) break;
     }
     if (items.isEmpty && sawCode) {
       items.add('$targetLanguage code block started');
@@ -834,7 +875,7 @@ final class NazaContinuationTaskAgent {
     if (items.isEmpty && reply.trim().isNotEmpty) {
       items.add('${taskType.replaceAll('-', ' ')} response started');
     }
-    return _dedupe(items).take(8).toList(growable: false);
+    return _balancedRecentItems(_dedupe(items), maxItems: 8);
   }
 
   static List<String> _remainingItems({
@@ -880,6 +921,302 @@ final class NazaContinuationTaskAgent {
       remaining.add('continue the current answer from the exact cursor');
     }
     return _dedupe(remaining).take(8).toList(growable: false);
+  }
+
+  static List<String> _completionTasks({
+    required String original,
+    required String reply,
+    required String taskType,
+    required String targetLanguage,
+    required String domain,
+  }) {
+    final tasks = <String>[];
+    if (taskType == 'coding' && targetLanguage == 'Python') {
+      if (domain.contains('openai-api')) {
+        if (!reply.contains('from openai import openai') &&
+            !reply.contains('import openai')) {
+          tasks.add('include the OpenAI Python SDK import');
+        }
+        if (!reply.contains('os.environ') &&
+            !reply.contains('getenv') &&
+            !reply.contains('api_key')) {
+          tasks.add('load API key or client configuration from environment');
+        }
+        if (!reply.contains('openai(')) {
+          tasks.add('initialize the OpenAI client once before requests');
+        }
+        if (!reply.contains('chat.completions.create') &&
+            !reply.contains('responses.create')) {
+          tasks.add('make the OpenAI generation call with model and messages');
+        }
+        if (!reply.contains('choices[0]') &&
+            !reply.contains('output_text') &&
+            !reply.contains('message.content')) {
+          tasks.add('extract generated text from the API response');
+        }
+      }
+      if (domain.contains('book-writing') || original.contains('long prompt')) {
+        if (!reply.contains('prompt') || !reply.contains('"""')) {
+          tasks.add(
+            'define the long book-writing prompt as a multiline string',
+          );
+        }
+        if (!reply.contains('path(') &&
+            !reply.contains('write_text') &&
+            !reply.contains('open(')) {
+          tasks.add('save or print the generated book output clearly');
+        }
+      }
+      if (!reply.contains('def main')) {
+        tasks.add('add a main() orchestration function');
+      }
+      if (!reply.contains('if __name__')) {
+        tasks.add('add if __name__ == "__main__" entrypoint');
+      }
+      if (!reply.contains('try:') && !reply.contains('except ')) {
+        tasks.add('add minimal error handling around the API call');
+      }
+      tasks.add('keep producing valid Python code, not explanatory prose');
+      tasks.add('close any open function, string, list, dict, call, or fence');
+    } else if (taskType.contains('writing')) {
+      tasks.add('continue the current scene or section from the next sentence');
+      tasks.add('advance the active conflict, image, dialogue, or argument');
+      tasks.add(
+        'preserve established characters, names, setting, POV, and tense',
+      );
+      tasks.add(
+        'avoid recap, outline reset, or jumping to a new chapter unless cued',
+      );
+      if (original.contains('book') || original.contains('novel')) {
+        tasks.add('build toward the requested book-length artifact gradually');
+      }
+    } else if (taskType == 'research-science') {
+      tasks.add('continue the claim/evidence/uncertainty chain');
+      tasks.add('separate observations from interpretation');
+    } else if (taskType == 'teaching') {
+      tasks.add('continue from the next concept or example');
+      tasks.add('do not restart the lesson introduction');
+    } else {
+      tasks.add('continue the current deliverable from the exact cursor');
+    }
+    return _dedupe(tasks).take(10).toList(growable: false);
+  }
+
+  static List<String> _styleRules({
+    required String original,
+    required String reply,
+    required String taskType,
+    required String targetLanguage,
+  }) {
+    final rules = <String>[];
+    final noEmDash =
+        _hasAny(original, const [
+          'avoid em dash',
+          'avoid em-dash',
+          'no em dash',
+          'no em-dash',
+          'without em dash',
+          'without em-dash',
+          'avoid em dashes',
+          'no em dashes',
+        ]) ||
+        taskType.contains('writing');
+    if (noEmDash) {
+      rules.add(
+        'avoid em dashes; use commas, periods, semicolons, colons, or parentheses instead',
+      );
+    }
+    if (taskType == 'coding') {
+      rules.add('preserve code indentation and syntactic structure');
+      rules.add('continue code before prose while inside or near a code block');
+      if (targetLanguage != 'unspecified') {
+        rules.add('do not switch away from $targetLanguage');
+      }
+      if (targetLanguage == 'Python') {
+        rules.add(
+          'use valid Python identifiers, imports, functions, and main guard structure',
+        );
+        rules.add(
+          'avoid duplicate imports, duplicate prompt constants, and duplicate setup blocks',
+        );
+      }
+    } else if (taskType.contains('writing')) {
+      rules.add(
+        'keep the same narrative distance, tense, voice, and paragraph rhythm',
+      );
+      rules.add(
+        'continue with fresh prose instead of summarizing completed prose',
+      );
+      rules.add(
+        'do not restate the premise, title, character list, or previous scene',
+      );
+      rules.add(
+        'prefer concrete sensory/action beats over outline labels unless the user requested an outline',
+      );
+    } else {
+      rules.add('preserve the current structure and formatting');
+    }
+    if (reply.contains('```')) {
+      rules.add(
+        'respect existing code fence state and do not open a duplicate fence',
+      );
+    }
+    return _dedupe(rules).take(10).toList(growable: false);
+  }
+
+  static String _nextStructuralMove({
+    required String original,
+    required String reply,
+    required String taskType,
+    required String targetLanguage,
+    required String domain,
+  }) {
+    final trimmed = reply.trimRight();
+    if (trimmed.isEmpty) return 'start the requested artifact directly';
+    final lastLine = trimmed.split(RegExp(r'\r\n?|\n')).last.trimRight();
+
+    if (taskType == 'coding' && targetLanguage == 'Python') {
+      final lowerLine = lastLine.toLowerCase();
+      if (lowerLine.endsWith('chat.completions.create(') ||
+          lowerLine.endsWith('responses.create(') ||
+          lowerLine.contains('client.chat.completions.create(')) {
+        return 'continue the OpenAI API call arguments: model, messages/prompt, token limits, and close the call';
+      }
+      if (lastLine.trimRight().endsWith(',')) {
+        return 'continue the current Python argument/list/dict item on the next indented line';
+      }
+      if (lastLine.trimRight().endsWith('(')) {
+        return 'fill the open Python call or function arguments before adding new statements';
+      }
+      if (trimmed.contains('def ') && !trimmed.contains('return ')) {
+        return 'complete the active function body with return/output handling';
+      }
+      if (!trimmed.toLowerCase().contains('def main')) {
+        return 'add the next missing Python function or main orchestration block';
+      }
+      if (!trimmed.toLowerCase().contains('if __name__')) {
+        return 'add the Python main guard and call main()';
+      }
+      return 'finish structural closure: error handling, output path, and any open delimiters';
+    }
+
+    if (taskType.contains('writing')) {
+      final lastParagraph = _lastParagraph(trimmed);
+      if (!_endsCompleteSentence(lastParagraph)) {
+        return 'finish the current sentence and paragraph in the same voice';
+      }
+      if (_looksLikeDialogueCue(lastParagraph)) {
+        return 'continue with the next dialogue response or immediate physical reaction';
+      }
+      if (_hasAny(original, const ['chapter', 'scene', 'novel', 'story'])) {
+        return 'write the next scene beat that escalates tension or reveals consequence';
+      }
+      return 'write the next paragraph of the requested prose artifact';
+    }
+
+    if (taskType == 'research-science') {
+      return 'continue with the next evidence, limitation, or uncertainty step';
+    }
+    if (taskType == 'teaching') {
+      return 'continue with the next concept, example, or exercise';
+    }
+    return 'continue the current structure from the exact cursor';
+  }
+
+  static List<String> _qualityChecks({
+    required String original,
+    required String reply,
+    required String taskType,
+    required String targetLanguage,
+    required String domain,
+  }) {
+    final checks = <String>[];
+    if (taskType == 'coding') {
+      checks.add(
+        'output must remain compilable or syntactically plausible at the chunk boundary',
+      );
+      checks.add(
+        'do not duplicate imports, constants, function headers, or setup already present',
+      );
+      checks.add('prefer cohesive functions over loose disconnected snippets');
+      checks.add(
+        'close delimiters only when that is the next natural code step',
+      );
+      if (targetLanguage == 'Python') {
+        checks.add(
+          'use environment variables for secrets; never hardcode an API key',
+        );
+        checks.add(
+          'keep indentation at 4 spaces and preserve open block depth',
+        );
+        checks.add(
+          'include clear response extraction and output handling before finishing',
+        );
+      }
+      if (domain.contains('openai-api')) {
+        checks.add('keep the OpenAI request shape internally consistent');
+      }
+    } else if (taskType.contains('writing')) {
+      checks.add(
+        'each new paragraph should add new action, image, decision, or revelation',
+      );
+      checks.add(
+        'avoid recap sentences that only restate what already happened',
+      );
+      checks.add(
+        'keep character names, setting details, POV, and tense consistent',
+      );
+      checks.add(
+        'vary sentence length while preserving the established rhythm',
+      );
+      checks.add(
+        'prefer concrete sensory detail and behavior over abstract explanation',
+      );
+      if (_hasAny(original, const [
+        'avoid em dash',
+        'no em dash',
+        'em dashes',
+      ])) {
+        checks.add(
+          'scan the chunk for em dashes before ending and replace them',
+        );
+      }
+    } else if (taskType == 'research-science') {
+      checks.add('mark uncertainty clearly and avoid overstating claims');
+      checks.add('connect each claim to evidence or a stated assumption');
+    } else if (taskType == 'teaching') {
+      checks.add(
+        'advance learner understanding with one new concept at a time',
+      );
+      checks.add('use examples only when they clarify the next step');
+    } else {
+      checks.add('preserve the requested structure and avoid repetition');
+    }
+    return _dedupe(checks).take(10).toList(growable: false);
+  }
+
+  static String _lastParagraph(String text) {
+    final paragraphs = text
+        .split(RegExp(r'\n\s*\n'))
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+    return paragraphs.isEmpty ? text.trim() : paragraphs.last;
+  }
+
+  static bool _endsCompleteSentence(String text) {
+    final clean = text.trimRight();
+    if (clean.isEmpty) return false;
+    return RegExp(r"""[.!?]["')\]]?$""").hasMatch(clean);
+  }
+
+  static bool _looksLikeDialogueCue(String text) {
+    final clean = text.trimRight();
+    if (clean.contains('"') || clean.contains("'")) return true;
+    return RegExp(
+      r'\b(said|asked|whispered|answered|replied|murmured)\b',
+      caseSensitive: false,
+    ).hasMatch(clean);
   }
 
   static String _cursorState(String reply) {
@@ -947,6 +1284,19 @@ final class NazaContinuationTaskAgent {
       out.add(clean);
     }
     return out;
+  }
+
+  static List<String> _balancedRecentItems(
+    List<String> items, {
+    required int maxItems,
+  }) {
+    if (items.length <= maxItems) return items.toList(growable: false);
+    final headCount = math.min(3, maxItems ~/ 2);
+    final tailCount = maxItems - headCount;
+    return [
+      ...items.take(headCount),
+      ...items.skip(items.length - tailCount),
+    ].toList(growable: false);
   }
 
   static String _normalize(String text) {
@@ -3607,6 +3957,10 @@ final class NazaContinuationEngine {
     r'\b(next|then|after that|continue|continued|following|below|steps?)\s*[:,-]?\s*$',
     caseSensitive: false,
   );
+  static final RegExp _requestedLineCountRegExp = RegExp(
+    r'\b(\d{2,5})\s*(?:line|lines)\b',
+    caseSensitive: false,
+  );
   static final RegExp _codeCueRegExp = RegExp(
     r'\b(class|def|function|return|await|async|try|catch|except|import|final|const|var|let|if|else|for|while|switch|case)\b|[{}()[\];=]',
     caseSensitive: false,
@@ -3617,28 +3971,31 @@ final class NazaContinuationEngine {
     required NazaStreamResult stream,
     required NazaActionProfile actionProfile,
     required int pass,
+    String originalUserText = '',
   }) {
     final clean = stripDoneMarker(text).trim();
     final summary = _completedSummary(clean, actionProfile);
     final tail = _tail(clean);
+    final requestedLongArtifact = _requestedLongArtifact(
+      originalUserText,
+      actionProfile,
+    );
+    final requestedMinChars = _requestedArtifactMinimumChars(
+      originalUserText,
+      actionProfile,
+    );
+    final underfilledRequestedArtifact =
+        requestedLongArtifact && clean.length < requestedMinChars;
     final shortHardSignal =
         hasOpenCodeFence(clean) ||
         _hasOpenCodeScope(clean) ||
         _unfinishedBoundaryRegExp.hasMatch(clean);
-    if (clean.length < NazaAppConfig.continuationMinChars && !shortHardSignal) {
+    if (clean.length < NazaAppConfig.continuationMinChars &&
+        !shortHardSignal &&
+        !underfilledRequestedArtifact) {
       return NazaContinuationDecision(
         shouldContinue: false,
         reason: 'too-short',
-        confidence: 0,
-        completedSummary: summary,
-        tail: tail,
-      );
-    }
-
-    if (_hasExplicitDoneMarker(text)) {
-      return NazaContinuationDecision(
-        shouldContinue: false,
-        reason: 'explicit-done',
         confidence: 0,
         completedSummary: summary,
         tail: tail,
@@ -3657,7 +4014,8 @@ final class NazaContinuationEngine {
     final danglingLine = _isDanglingStructuredLine(lastLine);
     final partialToken = _hasPartialTrailingToken(clean, lastLine);
     final continuationCue = _continuationCueRegExp.hasMatch(clean);
-    final longArtifact = _isLongArtifact(actionProfile, clean);
+    final longArtifact =
+        requestedLongArtifact || _isLongArtifact(actionProfile, clean);
     final naturallyComplete = _looksNaturallyComplete(
       clean,
       lastLine,
@@ -3666,6 +4024,23 @@ final class NazaContinuationEngine {
       danglingLine: danglingLine,
       continuationCue: continuationCue,
     );
+    final explicitDoneMarker = _hasExplicitDoneMarker(text);
+
+    if (explicitDoneMarker &&
+        !underfilledRequestedArtifact &&
+        !openFence &&
+        !openScope &&
+        !danglingLine &&
+        !partialToken &&
+        naturallyComplete) {
+      return NazaContinuationDecision(
+        shouldContinue: false,
+        reason: 'explicit-done',
+        confidence: 0,
+        completedSummary: summary,
+        tail: tail,
+      );
+    }
 
     final reasons = <String>[];
     var confidence = 0.0;
@@ -3675,6 +4050,12 @@ final class NazaContinuationEngine {
     }
 
     if (budgetPressure) add('token-ceiling', 0.38);
+    if (underfilledRequestedArtifact) {
+      add('underfilled-requested-artifact', 0.70);
+    }
+    if (explicitDoneMarker && underfilledRequestedArtifact) {
+      add('premature-done-marker', 0.22);
+    }
     if (openFence) add('open-code-fence', 0.72);
     if (openScope) add('open-code-scope', 0.48);
     if (partialToken) add('partial-token', 0.34);
@@ -3687,6 +4068,7 @@ final class NazaContinuationEngine {
 
     confidence = confidence.clamp(0.0, 1.0).toDouble();
     final shouldContinue =
+        underfilledRequestedArtifact ||
         openFence ||
         (openScope && clean.length >= 220) ||
         (budgetPressure && !naturallyComplete && longArtifact) ||
@@ -3720,12 +4102,14 @@ final class NazaContinuationEngine {
       pass: pass,
       maxPasses: maxPasses,
     );
+    final antiRepeat = _antiRepeatBlock(accumulatedReply);
     return '''
 [continuation_window]
 pass=$pass/$maxPasses
 reason=${decision.reason}
 confidence=${decision.confidence.toStringAsFixed(3)}
 ${taskMemory.toPromptBlock()}
+$antiRepeat
 compressed_completed_summary=${_oneLine(decision.completedSummary, maxChars: NazaAppConfig.continuationSummaryChars)}
 exact_tail_start
 <<<NAZA_CONTINUATION_TAIL
@@ -3734,15 +4118,29 @@ NAZA_CONTINUATION_TAIL
 exact_tail_end
 [/continuation_window]
 
+[completion_agent_contract]
+role=produce-next-substantive-continuation-chunk
+completion_decision_owner=host_application
+[/completion_agent_contract]
+
 Continue the same assistant answer from the exact next token after exact_tail.
 Rules:
+- You are not the completion judge. The host application decides whether another pass is needed after your chunk.
 - First silently reconcile task_memory, compressed_completed_summary, and exact_tail.
-- Do not repeat exact_tail, restart, recap, apologize, or mention continuation/task memory.
-- If exact_tail ends mid-word, mid-string, mid-code expression, or mid-list item, complete that token first.
+- Start with the exact next letter/word/code token. If exact_tail ends mid-word, mid-string, mid-code expression, or mid-list item, complete that token before anything else.
+- Produce substantive continuation content. Do not answer with only a stop marker, status note, recap, apology, or meta-comment.
+- Do not repeat exact_tail, restart the answer, or mention continuation/task memory.
+- Check anti_repeat before writing; skip any line, paragraph, heading, code fence opener, import block, or setup prose that is already listed there.
 - Preserve target_language, task_type, indentation, numbering, code fences, variable names, markdown tables, and the user's requested format.
 - Never drift to Dart/Flutter/app repair unless task_memory says that was the original task.
-- Continue until the current artifact or task reaches a natural stop.
-- When the task is fully complete, end with ${NazaAppConfig.continuationDoneMarker}.
+- Treat task_memory.completion_tasks as the active next-work queue. Complete the earliest missing task that belongs at the cursor.
+- Treat task_memory.style_rules as hard output constraints.
+- Use task_memory.next_structural_move to choose the first structural action of this chunk.
+- Before ending, silently check task_memory.quality_checks against the chunk you just wrote.
+- For Python coding tasks, continue the actual script: imports/config, prompt constants, functions, API call, response extraction, output handling, main guard, and closure as needed.
+- For story/book tasks, continue the active scene or prose from the next sentence with the same POV, tense, voice, and paragraph rhythm.
+- If task_memory.remaining_items contains work, perform the next remaining item instead of declaring completion.
+- Do not emit ${NazaAppConfig.continuationDoneMarker} or [done]. Finish the chunk with normal artifact text.
 ''';
   }
 
@@ -3759,7 +4157,8 @@ Reply back Yes or No one word reply no other text
 [/action]
 
 Answer Yes if a continuation chunk should be added.
-Answer No if the reply is complete enough.
+Answer Yes if the reply is cut off, underfilled for the original task, inside open code/markdown/list/table structure, missing the requested artifact, or likely ended because of the token limit.
+Answer No only when the original task is structurally complete and no requested deliverable remains.
 
 [continuation_review]
 action_mode=${actionProfile.label}
@@ -3793,6 +4192,72 @@ reply_tail_end
     return null;
   }
 
+  static bool containsDoneMarker(String text) {
+    return _hasExplicitDoneMarker(text);
+  }
+
+  static bool shouldIgnoreEmptyContinuation({
+    required NazaContinuationDecision decision,
+    required String continuation,
+  }) {
+    final onlyStopMarker =
+        containsDoneMarker(continuation) &&
+        stripDoneMarker(continuation).trim().isEmpty;
+    if (!onlyStopMarker) return false;
+    return hasHardContinuationSignal(decision) ||
+        decision.reason.contains('underfilled-requested-artifact') ||
+        decision.reason.contains('premature-done-marker');
+  }
+
+  static String _antiRepeatBlock(String accumulatedReply) {
+    final lines = _recentMeaningfulLines(accumulatedReply, maxLines: 12);
+    if (lines.isEmpty) {
+      return '''
+[anti_repeat]
+status=no prior assistant text
+[/anti_repeat]''';
+    }
+    final fingerprints = lines
+        .map((line) => _fingerprint(line))
+        .toSet()
+        .take(12)
+        .join(',');
+    return '''
+[anti_repeat]
+policy=Do not replay completed content. Continue only with new artifact text after exact_tail.
+recent_line_fingerprints=$fingerprints
+recent_completed_tail_lines=
+${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
+[/anti_repeat]''';
+  }
+
+  static List<String> _recentMeaningfulLines(
+    String text, {
+    required int maxLines,
+  }) {
+    final lines = _lines(stripDoneMarker(text))
+        .map((line) => line.trimRight())
+        .where((line) {
+          final clean = line.trim();
+          if (clean.length < 6) return false;
+          if (clean == '```') return false;
+          return true;
+        })
+        .toList(growable: false);
+    if (lines.length <= maxLines) return lines;
+    return lines.skip(lines.length - maxLines).toList(growable: false);
+  }
+
+  static String _fingerprint(String text) {
+    var hash = 0x811C9DC5;
+    final normalized = text.toLowerCase().replaceAll(_spaceRegExp, ' ').trim();
+    for (final unit in normalized.codeUnits.take(180)) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return (hash & 0x7FFFFFFF).toRadixString(16).padLeft(8, '0');
+  }
+
   static bool hasHardContinuationSignal(NazaContinuationDecision decision) {
     return decision.reason.contains('open-code-fence') ||
         decision.reason.contains('open-code-scope') ||
@@ -3803,9 +4268,9 @@ reply_tail_end
 
   static String join(String prefix, String continuation) {
     final first = stripDoneMarker(prefix, preserveTrailingWhitespace: true);
-    final second = stripDoneMarker(
-      continuation,
-      preserveTrailingWhitespace: true,
+    final second = _trimLeadingReplay(
+      first,
+      stripDoneMarker(continuation, preserveTrailingWhitespace: true),
     );
     if (first.isEmpty) return second.trimLeft();
     if (second.trim().isEmpty) return first;
@@ -3823,6 +4288,46 @@ reply_tail_end
     }
 
     return '$first\n\n$secondTrimmedLeft';
+  }
+
+  static String _trimLeadingReplay(String prefix, String continuation) {
+    final secondTrimmedLeft = continuation.trimLeft();
+    if (prefix.trim().isEmpty || secondTrimmedLeft.trim().isEmpty) {
+      return continuation;
+    }
+
+    final tail = prefix.length > 5200
+        ? prefix.substring(prefix.length - 5200)
+        : prefix;
+    final paragraphs = secondTrimmedLeft.split(RegExp(r'\n\s*\n'));
+    if (paragraphs.isNotEmpty) {
+      final firstParagraph = paragraphs.first.trim();
+      if (firstParagraph.length >= 48 && tail.contains(firstParagraph)) {
+        final cut =
+            secondTrimmedLeft.indexOf(paragraphs.first) +
+            paragraphs.first.length;
+        return secondTrimmedLeft.substring(cut).trimLeft();
+      }
+    }
+
+    final lines = secondTrimmedLeft.split('\n');
+    var consumed = 0;
+    var bestCut = 0;
+    for (var i = 0; i < math.min(lines.length, 12); i++) {
+      final line = lines[i];
+      final nextConsumed =
+          consumed + line.length + (i < lines.length - 1 ? 1 : 0);
+      final candidate = secondTrimmedLeft.substring(0, nextConsumed).trim();
+      final enoughSignal =
+          candidate.length >= 30 || (i >= 1 && candidate.length >= 18);
+      if (enoughSignal && tail.contains(candidate)) {
+        bestCut = nextConsumed;
+      }
+      consumed = nextConsumed;
+    }
+
+    if (bestCut <= 0) return continuation;
+    return secondTrimmedLeft.substring(bestCut).trimLeft();
   }
 
   static String stripDoneMarker(
@@ -3903,6 +4408,65 @@ reply_tail_end
     final lower = text.trimRight().toLowerCase();
     return text.contains(NazaAppConfig.continuationDoneMarker) ||
         lower.endsWith('[done]');
+  }
+
+  static bool _requestedLongArtifact(
+    String originalUserText,
+    NazaActionProfile actionProfile,
+  ) {
+    final source = _oneLine(
+      '$originalUserText ${actionProfile.taskSummary}',
+      maxChars: 900,
+    ).toLowerCase();
+    if (source.isEmpty) return false;
+    if (_targetLineCount(source) != null) return true;
+    if (source.contains('long prompt') ||
+        source.contains('long-form') ||
+        source.contains('full script') ||
+        source.contains('full code') ||
+        source.contains('complete script') ||
+        source.contains('complete code') ||
+        source.contains('entire script') ||
+        source.contains('entire code')) {
+      return true;
+    }
+    if (_hasAny(source, const ['book', 'novel', 'chapter'])) return true;
+    if (_hasAny(source, const ['script', 'program', 'api', 'sdk']) &&
+        _hasAny(source, const ['write', 'build', 'create', 'generate'])) {
+      return true;
+    }
+    return false;
+  }
+
+  static int _requestedArtifactMinimumChars(
+    String originalUserText,
+    NazaActionProfile actionProfile,
+  ) {
+    final source = '$originalUserText ${actionProfile.taskSummary}'
+        .toLowerCase();
+    final lineCount = _targetLineCount(source);
+    if (lineCount != null) {
+      return (lineCount * 18).clamp(900, 24000).toInt();
+    }
+    if (_hasAny(source, const ['book', 'novel'])) return 3200;
+    if (_hasAny(source, const ['chapter', 'long prompt'])) return 2200;
+    if (_hasAny(source, const ['script', 'program', 'api', 'sdk'])) {
+      return 1400;
+    }
+    return 900;
+  }
+
+  static int? _targetLineCount(String text) {
+    final match = _requestedLineCountRegExp.firstMatch(text);
+    if (match == null) return null;
+    return int.tryParse(match.group(1) ?? '');
+  }
+
+  static bool _hasAny(String text, List<String> needles) {
+    for (final needle in needles) {
+      if (text.contains(needle)) return true;
+    }
+    return false;
   }
 
   static bool _isLongArtifact(NazaActionProfile actionProfile, String text) {
@@ -4578,6 +5142,9 @@ final class NazaLocalGemma {
     String userText, {
     void Function(String partialText)? onPartial,
     String? historyUserText,
+    bool useMemory = true,
+    bool persistTurn = true,
+    int? maxContinuationsOverride,
   }) async {
     final trimmed = userText.trim();
     if (trimmed.isEmpty) {
@@ -4592,14 +5159,18 @@ final class NazaLocalGemma {
 
     final route = NazaQuantumRouter.route(trimmed);
     final actionProfile = NazaActionSelector.select(trimmed, route);
-    final memoryAllocation = await _allocateMemoryForTurn(
-      userText: trimmed,
-      route: route,
-      actionProfile: actionProfile,
-    );
-    await NazaGenerationSettingsStore.instance.prepare();
-    final maxContinuations =
-        NazaGenerationSettingsStore.instance.settings.value.maxContinuations;
+    final memoryAllocation = useMemory
+        ? await _allocateMemoryForTurn(
+            userText: trimmed,
+            route: route,
+            actionProfile: actionProfile,
+          )
+        : NazaMemoryAllocation.disabled();
+    final maxContinuations = maxContinuationsOverride == null
+        ? await _savedMaxContinuations()
+        : NazaGenerationSettings.normalizeMaxContinuations(
+            maxContinuationsOverride,
+          );
 
     try {
       await ensureReady();
@@ -4679,6 +5250,7 @@ final class NazaLocalGemma {
           stream: stream,
           actionProfile: actionProfile,
           pass: continuationCount + 1,
+          originalUserText: trimmed,
         );
         final agentNeedsContinuation =
             await _continuationAgentNeedsChunk(
@@ -4755,6 +5327,21 @@ final class NazaLocalGemma {
         }
 
         if (continuation.text.trim().isEmpty) break;
+        if (NazaContinuationEngine.shouldIgnoreEmptyContinuation(
+          decision: continuationDecision,
+          continuation: continuation.text,
+        )) {
+          generation.value = generation.value.copyWith(
+            stage: 'ignoring premature continuation stop',
+          );
+          stream = NazaStreamResult(
+            text: clean,
+            estimatedTokens: NazaAppConfig.outputTokens,
+            maxTokens: NazaAppConfig.outputTokens,
+            nearTokenCeiling: true,
+          );
+          continue;
+        }
         final joined = NazaContinuationEngine.join(prefix, continuation.text);
         if (joined.trim() == prefix.trim()) break;
         clean = joined;
@@ -4786,14 +5373,16 @@ final class NazaLocalGemma {
       // The answer is ready to paint. Persisting encrypted history is useful,
       // but it must not hold the visible response behind file I/O/crypto.
       final persistedUser = historyUserText?.trim();
-      unawaited(
-        _persistMessagePair(
-          user: persistedUser == null || persistedUser.isEmpty
-              ? trimmed
-              : persistedUser,
-          response: out,
-        ),
-      );
+      if (persistTurn) {
+        unawaited(
+          _persistMessagePair(
+            user: persistedUser == null || persistedUser.isEmpty
+                ? trimmed
+                : persistedUser,
+            response: out,
+          ),
+        );
+      }
 
       return out;
     } catch (error) {
@@ -4813,6 +5402,11 @@ final class NazaLocalGemma {
         createdAt: DateTime.now(),
       );
     }
+  }
+
+  Future<int> _savedMaxContinuations() async {
+    await NazaGenerationSettingsStore.instance.prepare();
+    return NazaGenerationSettingsStore.instance.settings.value.maxContinuations;
   }
 
   Future<NazaStreamResult> _streamContinuationWindow({
@@ -4840,6 +5434,7 @@ final class NazaLocalGemma {
           partialPrefix: partialPrefix,
           onPartial: onPartial,
           maxTokens: NazaAppConfig.continuationOutputTokens,
+          stripContinuationMarkers: false,
         );
       } catch (error) {
         lastError = error;
@@ -5486,6 +6081,7 @@ Answer out loud. Keep it natural, short, and useful.
     String partialPrefix = '',
     int maxTokens = NazaAppConfig.outputTokens,
     bool updateTelemetry = true,
+    bool stripContinuationMarkers = true,
   }) async {
     final rawResponse = StringBuffer();
     var lastPartialAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -5562,6 +6158,7 @@ Answer out loud. Keep it natural, short, and useful.
           final partial = _cleanResponse(
             rawResponse.toString(),
             preserveLeadingWhitespace: partialPrefix.isNotEmpty,
+            stripContinuationMarkers: stripContinuationMarkers,
           );
           if (partial.isNotEmpty) {
             onPartial(NazaContinuationEngine.join(partialPrefix, partial));
@@ -5587,6 +6184,7 @@ Answer out loud. Keep it natural, short, and useful.
       text: _cleanResponse(
         rawResponse.toString(),
         preserveLeadingWhitespace: partialPrefix.isNotEmpty,
+        stripContinuationMarkers: stripContinuationMarkers,
       ),
       estimatedTokens: finalEstimatedTokens,
       maxTokens: maxTokens,
@@ -5598,7 +6196,11 @@ Answer out loud. Keep it natural, short, and useful.
     );
   }
 
-  String _cleanResponse(String raw, {bool preserveLeadingWhitespace = false}) {
+  String _cleanResponse(
+    String raw, {
+    bool preserveLeadingWhitespace = false,
+    bool stripContinuationMarkers = true,
+  }) {
     var s = preserveLeadingWhitespace ? raw.trimRight() : raw.trim();
 
     final textResponseMatch = _textResponseRegExp.firstMatch(s.trim());
@@ -5617,7 +6219,9 @@ Answer out loud. Keep it natural, short, and useful.
     s = s.replaceAll(_channelRegExp, '');
     s = s.replaceAll(_thinkRegExp, '');
     s = s.replaceAll(_tripleNewlineRegExp, '\n\n');
-    s = NazaContinuationEngine.stripDoneMarker(s);
+    if (stripContinuationMarkers) {
+      s = NazaContinuationEngine.stripDoneMarker(s);
+    }
     return preserveLeadingWhitespace ? s.trimRight() : s.trim();
   }
 
@@ -7887,6 +8491,11 @@ final class NazaVectorMemory {
         );
         final tagAffinity = _tagAffinity(focus: focus, chunk: chunk);
         final roleBias = chunk.role == 'user' ? 0.04 : 0.0;
+        final routeMismatchPenalty =
+            actionProfile.mode != NazaActionMode.scan &&
+                chunk.route.contains('scanner')
+            ? -0.18
+            : 0.0;
         final score =
             similarity * 0.48 +
             keywordAffinity * 0.19 +
@@ -7895,6 +8504,7 @@ final class NazaVectorMemory {
             chunk.importance * 0.12 +
             routeAffinity +
             roleBias +
+            routeMismatchPenalty +
             (workingMemory ? 0.08 : 0.0);
         final certainty = score.clamp(0.0, 1.0).toDouble();
         scored.add(
@@ -10696,16 +11306,19 @@ class _NazaStableHomeState extends State<NazaStableHome> {
   }
 
   void _updateRoadDraft(Map<String, String> draft) {
+    if (mapEquals(_roadDraft, draft)) return;
     _roadDraft = Map<String, String>.from(draft);
     _scheduleScannerDraftSave();
   }
 
   void _updateFoodDraft(Map<String, String> draft) {
+    if (mapEquals(_foodDraft, draft)) return;
     _foodDraft = Map<String, String>.from(draft);
     _scheduleScannerDraftSave();
   }
 
   void _updateFoodPlannerDraft(Map<String, String> draft) {
+    if (mapEquals(_foodPlannerDraft, draft)) return;
     _foodPlannerDraft = Map<String, String>.from(draft);
     _scheduleScannerDraftSave();
   }
@@ -11025,6 +11638,9 @@ class _NazaStableHomeState extends State<NazaStableHome> {
       final scannerResponse = await NazaLocalGemma.instance.send(
         scannerPrompt,
         historyUserText: visibleSummary,
+        useMemory: false,
+        persistTurn: false,
+        maxContinuationsOverride: 0,
       );
 
       if (mounted) {
@@ -12827,13 +13443,14 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
   Future<void> _runScan() async {
     if (_loading || !widget.actionsEnabled) return;
     setState(() => _loading = true);
-    final result = await widget.onScan(_data());
-    if (!mounted) return;
-    setState(() {
-      _result = result;
-      _loading = false;
-    });
-    widget.onResultChanged(result);
+    try {
+      final result = await widget.onScan(_data());
+      if (!mounted) return;
+      setState(() => _result = result);
+      widget.onResultChanged(result);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
@@ -13116,25 +13733,27 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
   Future<void> _runSingleScan() async {
     if (_singleLoading || !widget.actionsEnabled) return;
     setState(() => _singleLoading = true);
-    final result = await widget.onScan(_scanData());
-    if (!mounted) return;
-    setState(() {
-      _singleResult = result;
-      _singleLoading = false;
-    });
-    widget.onSingleResultChanged(result);
+    try {
+      final result = await widget.onScan(_scanData());
+      if (!mounted) return;
+      setState(() => _singleResult = result);
+      widget.onSingleResultChanged(result);
+    } finally {
+      if (mounted) setState(() => _singleLoading = false);
+    }
   }
 
   Future<void> _runPlanner() async {
     if (_plannerLoading || !widget.actionsEnabled) return;
     setState(() => _plannerLoading = true);
-    final result = await widget.onPlanner(_plannerData());
-    if (!mounted) return;
-    setState(() {
-      _plannerResult = result;
-      _plannerLoading = false;
-    });
-    widget.onPlannerResultChanged(result);
+    try {
+      final result = await widget.onPlanner(_plannerData());
+      if (!mounted) return;
+      setState(() => _plannerResult = result);
+      widget.onPlannerResultChanged(result);
+    } finally {
+      if (mounted) setState(() => _plannerLoading = false);
+    }
   }
 
   @override
@@ -13321,16 +13940,18 @@ class _ScannerAnalysisSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _NazaGlassCard(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
-      radius: 26,
-      active: true,
-      child: loading
-          ? _ScannerLoadingSurface(title: title, icon: icon)
-          : result == null
-          ? _ScannerIdleSurface(title: title, icon: icon, body: idleBody)
-          : _ScannerResultSurface(result: result!),
+    return RepaintBoundary(
+      child: _NazaGlassCard(
+        margin: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.all(16),
+        radius: 26,
+        active: true,
+        child: loading
+            ? _ScannerLoadingSurface(title: title, icon: icon)
+            : result == null
+            ? _ScannerIdleSurface(title: title, icon: icon, body: idleBody)
+            : _ScannerResultSurface(result: result!),
+      ),
     );
   }
 }
@@ -13748,38 +14369,40 @@ class _ScannerResultBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(13),
-      decoration: BoxDecoration(
-        color: const Color(0x77101E19),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: color.withAlpha(70)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              color: color,
-              fontWeight: FontWeight.w900,
-              fontFamily: NazaFonts.display,
+    return RepaintBoundary(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: const Color(0x77101E19),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: color.withAlpha(70)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.w900,
+                fontFamily: NazaFonts.display,
+              ),
             ),
-          ),
-          const SizedBox(height: 7),
-          Text(
-            text,
-            maxLines: 16,
-            overflow: TextOverflow.fade,
-            style: const TextStyle(
-              color: NazaPalette.text,
-              height: 1.36,
-              fontWeight: FontWeight.w600,
-              fontFamily: NazaFonts.display,
+            const SizedBox(height: 7),
+            Text(
+              text,
+              maxLines: 16,
+              overflow: TextOverflow.fade,
+              style: const TextStyle(
+                color: NazaPalette.text,
+                height: 1.36,
+                fontWeight: FontWeight.w600,
+                fontFamily: NazaFonts.display,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -13862,42 +14485,44 @@ class _ChromographicWheel extends StatelessWidget {
           : const Duration(milliseconds: 820),
       curve: Curves.easeOutCubic,
       builder: (context, value, _) {
-        return SizedBox(
-          width: 148,
-          height: 148,
-          child: CustomPaint(
-            painter: _ChromographicWheelPainter(
-              progress: loading ? progress : value,
-              tone: tone,
-              loading: loading,
-            ),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: tone,
-                      fontSize: loading ? 16 : 22,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: -0.35,
-                      fontFamily: NazaFonts.display,
+        return RepaintBoundary(
+          child: SizedBox(
+            width: 148,
+            height: 148,
+            child: CustomPaint(
+              painter: _ChromographicWheelPainter(
+                progress: loading ? progress : value,
+                tone: tone,
+                loading: loading,
+              ),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: tone,
+                        fontSize: loading ? 16 : 22,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.35,
+                        fontFamily: NazaFonts.display,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: NazaPalette.subtext,
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w900,
-                      fontFamily: NazaFonts.mono,
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.mono,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -14015,45 +14640,47 @@ class _SafetyScoreGauge extends StatelessWidget {
       curve: Curves.easeOutCubic,
       builder: (context, value, _) {
         final shownScore = (value * 100).round();
-        return SizedBox(
-          width: 148,
-          height: 148,
-          child: CustomPaint(
-            painter: _SafetyGaugePainter(progress: value, color: color),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '$shownScore',
-                    style: TextStyle(
-                      color: color,
-                      fontSize: 30,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: -1.2,
-                      fontFamily: NazaFonts.mono,
+        return RepaintBoundary(
+          child: SizedBox(
+            width: 148,
+            height: 148,
+            child: CustomPaint(
+              painter: _SafetyGaugePainter(progress: value, color: color),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '$shownScore',
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 30,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -1.2,
+                        fontFamily: NazaFonts.mono,
+                      ),
                     ),
-                  ),
-                  const Text(
-                    '/100',
-                    style: TextStyle(
-                      color: NazaPalette.subtext,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w900,
-                      fontFamily: NazaFonts.mono,
+                    const Text(
+                      '/100',
+                      style: TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.mono,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '$band safety',
-                    style: const TextStyle(
-                      color: NazaPalette.subtext,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w900,
-                      fontFamily: NazaFonts.display,
+                    const SizedBox(height: 2),
+                    Text(
+                      '$band safety',
+                      style: const TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.display,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
