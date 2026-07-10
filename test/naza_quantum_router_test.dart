@@ -244,6 +244,26 @@ class ReportBuilder:
       expect(joinedProse, contains('Tomas dropped the lantern.'));
     });
 
+    test('rejects a continuation that introduces a mismatched closer', () {
+      const prefix = '''
+function collectValues() {
+  const values = [
+''';
+      const continuation = '''
+  );
+}
+''';
+
+      final assembled = NazaContinuationEngine.assembleCandidate(
+        prefix: prefix,
+        continuation: continuation,
+      );
+
+      expect(assembled.accepted, isFalse);
+      expect(assembled.text, prefix);
+      expect(assembled.reason.toLowerCase(), contains('mismatch'));
+    });
+
     test('parses the one-word continuation critic verdict', () {
       expect(NazaContinuationEngine.parseJudgeReply('Yes'), isTrue);
       expect(NazaContinuationEngine.parseJudgeReply('No.'), isFalse);
@@ -729,6 +749,97 @@ export function groupUsers(users: User[]) {
       expect(prompt, isNot(contains('add one TypeScript-native entrypoint')));
     });
 
+    test('reports ordered delimiter state and the first mismatched closer', () {
+      const userText =
+          'write a TypeScript library that builds a nested render configuration';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```typescript
+export function buildConfig() {
+  return wrap([
+    {
+      value: compute(
+      ]
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-scope',
+        confidence: 0.96,
+        completedSummary:
+            'The TypeScript configuration builder has a malformed nested expression.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('ordered_stack={>(>[>{>('));
+      expect(prompt, contains('delimiter_diagnostics=mismatched closer ]'));
+      expect(prompt, contains('expected )'));
+    });
+
+    test('plans phase-specific continuation output budgets', () {
+      const userText =
+          'write a complete Python command line application with helpers and main';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const repairPartial = '''
+```python
+MESSAGE = """unfinished configuration text
+''';
+      const definitionPartial = '''
+```python
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    return parser.parse_args()
+''';
+      const repairDecision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence+open-code-scope+partial-token',
+        confidence: 0.98,
+        completedSummary: 'The Python application stopped in an open string.',
+        tail: repairPartial,
+      );
+      const definitionDecision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+underfilled-requested-artifact',
+        confidence: 0.86,
+        completedSummary:
+            'The Python application has imports and one completed helper.',
+        tail: definitionPartial,
+      );
+
+      final repairPlan = NazaContinuationEngine.planChunk(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: repairDecision,
+        accumulatedReply: repairPartial,
+      );
+      final definitionPlan = NazaContinuationEngine.planChunk(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: definitionDecision,
+        accumulatedReply: definitionPartial,
+      );
+
+      expect(repairPlan.phase.toLowerCase(), contains('repair'));
+      expect(definitionPlan.phase.toLowerCase(), contains('orchestration'));
+      expect(repairPlan.maxOutputTokens, greaterThan(0));
+      expect(
+        definitionPlan.maxOutputTokens,
+        greaterThan(repairPlan.maxOutputTokens),
+      );
+    });
+
     test('continues nested Dart calls before adding an entrypoint', () {
       const userText = 'write a Dart program that fetches and renders a report';
       final route = NazaQuantumRouter.route(userText);
@@ -957,6 +1068,53 @@ Water climbed the archive steps behind Mira, carrying ribbons of ink between the
         contains('next_structural_move=write the immediate listener reaction'),
       );
       expect(prompt, contains('without repeating the previous dialogue'));
+    });
+
+    test('carries a story-state ledger into the next causal chunk phase', () {
+      const userText =
+          'write a fantasy novel about Mira and Tomas crossing the drowned city';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+Mira limped into the cistern while holding the copper locket against her coat. She knew Tomas had taken the north gate key.
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+long-artifact-task',
+        confidence: 0.84,
+        completedSummary:
+            'Mira entered the cistern injured, carrying the locket and tracking Tomas.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 8,
+        accumulatedReply: partial,
+      );
+      final plan = NazaContinuationEngine.planChunk(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('story_ledger='));
+      expect(
+        prompt,
+        contains('object:She knew Tomas had taken the north gate key.'),
+      );
+      expect(prompt, contains('object:Mira limped into the cistern'));
+      expect(prompt, contains('physical:Mira limped into the cistern'));
+      expect(prompt, contains('knowledge:She knew Tomas'));
+      expect(plan.phase, 'advance-story-beat');
+      expect(
+        plan.maxOutputTokens,
+        NazaAppConfig.continuationExpansionOutputTokens,
+      );
     });
 
     test('uses a completed scene as the causal anchor for the next scene', () {
@@ -1281,6 +1439,63 @@ $longMiddle
         );
       },
     );
+
+    test('keeps the final cursor suffix verbatim and marker-free', () {
+      const userText =
+          'write a Python script that transforms records into a report';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final discardedPrefix = List.generate(
+        180,
+        (index) => 'old_completed_line_$index = transform(source_$index)',
+      ).join('\n');
+      final uniqueSuffix = List.generate(
+        24,
+        (index) =>
+            '    seam_${index.toString().padLeft(2, '0')} = preserve_exact_cursor_${index.toString().padLeft(2, '0')}',
+      ).join('\n');
+      final tail =
+          '''
+```python
+$discardedPrefix
+$uniqueSuffix''';
+      final raw = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'token-ceiling+open-code-fence',
+          confidence: 0.97,
+          completedSummary: 'The record transformer is mid-artifact.',
+          tail: tail,
+        ),
+        pass: 3,
+        maxPasses: 8,
+        accumulatedReply: tail,
+      );
+
+      final fitted = NazaPromptBudget.fitContinuationPrompt(raw);
+      const cursorStartMarker = '<<<NAZA_CONTINUATION_TAIL\n';
+      const cursorEndMarker = '\nNAZA_CONTINUATION_TAIL';
+      final cursorMarkerIndex = fitted.indexOf(cursorStartMarker);
+      expect(cursorMarkerIndex, greaterThanOrEqualTo(0));
+      final cursorStart = cursorMarkerIndex + cursorStartMarker.length;
+      final cursorEnd = fitted.indexOf(cursorEndMarker, cursorStart);
+      expect(cursorEnd, greaterThan(cursorStart));
+      final exactCursor = fitted.substring(cursorStart, cursorEnd);
+
+      expect(uniqueSuffix.length, inInclusiveRange(900, 1000));
+      expect(exactCursor, endsWith(uniqueSuffix));
+      expect(exactCursor, isNot(contains('compacted')));
+      expect(exactCursor, isNot(contains('[...')));
+      expect(
+        NazaPromptBudget.fits(
+          systemInstruction: NazaAppConfig.systemInstruction,
+          prompt: fitted,
+        ),
+        isTrue,
+      );
+    });
   });
 
   group('NazaMemoryChunk', () {

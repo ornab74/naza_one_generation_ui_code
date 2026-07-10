@@ -92,6 +92,9 @@ final class NazaAppConfig {
   static const int modelInputTokenSafetyMargin = 1024;
   static const int outputTokens = 768;
   static const int continuationOutputTokens = 512;
+  static const int continuationRepairOutputTokens = 192;
+  static const int continuationStructureOutputTokens = 384;
+  static const int continuationExpansionOutputTokens = 768;
   static const int liveVoiceOutputTokens = 160;
   static const int continuationJudgeOutputTokens = 8;
   static const int autoContinuationPasses = 4;
@@ -563,6 +566,32 @@ final class NazaContinuationDecision {
   }
 }
 
+final class NazaContinuationChunkPlan {
+  final String phase;
+  final String goal;
+  final String boundary;
+  final int maxOutputTokens;
+
+  const NazaContinuationChunkPlan({
+    required this.phase,
+    required this.goal,
+    required this.boundary,
+    required this.maxOutputTokens,
+  });
+}
+
+final class NazaContinuationAssembly {
+  final bool accepted;
+  final String text;
+  final String reason;
+
+  const NazaContinuationAssembly({
+    required this.accepted,
+    required this.text,
+    required this.reason,
+  });
+}
+
 final class NazaContinuationTaskMemory {
   final String taskType;
   final String targetLanguage;
@@ -607,7 +636,7 @@ final class NazaContinuationTaskMemory {
   String toPromptBlock() {
     return '''
 [task_memory]
-source=local-continuation-task-memory-agent-v4
+source=local-continuation-task-memory-agent-v5
 task_type=$taskType
 target_language=$targetLanguage
 domain=$domain
@@ -951,11 +980,171 @@ final class _NazaPythonScriptSnapshot {
   }
 }
 
+final class _NazaDelimiterFrame {
+  final String opener;
+  final String closer;
+  final int line;
+  final int column;
+
+  const _NazaDelimiterFrame({
+    required this.opener,
+    required this.closer,
+    required this.line,
+    required this.column,
+  });
+}
+
+final class _NazaDelimiterSnapshot {
+  final List<_NazaDelimiterFrame> stack;
+  final List<String> diagnostics;
+  final List<int> braceDepthBeforeLine;
+  final String? openQuote;
+
+  const _NazaDelimiterSnapshot({
+    required this.stack,
+    required this.diagnostics,
+    required this.braceDepthBeforeLine,
+    required this.openQuote,
+  });
+
+  factory _NazaDelimiterSnapshot.analyze(
+    List<String> lines, {
+    required String language,
+  }) {
+    final stack = <_NazaDelimiterFrame>[];
+    final diagnostics = <String>[];
+    final braceDepthBeforeLine = <int>[];
+    String? quote;
+    var escaped = false;
+    var inBlockComment = false;
+
+    for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      final rawLine = lines[lineIndex];
+      braceDepthBeforeLine.add(
+        stack.where((frame) => frame.opener == '{').length,
+      );
+      for (var i = 0; i < rawLine.length; i++) {
+        final char = rawLine[i];
+        final next = i + 1 < rawLine.length ? rawLine[i + 1] : '';
+        if (inBlockComment) {
+          if (char == '*' && next == '/') {
+            inBlockComment = false;
+            i++;
+          }
+          continue;
+        }
+        if (quote != null) {
+          if (quote.length == 3) {
+            if (rawLine.startsWith(quote, i)) {
+              quote = null;
+              i += 2;
+            }
+            continue;
+          }
+          if (escaped) {
+            escaped = false;
+          } else if (char == '\\') {
+            escaped = true;
+          } else if (char == quote) {
+            quote = null;
+          }
+          continue;
+        }
+        if (char == '/' && next == '*') {
+          inBlockComment = true;
+          i++;
+          continue;
+        }
+        if ((char == '/' && next == '/') ||
+            (language == 'SQL' && char == '-' && next == '-') ||
+            ((language == 'Python' || language == 'Bash') && char == '#')) {
+          break;
+        }
+        if (char == '"' || char == "'") {
+          final triple = '$char$char$char';
+          if (rawLine.startsWith(triple, i)) {
+            quote = triple;
+            i += 2;
+          } else {
+            quote = char;
+          }
+          continue;
+        }
+        if (char == '`') {
+          quote = char;
+          continue;
+        }
+
+        final closer = switch (char) {
+          '(' => ')',
+          '[' => ']',
+          '{' => '}',
+          _ => null,
+        };
+        if (closer != null) {
+          stack.add(
+            _NazaDelimiterFrame(
+              opener: char,
+              closer: closer,
+              line: lineIndex + 1,
+              column: i + 1,
+            ),
+          );
+          continue;
+        }
+        if (char != ')' && char != ']' && char != '}') continue;
+        if (stack.isEmpty) {
+          diagnostics.add(
+            'unexpected closer $char at line ${lineIndex + 1}:${i + 1}',
+          );
+          continue;
+        }
+        final active = stack.last;
+        if (active.closer == char) {
+          stack.removeLast();
+          continue;
+        }
+        diagnostics.add(
+          'mismatched closer $char at line ${lineIndex + 1}:${i + 1}; '
+          'expected ${active.closer} for ${active.opener} opened at '
+          'line ${active.line}:${active.column}',
+        );
+      }
+    }
+
+    return _NazaDelimiterSnapshot(
+      stack: List.unmodifiable(stack),
+      diagnostics: List.unmodifiable(diagnostics),
+      braceDepthBeforeLine: List.unmodifiable(braceDepthBeforeLine),
+      openQuote: quote,
+    );
+  }
+
+  int get openParentheses => stack.where((frame) => frame.opener == '(').length;
+  int get openBrackets => stack.where((frame) => frame.opener == '[').length;
+  int get openBraces => stack.where((frame) => frame.opener == '{').length;
+  bool get hasOpenString => openQuote != null;
+  bool get hasOpenDelimiter => stack.isNotEmpty;
+  bool get isStructurallyValid => diagnostics.isEmpty;
+
+  String get orderedStack =>
+      stack.isEmpty ? 'empty' : stack.map((frame) => frame.opener).join('>');
+
+  String get expectedClosers => stack.isEmpty
+      ? 'none'
+      : stack.reversed.map((frame) => frame.closer).join('>');
+
+  String get diagnosticState =>
+      diagnostics.isEmpty ? 'valid' : diagnostics.take(3).join(' | ');
+}
+
 final class _NazaCodeSnapshot {
   final String language;
   final String artifactKind;
   final String entrypointPolicy;
   final List<String> definedSymbols;
+  final List<String> connectedSymbols;
+  final List<String> unattachedSymbols;
   final String activeConstruct;
   final String modulePhase;
   final int openParentheses;
@@ -967,12 +1156,15 @@ final class _NazaCodeSnapshot {
   final bool hasEntrypoint;
   final bool lastLineOpensBlock;
   final bool lastLineContinuesExpression;
+  final _NazaDelimiterSnapshot delimiters;
 
   const _NazaCodeSnapshot({
     required this.language,
     required this.artifactKind,
     required this.entrypointPolicy,
     required this.definedSymbols,
+    required this.connectedSymbols,
+    required this.unattachedSymbols,
     required this.activeConstruct,
     required this.modulePhase,
     required this.openParentheses,
@@ -984,6 +1176,7 @@ final class _NazaCodeSnapshot {
     required this.hasEntrypoint,
     required this.lastLineOpensBlock,
     required this.lastLineContinuesExpression,
+    required this.delimiters,
   });
 
   factory _NazaCodeSnapshot.analyze({
@@ -994,20 +1187,19 @@ final class _NazaCodeSnapshot {
     final source = '$original\n$reply'.toLowerCase();
     final artifactKind = _artifactKind(language, source);
     final codeLines = _codeLines(reply, language);
+    final delimiters = _NazaDelimiterSnapshot.analyze(
+      codeLines,
+      language: language,
+    );
     final symbols = <String>[];
     var hasImports = false;
     var hasEntrypoint = false;
     var latestConstruct = '';
     var latestConstructBraceBase = 0;
-    var paren = 0;
-    var bracket = 0;
-    var brace = 0;
-    String? quote;
-    var escaped = false;
-    var inBlockComment = false;
     var lastCodeLine = '';
 
-    for (final rawLine in codeLines) {
+    for (var lineIndex = 0; lineIndex < codeLines.length; lineIndex++) {
+      final rawLine = codeLines[lineIndex];
       final clean = rawLine.trim();
       if (clean.isEmpty || clean.startsWith('```')) continue;
       lastCodeLine = clean;
@@ -1038,72 +1230,29 @@ final class _NazaCodeSnapshot {
       if (definition != null) {
         if (!symbols.contains(definition.$2)) symbols.add(definition.$2);
         latestConstruct = '${definition.$1} ${definition.$2}';
-        latestConstructBraceBase = brace;
-      }
-
-      for (var i = 0; i < rawLine.length; i++) {
-        final char = rawLine[i];
-        final next = i + 1 < rawLine.length ? rawLine[i + 1] : '';
-        if (inBlockComment) {
-          if (char == '*' && next == '/') {
-            inBlockComment = false;
-            i++;
-          }
-          continue;
-        }
-        if (quote != null) {
-          if (escaped) {
-            escaped = false;
-          } else if (char == '\\') {
-            escaped = true;
-          } else if (char == quote) {
-            quote = null;
-          }
-          continue;
-        }
-        if (char == '/' && next == '*') {
-          inBlockComment = true;
-          i++;
-          continue;
-        }
-        if ((char == '/' && next == '/') ||
-            (language == 'SQL' && char == '-' && next == '-') ||
-            ((language == 'Python' || language == 'Bash') && char == '#')) {
-          break;
-        }
-        if (char == '"' || char == "'" || char == '`') {
-          quote = char;
-          continue;
-        }
-        if (char == '(') {
-          paren++;
-        } else if (char == ')') {
-          if (paren > 0) paren--;
-        } else if (char == '[') {
-          bracket++;
-        } else if (char == ']') {
-          if (bracket > 0) bracket--;
-        } else if (char == '{') {
-          brace++;
-        } else if (char == '}') {
-          if (brace > 0) brace--;
-        }
+        latestConstructBraceBase = delimiters.braceDepthBeforeLine[lineIndex];
       }
     }
 
-    final activeConstruct = quote != null
+    final openParentheses = delimiters.openParentheses;
+    final openBrackets = delimiters.openBrackets;
+    final openBraces = delimiters.openBraces;
+    final hasOpenString = delimiters.hasOpenString;
+    final activeConstruct = delimiters.diagnostics.isNotEmpty
+        ? 'delimiter mismatch requiring repair'
+        : hasOpenString
         ? 'open string or template literal'
         : latestConstruct.isNotEmpty &&
-              (brace > latestConstructBraceBase ||
+              (openBraces > latestConstructBraceBase ||
                   language == 'Python' &&
                       codeLines.isNotEmpty &&
                       RegExp(r'^\s').hasMatch(codeLines.last))
         ? latestConstruct
-        : paren > 0
+        : openParentheses > 0
         ? 'open call or grouped expression'
-        : bracket > 0
+        : openBrackets > 0
         ? 'open list or indexed expression'
-        : brace > 0
+        : openBraces > 0
         ? 'open block or object literal'
         : 'top-level artifact';
     final insideFence = RegExp(r'```').allMatches(reply).length.isOdd;
@@ -1115,7 +1264,12 @@ final class _NazaCodeSnapshot {
     ).hasMatch(lastCodeLine);
     final modulePhase = codeLines.isEmpty
         ? 'empty'
-        : quote != null || paren > 0 || bracket > 0 || brace > 0
+        : delimiters.diagnostics.isNotEmpty
+        ? 'syntax-repair'
+        : hasOpenString ||
+              openParentheses > 0 ||
+              openBrackets > 0 ||
+              openBraces > 0
         ? 'active-construct'
         : symbols.isNotEmpty && !hasEntrypoint
         ? 'definitions'
@@ -1124,30 +1278,46 @@ final class _NazaCodeSnapshot {
         : hasImports
         ? 'imports-and-setup'
         : 'artifact-body';
+    final codeText = codeLines.join('\n');
+    final connectedSymbols = symbols
+        .where((symbol) {
+          if (symbol.toLowerCase() == 'main') return true;
+          return RegExp(
+                '\\b${RegExp.escape(symbol)}\\b',
+              ).allMatches(codeText).length >
+              1;
+        })
+        .toList(growable: false);
+    final unattachedSymbols = symbols
+        .where((symbol) => !connectedSymbols.contains(symbol))
+        .toList(growable: false);
 
     return _NazaCodeSnapshot(
       language: language,
       artifactKind: artifactKind,
       entrypointPolicy: _entrypointPolicy(artifactKind, language),
       definedSymbols: symbols.take(12).toList(growable: false),
+      connectedSymbols: connectedSymbols.take(12).toList(growable: false),
+      unattachedSymbols: unattachedSymbols.take(8).toList(growable: false),
       activeConstruct: activeConstruct,
       modulePhase: modulePhase,
-      openParentheses: paren,
-      openBrackets: bracket,
-      openBraces: brace,
-      hasOpenString: quote != null,
+      openParentheses: openParentheses,
+      openBrackets: openBrackets,
+      openBraces: openBraces,
+      hasOpenString: hasOpenString,
       insideCodeFence: insideFence,
       hasImports: hasImports,
       hasEntrypoint: hasEntrypoint,
       lastLineOpensBlock: lastLineOpensBlock,
       lastLineContinuesExpression: lastLineContinuesExpression,
+      delimiters: delimiters,
     );
   }
 
-  bool get hasOpenDelimiter =>
-      openParentheses > 0 || openBrackets > 0 || openBraces > 0;
+  bool get hasOpenDelimiter => delimiters.hasOpenDelimiter;
 
-  bool get hasOpenSyntax => hasOpenString || hasOpenDelimiter;
+  bool get hasOpenSyntax =>
+      hasOpenString || hasOpenDelimiter || delimiters.diagnostics.isNotEmpty;
 
   bool get shouldHaveEntrypoint => const {
     'executable-program',
@@ -1157,17 +1327,25 @@ final class _NazaCodeSnapshot {
   }.contains(artifactKind);
 
   String get structureState =>
-      'module_phase=$modulePhase; active_construct=$activeConstruct; open_delimiters=$delimiterState; open_string=${hasOpenString ? 'yes' : 'no'}; fence=${insideCodeFence ? 'open' : 'closed'}; imports=${hasImports ? 'present' : 'not-yet-visible'}; entrypoint=${hasEntrypoint ? 'present' : 'not-yet-visible'}';
+      'module_phase=$modulePhase; active_construct=$activeConstruct; open_delimiters=$delimiterState; delimiter_diagnostics=${delimiters.diagnosticState}; open_string=${hasOpenString ? 'yes' : 'no'}; fence=${insideCodeFence ? 'open' : 'closed'}; imports=${hasImports ? 'present' : 'not-yet-visible'}; entrypoint=${hasEntrypoint ? 'present' : 'not-yet-visible'}';
 
   String get continuityState {
     final symbols = definedSymbols.isEmpty
         ? 'none-yet'
         : definedSymbols.join(',');
-    return 'defined_symbols=$symbols; symbol_policy=reuse existing names and connect every new definition to a caller, owner, or output path';
+    final connected = connectedSymbols.isEmpty
+        ? 'none-yet'
+        : connectedSymbols.join(',');
+    final unattached = unattachedSymbols.isEmpty
+        ? 'none'
+        : unattachedSymbols.join(',');
+    return 'defined_symbols=$symbols; symbol_ledger=connected[$connected],unattached[$unattached]; symbol_policy=reuse existing names and connect every new definition to a caller, owner, or output path';
   }
 
   String get delimiterState =>
-      'paren=$openParentheses,bracket=$openBrackets,brace=$openBraces';
+      'paren=$openParentheses,bracket=$openBrackets,brace=$openBraces; '
+      'ordered_stack=${delimiters.orderedStack}; '
+      'expected_closers=${delimiters.expectedClosers}';
 
   static List<String> _codeLines(String reply, String language) {
     final lines = reply.replaceAll(RegExp(r'\r\n?'), '\n').split('\n');
@@ -1343,6 +1521,7 @@ final class _NazaNarrativeSnapshot {
   final String lastSpeaker;
   final String latestBeat;
   final String paragraphPattern;
+  final List<String> stateAnchors;
   final bool openDialogue;
   final bool endsMidSentence;
   final bool lastParagraphHasDialogue;
@@ -1358,6 +1537,7 @@ final class _NazaNarrativeSnapshot {
     required this.lastSpeaker,
     required this.latestBeat,
     required this.paragraphPattern,
+    required this.stateAnchors,
     required this.openDialogue,
     required this.endsMidSentence,
     required this.lastParagraphHasDialogue,
@@ -1436,6 +1616,7 @@ final class _NazaNarrativeSnapshot {
       lastSpeaker: _lastSpeaker(reply),
       latestBeat: _oneLine(lastParagraph, maxChars: 190),
       paragraphPattern: paragraphPattern,
+      stateAnchors: _stateAnchors(reply),
       openDialogue: openDialogue,
       endsMidSentence: endsMidSentence,
       lastParagraphHasDialogue: lastParagraphHasDialogue,
@@ -1448,7 +1629,58 @@ final class _NazaNarrativeSnapshot {
 
   String get continuityState {
     final names = entities.isEmpty ? 'none-detected' : entities.join(',');
-    return 'pov=$pointOfView; tense=$tense; entities=$names; last_speaker=$lastSpeaker; latest_beat=$latestBeat';
+    final ledger = stateAnchors.isEmpty
+        ? 'no-explicit-state-anchor'
+        : stateAnchors.join(' | ');
+    return 'pov=$pointOfView; tense=$tense; entities=$names; last_speaker=$lastSpeaker; latest_beat=$latestBeat; story_ledger=$ledger';
+  }
+
+  static List<String> _stateAnchors(String text) {
+    final units = text
+        .split(RegExp(r'(?<=[.!?])\s+|\n+'))
+        .map((unit) => unit.replaceAll(RegExp(r'\s+'), ' ').trim())
+        .where((unit) => unit.length >= 12)
+        .toList(growable: false);
+    List<String> latestMatching(
+      RegExp pattern,
+      String label, {
+      int maxMatches = 1,
+    }) {
+      final matches = <String>[];
+      for (var i = units.length - 1; i >= 0; i--) {
+        if (pattern.hasMatch(units[i])) {
+          matches.add('$label:${_oneLine(units[i], maxChars: 130)}');
+          if (matches.length >= maxMatches) break;
+        }
+      }
+      return matches;
+    }
+
+    final anchors = <String>[
+      ...latestMatching(
+        RegExp(
+          r'\b(?:holds?|held|carries|carried|carrying|wears?|wore|pocketed|keeps?|left|dropped|gave|took|key|locket|map|weapon|bag)\b',
+          caseSensitive: false,
+        ),
+        'object',
+        maxMatches: 2,
+      ),
+      ...latestMatching(
+        RegExp(
+          r'\b(?:injured|wounded|bleeding|limp(?:ed|ing|s)?|broken|burned|bruised|pain|exhausted|trapped)\b',
+          caseSensitive: false,
+        ),
+        'physical',
+      ),
+      ...latestMatching(
+        RegExp(
+          r'\b(?:knows?|knew|learned|realized|realises|discovered|remembers?|suspects?|believes?)\b',
+          caseSensitive: false,
+        ),
+        'knowledge',
+      ),
+    ];
+    return anchors.take(5).toList(growable: false);
   }
 
   static String _pointOfView(String original, String prose) {
@@ -1972,6 +2204,11 @@ final class NazaContinuationTaskAgent {
           );
         }
       } else if (code != null) {
+        if (code.delimiters.diagnostics.isNotEmpty) {
+          remaining.add(
+            'repair ${code.delimiters.diagnosticState} before adding another construct',
+          );
+        }
         if (code.activeConstruct != 'top-level artifact') {
           remaining.add(
             'finish the active ${code.activeConstruct} and ${code.delimiterState} before starting another section',
@@ -2126,7 +2363,11 @@ final class NazaContinuationTaskAgent {
       tasks.add('keep producing valid Python code, not explanatory prose');
       tasks.add('close any open function, string, list, dict, call, or fence');
     } else if (taskType == 'coding' && code != null) {
-      if (code.hasOpenSyntax || code.lastLineContinuesExpression) {
+      if (code.delimiters.diagnostics.isNotEmpty) {
+        tasks.add(
+          'repair the first ordered delimiter mismatch: ${code.delimiters.diagnosticState}',
+        );
+      } else if (code.hasOpenSyntax || code.lastLineContinuesExpression) {
         tasks.add(
           'complete the current ${code.activeConstruct} with its existing delimiter nesting before adding a sibling statement',
         );
@@ -2361,6 +2602,9 @@ final class NazaContinuationTaskAgent {
     }
 
     if (taskType == 'coding' && code != null) {
+      if (code.delimiters.diagnostics.isNotEmpty) {
+        return 'repair ${code.delimiters.diagnosticState} before continuing the active construct';
+      }
       if (code.lastLineOpensBlock) {
         return 'write the body of the ${code.activeConstruct} opened at the cursor before adding another declaration';
       }
@@ -2445,6 +2689,9 @@ final class NazaContinuationTaskAgent {
       if (code != null) {
         checks.add(
           'preserve ${code.delimiterState}, active construct depth, and the existing code fence state',
+        );
+        checks.add(
+          'ordered delimiter diagnostics must not gain a new mismatch or unexpected closer',
         );
         checks.add(
           'every new symbol must connect to an existing caller, owner, value flow, handler, test, or execution path',
@@ -2532,7 +2779,7 @@ final class NazaContinuationTaskAgent {
     } else {
       checks.add('preserve the requested structure and avoid repetition');
     }
-    return _dedupe(checks).take(10).toList(growable: false);
+    return _dedupe(checks).take(12).toList(growable: false);
   }
 
   static String _lastParagraph(String text) {
@@ -5433,6 +5680,140 @@ final class NazaContinuationEngine {
     );
   }
 
+  static NazaContinuationChunkPlan planChunk({
+    required String originalUserText,
+    required NazaActionProfile actionProfile,
+    required NazaContinuationDecision decision,
+    required String accumulatedReply,
+  }) {
+    final memory = NazaContinuationTaskAgent.build(
+      originalUserText: originalUserText,
+      actionProfile: actionProfile,
+      accumulatedReply: accumulatedReply,
+      decision: decision,
+      pass: 1,
+      maxPasses: 1,
+    );
+    return _planChunkFromMemory(
+      originalUserText: originalUserText,
+      decision: decision,
+      memory: memory,
+    );
+  }
+
+  static NazaContinuationChunkPlan _planChunkFromMemory({
+    required String originalUserText,
+    required NazaContinuationDecision decision,
+    required NazaContinuationTaskMemory memory,
+  }) {
+    final structure = memory.structureState.toLowerCase();
+    final cursor = memory.cursorState.toLowerCase();
+    final longTarget =
+        _targetLineCount(originalUserText.toLowerCase()) != null ||
+        decision.reason.contains('underfilled-requested-artifact') ||
+        memory.artifactKind.contains('long-form') ||
+        memory.artifactKind.contains('novel');
+
+    if (structure.contains('delimiter_diagnostics=') &&
+        !structure.contains('delimiter_diagnostics=valid')) {
+      return const NazaContinuationChunkPlan(
+        phase: 'repair-structural-seam',
+        goal: 'repair the first delimiter mismatch before adding new work',
+        boundary: 'stop at the first valid statement or expression boundary',
+        maxOutputTokens: NazaAppConfig.continuationRepairOutputTokens,
+      );
+    }
+    if (decision.reason.contains('partial-token')) {
+      return const NazaContinuationChunkPlan(
+        phase: 'repair-cursor-token',
+        goal: 'finish the exact truncated token and its immediate construct',
+        boundary: 'stop at the nearest complete syntactic or sentence boundary',
+        maxOutputTokens: NazaAppConfig.continuationRepairOutputTokens,
+      );
+    }
+    if (memory.taskType == 'coding' &&
+        (structure.contains('open_string=yes') ||
+            structure.contains('module_phase=active-construct'))) {
+      return const NazaContinuationChunkPlan(
+        phase: 'complete-active-construct',
+        goal:
+            'finish the active string, expression, call, block, or symbol body',
+        boundary: 'end at a complete statement, function, or type boundary',
+        maxOutputTokens: NazaAppConfig.continuationStructureOutputTokens,
+      );
+    }
+    if (memory.taskType == 'coding') {
+      final needsExecutionPath =
+          structure.contains('entrypoint=not-yet-visible') &&
+          !memory.entrypointPolicy.contains('do not invent') &&
+          !memory.entrypointPolicy.contains('no program entrypoint') &&
+          !memory.entrypointPolicy.contains('test runner owns');
+      if (needsExecutionPath) {
+        return NazaContinuationChunkPlan(
+          phase: 'connect-orchestration',
+          goal:
+              'connect existing definitions through one coherent execution path',
+          boundary: 'end after a complete orchestration unit or entrypoint',
+          maxOutputTokens: longTarget
+              ? NazaAppConfig.continuationExpansionOutputTokens
+              : NazaAppConfig.continuationOutputTokens,
+        );
+      }
+      if (longTarget) {
+        return const NazaContinuationChunkPlan(
+          phase: 'expand-connected-artifact',
+          goal:
+              'add the next dependency-ordered, connected function, type, test, or feature',
+          boundary:
+              'end at a complete function, type, test, or section boundary',
+          maxOutputTokens: NazaAppConfig.continuationExpansionOutputTokens,
+        );
+      }
+      return const NazaContinuationChunkPlan(
+        phase: 'complete-code-artifact',
+        goal: 'finish the next missing responsibility through existing symbols',
+        boundary: 'end at a complete syntactic and ownership boundary',
+        maxOutputTokens: NazaAppConfig.continuationOutputTokens,
+      );
+    }
+    if (memory.taskType.contains('writing')) {
+      if (structure.contains('cursor=inside-dialogue') ||
+          structure.contains('cursor=inside-sentence') ||
+          cursor.contains('open_fragment=yes')) {
+        return const NazaContinuationChunkPlan(
+          phase: 'complete-current-story-unit',
+          goal:
+              'finish the current utterance or sentence, then its immediate beat',
+          boundary: 'end after a complete speaker turn or causal beat',
+          maxOutputTokens: NazaAppConfig.continuationStructureOutputTokens,
+        );
+      }
+      if (structure.contains('cursor=scene-boundary')) {
+        return const NazaContinuationChunkPlan(
+          phase: 'open-next-causal-scene',
+          goal: 'open the next scene from a concrete prior consequence',
+          boundary: 'end after one complete scene beat, not mid-sentence',
+          maxOutputTokens: NazaAppConfig.continuationExpansionOutputTokens,
+        );
+      }
+      return NazaContinuationChunkPlan(
+        phase: 'advance-story-beat',
+        goal:
+            'advance cause, reaction, consequence, and choice without resetting continuity',
+        boundary: 'end after a complete paragraph beat or speaker turn',
+        maxOutputTokens: longTarget
+            ? NazaAppConfig.continuationExpansionOutputTokens
+            : NazaAppConfig.continuationOutputTokens,
+      );
+    }
+    return const NazaContinuationChunkPlan(
+      phase: 'advance-current-artifact',
+      goal: 'complete the next missing unit without recap or restart',
+      boundary: 'end at the nearest complete structural boundary',
+      maxOutputTokens: NazaAppConfig.continuationOutputTokens,
+    );
+  }
+
   static String buildPrompt({
     required String originalUserText,
     required NazaActionProfile actionProfile,
@@ -5451,6 +5832,11 @@ final class NazaContinuationEngine {
       pass: pass,
       maxPasses: maxPasses,
     );
+    final chunkPlan = _planChunkFromMemory(
+      originalUserText: originalUserText,
+      decision: decision,
+      memory: taskMemory,
+    );
     final antiRepeat = _antiRepeatBlock(accumulatedReply);
     return '''
 [continuation_window]
@@ -5459,6 +5845,10 @@ reason=${decision.reason}
 confidence=${decision.confidence.toStringAsFixed(3)}
 [continuation_priority]
 artifact_kind=${taskMemory.artifactKind}
+chunk_phase=${chunkPlan.phase}
+chunk_goal=${chunkPlan.goal}
+chunk_boundary=${chunkPlan.boundary}
+chunk_output_tokens=${chunkPlan.maxOutputTokens}
 structure_state=${taskMemory.structureState}
 continuity_state=${taskMemory.continuityState}
 cursor_state=${taskMemory.cursorState}
@@ -5486,6 +5876,7 @@ Rules:
 - Preserve target_language, task_type, indentation, numbering, code fences, variable names, markdown tables, and the user's requested format.
 - Never drift to Dart/Flutter/app repair unless task_memory says that was the original task.
 - Treat task_memory.completion_tasks as the active next-work queue. Complete the earliest missing task that belongs at the cursor.
+- Obey chunk_phase and chunk_boundary. Finish one coherent unit before starting the next phase.
 - Treat task_memory.style_rules as hard output constraints.
 - Use task_memory.next_structural_move to choose the first structural action of this chunk.
 - Before ending, silently check task_memory.quality_checks against the chunk you just wrote.
@@ -5671,7 +6062,109 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
             !decision.reason.contains('complete-boundary'));
   }
 
+  static String buildRepairPrompt({
+    required String originalUserText,
+    required NazaActionProfile actionProfile,
+    required NazaContinuationDecision decision,
+    required int pass,
+    required int maxPasses,
+    required String accumulatedReply,
+    required String failureReason,
+  }) {
+    final base = buildPrompt(
+      originalUserText: originalUserText,
+      actionProfile: actionProfile,
+      decision: decision,
+      pass: pass,
+      maxPasses: maxPasses,
+      accumulatedReply: accumulatedReply,
+    );
+    final safeReason = _oneLine(failureReason, maxChars: 240);
+    return base.replaceFirst(
+      '[/continuation_priority]',
+      '''candidate_validation_failure=$safeReason
+chunk_phase=repair-rejected-candidate
+chunk_goal=emit a corrected replacement chunk from the unchanged exact cursor
+chunk_boundary=stop at the first structurally valid coherent boundary
+chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
+[/continuation_priority]''',
+    );
+  }
+
+  static NazaContinuationAssembly assembleCandidate({
+    required String prefix,
+    required String continuation,
+  }) {
+    final joined = _joinUnchecked(prefix, continuation);
+    if (joined.trim() == prefix.trim()) {
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'no-new-content-after-replay-removal',
+      );
+    }
+
+    final combined = '$prefix\n$continuation';
+    final language = NazaContinuationTaskAgent._targetLanguage(
+      '',
+      combined.toLowerCase(),
+    );
+    final looksLikeCode =
+        combined.contains('```') ||
+        language != 'unspecified' ||
+        _lastLinesLookCode(combined);
+    if (!looksLikeCode) {
+      return NazaContinuationAssembly(
+        accepted: true,
+        text: joined,
+        reason: 'accepted-prose-seam',
+      );
+    }
+
+    final effectiveLanguage = language == 'unspecified' ? 'generic' : language;
+    final prefixSnapshot = _NazaCodeSnapshot.analyze(
+      language: effectiveLanguage,
+      original: '',
+      reply: prefix,
+    );
+    final joinedSnapshot = _NazaCodeSnapshot.analyze(
+      language: effectiveLanguage,
+      original: '',
+      reply: joined,
+    );
+    final priorErrors = prefixSnapshot.delimiters.diagnostics.length;
+    final joinedErrors = joinedSnapshot.delimiters.diagnostics;
+    if (joinedErrors.length > priorErrors) {
+      final firstNew = joinedErrors[priorErrors];
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'delimiter-regression: $firstNew',
+      );
+    }
+    if (prefixSnapshot.insideCodeFence &&
+        !joinedSnapshot.insideCodeFence &&
+        joinedSnapshot.hasOpenSyntax) {
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'premature-code-fence-close: ${joinedSnapshot.delimiterState}',
+      );
+    }
+    return NazaContinuationAssembly(
+      accepted: true,
+      text: joined,
+      reason: joinedSnapshot.hasOpenSyntax
+          ? 'accepted-intermediate-code-boundary'
+          : 'accepted-structural-boundary',
+    );
+  }
+
   static String join(String prefix, String continuation) {
+    return assembleCandidate(prefix: prefix, continuation: continuation).text;
+  }
+
+  static String _joinUnchecked(String prefix, String continuation) {
     final first = stripDoneMarker(prefix, preserveTrailingWhitespace: true);
     final second = _trimLeadingReplay(
       first,
@@ -5978,52 +6471,19 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
 
   static bool _hasOpenCodeScope(String text) {
     final normalized = text.replaceAll(_lineBreakRegExp, '\n');
-    final tail = normalized.length > 2400
-        ? normalized.substring(normalized.length - 2400)
-        : normalized;
-    final codeTail = _lastLinesLookCode(tail);
-    var paren = 0;
-    var bracket = 0;
-    var brace = 0;
-    String? quote;
-    var escaped = false;
-
-    for (var i = 0; i < tail.length; i++) {
-      final ch = tail[i];
-      if (quote != null) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (ch == '\\') {
-          escaped = true;
-          continue;
-        }
-        if (ch == quote) quote = null;
-        continue;
-      }
-
-      if (ch == '"' || ch == '`' || (codeTail && ch == "'")) {
-        quote = ch;
-        continue;
-      }
-
-      if (ch == '(') {
-        paren++;
-      } else if (ch == ')') {
-        if (paren > 0) paren--;
-      } else if (ch == '[') {
-        bracket++;
-      } else if (ch == ']') {
-        if (bracket > 0) bracket--;
-      } else if (ch == '{') {
-        brace++;
-      } else if (ch == '}') {
-        if (brace > 0) brace--;
-      }
+    if (!normalized.contains('```') && !_lastLinesLookCode(normalized)) {
+      return false;
     }
-
-    return quote != null || paren > 0 || bracket > 0 || brace > 0;
+    final detected = NazaContinuationTaskAgent._targetLanguage(
+      '',
+      normalized.toLowerCase(),
+    );
+    final snapshot = _NazaCodeSnapshot.analyze(
+      language: detected == 'unspecified' ? 'generic' : detected,
+      original: '',
+      reply: normalized,
+    );
+    return snapshot.hasOpenSyntax;
   }
 
   static bool _hasPartialTrailingToken(String text, String lastLine) {
@@ -6280,7 +6740,7 @@ final class NazaPromptBudget {
       '[/continuation_priority]',
     );
     final summary = _lineValue(prompt, 'compressed_completed_summary=');
-    final cursor = _between(
+    final cursor = _rawCursorBetween(
       prompt,
       '<<<NAZA_CONTINUATION_TAIL',
       'NAZA_CONTINUATION_TAIL',
@@ -6303,30 +6763,40 @@ final class NazaPromptBudget {
       '[/task_memory]',
       maxItems: 4,
     );
-    final compactCursor = compactText(
-      cursor,
-      maxChars: 900,
-      marker: '\n[...older cursor context compacted...]\n',
-      headFraction: 0.30,
-    );
-    final capsule =
-        '''
-[continuation_chunk]
-mode=stateless-artifact-chunk
-input_window=bounded
-[continuation_priority]
-$priority
-[/continuation_priority]
-compressed_completed_summary=$summary
-[chunk_queue]
+    String capsule({
+      required String exactCursor,
+      required String priorityBlock,
+      required bool includeQueue,
+      required bool includeGuards,
+      required bool cursorPrefixOmitted,
+    }) {
+      final queueBlock = includeQueue
+          ? '''[chunk_queue]
 $completionTasks
-[/chunk_queue]
-[style_guard]
+[/chunk_queue]'''
+          : '''[chunk_queue]
+- follow chunk_goal and the earliest missing responsibility
+[/chunk_queue]''';
+      final guardBlock = includeGuards
+          ? '''[style_guard]
 $styleRules
 [/style_guard]
 [quality_guard]
 $qualityChecks
-[/quality_guard]
+[/quality_guard]'''
+          : '';
+      return '''
+[continuation_chunk]
+mode=stateless-artifact-chunk
+input_window=bounded
+exact_cursor_mode=verbatim-suffix
+cursor_prefix_omitted=${cursorPrefixOmitted ? 'yes' : 'no'}
+[continuation_priority]
+$priorityBlock
+[/continuation_priority]
+compressed_completed_summary=$summary
+$queueBlock
+$guardBlock
 [chunk_contract]
 - Continue from the exact cursor; never restart or recap.
 - Finish the active sentence, string, expression, call, block, function, scene beat, or dialogue turn first.
@@ -6339,18 +6809,126 @@ $qualityChecks
 [exact_cursor]
 exact_tail_start
 <<<NAZA_CONTINUATION_TAIL
-$compactCursor
+$exactCursor
 NAZA_CONTINUATION_TAIL
 exact_tail_end
 [/exact_cursor]
 ''';
-    return fitPrompt(
-      systemInstruction: NazaAppConfig.systemInstruction,
-      prompt: capsule,
-      marker:
-          '\n[/continuation_chunk]\n[prompt middle compacted for continuation window]\n[exact_cursor]\n',
-      headFraction: 0.34,
+    }
+
+    var candidate = capsule(
+      exactCursor: cursor,
+      priorityBlock: priority,
+      includeQueue: true,
+      includeGuards: true,
+      cursorPrefixOmitted: false,
     );
+    if (fits(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      prompt: candidate,
+    )) {
+      return candidate;
+    }
+
+    candidate = capsule(
+      exactCursor: cursor,
+      priorityBlock: priority,
+      includeQueue: true,
+      includeGuards: false,
+      cursorPrefixOmitted: false,
+    );
+    if (fits(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      prompt: candidate,
+    )) {
+      return candidate;
+    }
+
+    final compactPriority = compactText(
+      priority,
+      maxChars: 760,
+      marker: '\n[priority details compacted]\n',
+      headFraction: 0.65,
+    );
+    candidate = capsule(
+      exactCursor: cursor,
+      priorityBlock: compactPriority,
+      includeQueue: false,
+      includeGuards: false,
+      cursorPrefixOmitted: false,
+    );
+    if (fits(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      prompt: candidate,
+    )) {
+      return candidate;
+    }
+
+    final cursorRunes = cursor.runes.toList(growable: false);
+    for (var keep = cursorRunes.length; keep >= 96; keep -= 48) {
+      final suffix = _safeVerbatimSuffix(cursorRunes, keep);
+      candidate = capsule(
+        exactCursor: suffix,
+        priorityBlock: compactPriority,
+        includeQueue: false,
+        includeGuards: false,
+        cursorPrefixOmitted: suffix != cursor,
+      );
+      if (fits(
+        systemInstruction: NazaAppConfig.systemInstruction,
+        prompt: candidate,
+      )) {
+        return candidate;
+      }
+    }
+
+    final minimalPriority = compactText(
+      priority,
+      maxChars: 320,
+      marker: '\n[priority compacted]\n',
+      headFraction: 0.75,
+    );
+    return capsule(
+      exactCursor: _safeVerbatimSuffix(cursorRunes, 96),
+      priorityBlock: minimalPriority,
+      includeQueue: false,
+      includeGuards: false,
+      cursorPrefixOmitted: cursorRunes.length > 96,
+    );
+  }
+
+  static String _rawCursorBetween(
+    String text,
+    String startMarker,
+    String endMarker,
+  ) {
+    final start = text.indexOf(startMarker);
+    if (start < 0) return '';
+    var contentStart = start + startMarker.length;
+    if (text.startsWith('\r\n', contentStart)) {
+      contentStart += 2;
+    } else if (text.startsWith('\n', contentStart)) {
+      contentStart++;
+    }
+    var end = text.indexOf(endMarker, contentStart);
+    if (end < 0) end = text.length;
+    if (end > contentStart && text[end - 1] == '\n') end--;
+    if (end > contentStart && text[end - 1] == '\r') end--;
+    return text.substring(contentStart, end);
+  }
+
+  static String _safeVerbatimSuffix(List<int> runes, int keepRunes) {
+    if (runes.isEmpty || keepRunes <= 0) return '';
+    if (keepRunes >= runes.length) return String.fromCharCodes(runes);
+    var start = runes.length - keepRunes;
+    final safeSearchEnd = math.min(runes.length, start + 120);
+    for (var i = start; i < safeSearchEnd; i++) {
+      if (runes[i] == 10) {
+        start = i + 1;
+        break;
+      }
+    }
+    return String.fromCharCodes(runes.skip(start));
   }
 
   static String _between(String text, String startMarker, String endMarker) {
@@ -7080,6 +7658,12 @@ final class NazaLocalGemma {
         generation.value = generation.value.copyWith(
           stage: 'submitting continuation prompt',
         );
+        final chunkPlan = NazaContinuationEngine.planChunk(
+          originalUserText: trimmed,
+          actionProfile: actionProfile,
+          decision: continuationDecision,
+          accumulatedReply: prefix,
+        );
         final continuationPrompt = NazaContinuationEngine.buildPrompt(
           originalUserText: trimmed,
           actionProfile: actionProfile,
@@ -7088,11 +7672,12 @@ final class NazaLocalGemma {
           maxPasses: maxContinuations,
           accumulatedReply: prefix,
         );
-        final continuation = await _streamContinuationWindow(
+        var continuation = await _streamContinuationWindow(
           generationId: generationId,
           prompt: continuationPrompt,
           partialPrefix: prefix,
           onPartial: onPartial,
+          maxTokens: chunkPlan.maxOutputTokens,
         );
 
         if (_cancelledGeneration == generationId) {
@@ -7128,9 +7713,44 @@ final class NazaLocalGemma {
           );
           continue;
         }
-        final joined = NazaContinuationEngine.join(prefix, continuation.text);
-        if (joined.trim() == prefix.trim()) break;
-        clean = joined;
+        var assembly = NazaContinuationEngine.assembleCandidate(
+          prefix: prefix,
+          continuation: continuation.text,
+        );
+        if (!assembly.accepted) {
+          generation.value = generation.value.copyWith(
+            stage: 'repairing rejected continuation seam',
+          );
+          final repairPrompt = NazaContinuationEngine.buildRepairPrompt(
+            originalUserText: trimmed,
+            actionProfile: actionProfile,
+            decision: continuationDecision,
+            pass: continuationCount,
+            maxPasses: maxContinuations,
+            accumulatedReply: prefix,
+            failureReason: assembly.reason,
+          );
+          continuation = await _streamContinuationWindow(
+            generationId: generationId,
+            prompt: repairPrompt,
+            partialPrefix: prefix,
+            onPartial: onPartial,
+            maxTokens: NazaAppConfig.continuationRepairOutputTokens,
+          );
+          if (continuation.text.trim().isEmpty) break;
+          assembly = NazaContinuationEngine.assembleCandidate(
+            prefix: prefix,
+            continuation: continuation.text,
+          );
+          if (!assembly.accepted) {
+            generation.value = generation.value.copyWith(
+              stage: 'continuation seam rejected safely',
+            );
+            break;
+          }
+        }
+        if (assembly.text.trim() == prefix.trim()) break;
+        clean = assembly.text;
         stream = continuation;
       }
       if (continuationCount > 0) {
@@ -7200,14 +7820,21 @@ final class NazaLocalGemma {
     required String prompt,
     required String partialPrefix,
     required void Function(String partialText)? onPartial,
+    required int maxTokens,
   }) async {
+    final boundedMaxTokens = maxTokens
+        .clamp(
+          NazaAppConfig.continuationRepairOutputTokens,
+          NazaAppConfig.outputTokens,
+        )
+        .toInt();
     Object? lastError;
     for (var attempt = 0; attempt < 2; attempt++) {
       dynamic continuationChat;
       try {
         continuationChat = await _createChatWithTimeout(
           systemInstruction: NazaAppConfig.systemInstruction,
-          maxOutputTokens: NazaAppConfig.continuationOutputTokens,
+          maxOutputTokens: boundedMaxTokens,
         );
         final fittedPrompt = NazaPromptBudget.fitContinuationPrompt(prompt);
         await _addQueryChunkWithTimeout(
@@ -7220,7 +7847,7 @@ final class NazaLocalGemma {
           chat: continuationChat,
           partialPrefix: partialPrefix,
           onPartial: onPartial,
-          maxTokens: NazaAppConfig.continuationOutputTokens,
+          maxTokens: boundedMaxTokens,
           stripContinuationMarkers: false,
         );
       } catch (error) {
