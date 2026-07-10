@@ -189,6 +189,17 @@ class Runner {
         NazaContinuationEngine.join('    prin', 't("ok")'),
         '    print("ok")',
       );
+      expect(
+        NazaContinuationEngine.join(
+          'She reached the sealed door',
+          ' and listened for movement.',
+        ),
+        'She reached the sealed door and listened for movement.',
+      );
+      expect(
+        NazaContinuationEngine.join('const status =', ' "ready";'),
+        'const status = "ready";',
+      );
     });
 
     test('parses the one-word continuation critic verdict', () {
@@ -242,10 +253,11 @@ def generate_book():
       expect(prompt, contains('completion_tasks='));
       expect(prompt, contains('load API key or client configuration'));
       expect(prompt, contains('extract generated text from the API response'));
-      expect(prompt, contains('add a main() orchestration function'));
-      expect(prompt, contains('add if __name__ == "__main__" entrypoint'));
+      expect(prompt, contains('add one main() that orchestrates'));
+      expect(prompt, contains('add one main guard that invokes main()'));
       expect(prompt, contains('style_rules='));
-      expect(prompt, contains('use valid Python identifiers'));
+      expect(prompt, contains('keep one coherent executable-script module'));
+      expect(prompt, contains('reuse established names'));
       expect(
         prompt,
         contains(
@@ -285,6 +297,478 @@ def call_model(prompt):
       expect(joined, contains('def call_model(prompt):'));
     });
 
+    test('plans a GUI continuation from its active class and method', () {
+      const userText =
+          'write a Python CustomTkinter GUI application for tracking inventory and saving it to a JSON file';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```python
+import json
+import customtkinter as ctk
+
+class InventoryApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.items = []
+        self.name_entry = ctk.CTkEntry(self)
+        self.save_button = ctk.CTkButton(self, command=self.save_item)
+
+    def save_item(self):
+        name = self.name_entry.get().strip()
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-scope',
+        confidence: 0.9,
+        completedSummary:
+            'The answer started a Python CustomTkinter inventory application.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 5,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('task_type=coding'));
+      expect(prompt, contains('target_language=Python'));
+      expect(prompt, contains('artifact_kind=gui-application'));
+      expect(
+        prompt,
+        contains(
+          'symbols=InventoryApp,__init__,save_item; active_scope=class InventoryApp > function save_item',
+        ),
+      );
+      expect(
+        prompt,
+        contains('complete the active class InventoryApp > function save_item'),
+      );
+      expect(prompt, contains('preserve one coherent gui-application'));
+      expect(
+        prompt,
+        contains('keep blocking file, network, or compute work off the GUI'),
+      );
+      expect(
+        prompt,
+        contains(
+          'next_structural_move=continue the active class InventoryApp > function save_item',
+        ),
+      );
+      expect(prompt, contains('reuse continuity_state symbols'));
+      expect(
+        prompt,
+        contains('Domain-specific completion tasks remain secondary'),
+      );
+    });
+
+    test('plans a CLI as one connected parser and main call path', () {
+      const userText =
+          'write a Python CLI with argparse that summarizes log files in a directory';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```python
+import argparse
+from pathlib import Path
+
+def collect_files(root: Path):
+    files = []
+    for path in root.rglob("*.log"):
+        files.append(path)
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The CLI has started its file collection helper.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('artifact_kind=command-line-application'));
+      expect(prompt, contains('active_scope=function collect_files'));
+      expect(prompt, contains('connect parser arguments to command handlers'));
+      expect(prompt, contains('add one main() that orchestrates'));
+      expect(prompt, contains('add one main guard that invokes main()'));
+      expect(prompt, contains('parsed arguments to handlers, exit behavior'));
+    });
+
+    test('keeps library modules import-safe without forcing a main guard', () {
+      const userText =
+          'write a reusable Python library module for temperature conversion';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```python
+from enum import Enum
+
+class TemperatureUnit(Enum):
+    CELSIUS = "celsius"
+    FAHRENHEIT = "fahrenheit"
+
+def convert_temperature(value, source, target):
+    return _from_celsius(_to_celsius(value, source), target)
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The library public conversion API has started.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('artifact_kind=library-module'));
+      expect(prompt, contains('keep imports side-effect-free'));
+      expect(prompt, contains('connected import-safe public API'));
+      expect(
+        prompt,
+        contains('next_structural_move=add the next connected public symbol'),
+      );
+      expect(prompt, isNot(contains('- add one main()')));
+      expect(prompt, isNot(contains('- add one main guard')));
+    });
+
+    test('uses framework-native structure for Python web services', () {
+      const userText =
+          'write a Python FastAPI web service for looking up catalog items';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```python
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI()
+
+@app.get("/items/{item_id}")
+async def get_item(item_id: str):
+    return {"item_id": item_id}
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The FastAPI application and first route exist.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('artifact_kind=web-service'));
+      expect(prompt, contains('keep one framework app object'));
+      expect(prompt, contains('keep one framework app instance'));
+      expect(
+        prompt,
+        contains('next_structural_move=add the next connected dependency'),
+      );
+      expect(prompt, isNot(contains('- add one main()')));
+      expect(prompt, isNot(contains('- add one main guard')));
+    });
+
+    test('plans an async script around one async main and event loop', () {
+      const userText =
+          'write a Python asyncio script that fetches and combines several feeds';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```python
+import asyncio
+
+async def fetch_feed(client, url):
+    response = await client.get(url)
+    return response.json()
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The async feed helper is complete.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('artifact_kind=async-application'));
+      expect(prompt, contains('add one async main()'));
+      expect(prompt, contains('calls asyncio.run(main()) exactly once'));
+      expect(
+        prompt,
+        contains('next_structural_move=dedent and add async main()'),
+      );
+      expect(
+        prompt,
+        contains('preserve async/await through the whole call chain'),
+      );
+    });
+
+    test('classifies data, automation, and test Python artifacts', () {
+      final cases = <Map<String, String>>[
+        {
+          'original': 'write a Python pytest test suite for a price calculator',
+          'reply': '''
+```python
+import pytest
+
+def test_discounted_total():
+    assert discounted_total(100, 0.2) == 80
+''',
+          'kind': 'test-suite',
+          'task': 'let the test runner own execution',
+          'policy': 'test runner owns execution',
+        },
+        {
+          'original':
+              'write a Python pandas data pipeline that cleans a CSV report',
+          'reply': '''
+```python
+import pandas as pd
+
+def load_report(path):
+    return pd.read_csv(path)
+''',
+          'kind': 'data-pipeline',
+          'task': 'connect load, validation, transformation, and output',
+          'policy': 'compose load, transform, and output stages in main()',
+        },
+        {
+          'original':
+              'write a Python automation script that archives old files',
+          'reply': '''
+```python
+from pathlib import Path
+import shutil
+
+def archive_file(source: Path, destination: Path):
+    shutil.move(source, destination)
+''',
+          'kind': 'automation-script',
+          'task': 'connect input discovery, action helpers, failure handling',
+          'policy': 'use one main() orchestration path',
+        },
+      ];
+
+      for (final item in cases) {
+        final original = item['original']!;
+        final reply = item['reply']!;
+        final route = NazaQuantumRouter.route(original);
+        final profile = NazaActionSelector.select(original, route);
+        final memory = NazaContinuationTaskAgent.build(
+          originalUserText: original,
+          actionProfile: profile,
+          accumulatedReply: reply,
+          decision: NazaContinuationDecision(
+            shouldContinue: true,
+            reason: 'open-code-fence',
+            confidence: 0.9,
+            completedSummary: 'The Python artifact has started.',
+            tail: reply,
+          ),
+          pass: 2,
+          maxPasses: 4,
+        );
+
+        expect(memory.artifactKind, item['kind'], reason: original);
+        expect(
+          memory.completionTasks.join('\n'),
+          contains(item['task']),
+          reason: original,
+        );
+        expect(
+          memory.entrypointPolicy,
+          contains(item['policy']),
+          reason: original,
+        );
+      }
+    });
+
+    test(
+      'drops duplicate Python fence when continuing inside a code block',
+      () {
+        const prefix = '''
+```python
+from pathlib import Path
+
+def load_names(path: Path):
+    names = path.read_text().splitlines()
+''';
+        const continuation = '''
+```python
+    return [name.strip() for name in names if name.strip()]
+''';
+
+        final joined = NazaContinuationEngine.join(prefix, continuation);
+
+        expect('```python'.allMatches(joined).length, 1);
+        expect(joined, contains('return [name.strip()'));
+      },
+    );
+
+    test('tracks active TypeScript symbols and delimiter depth', () {
+      const userText =
+          'write a TypeScript library module that groups users by team';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```typescript
+export interface User {
+  id: string;
+  team?: string;
+}
+
+export function groupUsers(users: User[]) {
+  return users.reduce<Record<string, User[]>>((groups, user) => {
+    const key = user.team ?? "unassigned";
+    (groups[key] ??= []).push(user);
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-scope',
+        confidence: 0.9,
+        completedSummary: 'The TypeScript grouping module is mid-function.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('target_language=TypeScript'));
+      expect(prompt, contains('artifact_kind=library-module'));
+      expect(prompt, contains('active_construct=function groupUsers'));
+      expect(prompt, contains('defined_symbols=User,groupUsers'));
+      expect(prompt, contains('open_delimiters=paren=1,bracket=0,brace=2'));
+      expect(prompt, contains('connect each new symbol to an existing caller'));
+      expect(
+        prompt,
+        contains(
+          'next_structural_move=continue the current function groupUsers',
+        ),
+      );
+      expect(prompt, isNot(contains('add one TypeScript-native entrypoint')));
+    });
+
+    test('continues nested Dart calls before adding an entrypoint', () {
+      const userText = 'write a Dart program that fetches and renders a report';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```dart
+class ReportRunner {
+  Future<void> run(ReportClient client, String id) async {
+    final result = await client.fetch(
+      ReportRequest(
+        id: id,
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence+open-code-scope',
+        confidence: 0.95,
+        completedSummary: 'The Dart report runner is inside a nested call.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('target_language=Dart/Flutter'));
+      expect(prompt, contains('artifact_kind=executable-program'));
+      expect(prompt, contains('active_construct=function run'));
+      expect(prompt, contains('defined_symbols=ReportRunner,run'));
+      expect(prompt, contains('open_delimiters=paren=2,bracket=0,brace=2'));
+      expect(
+        prompt,
+        contains('next_structural_move=continue the current function run'),
+      );
+      expect(prompt, contains('Dart/Flutter-native entrypoint'));
+    });
+
+    test('continues SQL expressions without inventing an app entrypoint', () {
+      const userText =
+          'write a SQL query that returns orders with their customer names';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+```sql
+SELECT o.id, o.total, c.name
+FROM orders AS o
+LEFT JOIN customers AS c ON c.id =
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence+partial-token',
+        confidence: 0.95,
+        completedSummary: 'The SQL query stopped inside its join condition.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('target_language=SQL'));
+      expect(prompt, contains('artifact_kind=sql-statement'));
+      expect(prompt, contains('no program entrypoint applies'));
+      expect(prompt, contains('finish the SQL clause or migration'));
+      expect(
+        prompt,
+        contains(
+          'next_structural_move=continue the current top-level artifact',
+        ),
+      );
+      expect(prompt, isNot(contains('add one SQL-native entrypoint')));
+    });
+
     test('story continuation prompt carries prose style and structure rules', () {
       const userText =
           'write a fantasy novel chapter about Mira entering the glass forest, avoid em dashes';
@@ -314,24 +798,165 @@ The smallest reflection lifted one finger to its lips.
       );
 
       expect(prompt, contains('task_type=long-form-writing'));
+      expect(prompt, contains('artifact_kind=novel-chapter'));
+      expect(
+        prompt,
+        contains('structure_state=form=novel-chapter; scene=current-scene'),
+      );
+      expect(
+        prompt,
+        contains(
+          'continuity_state=pov=third-person; tense=past-tense; entities=Mira',
+        ),
+      );
       expect(prompt, contains('completion_tasks='));
-      expect(prompt, contains('continue the current scene or section'));
-      expect(prompt, contains('preserve established characters'));
+      expect(
+        prompt,
+        contains('continue the current scene from the next causal beat'),
+      );
+      expect(prompt, contains('preserve established character identities'));
       expect(prompt, contains('style_rules='));
       expect(prompt, contains('avoid em dashes'));
-      expect(prompt, contains('same narrative distance, tense, voice'));
+      expect(
+        prompt,
+        contains('keep third-person, past-tense, narrative distance'),
+      );
       expect(prompt, contains('do not restate the premise'));
       expect(
         prompt,
-        contains('next_structural_move=write the next scene beat'),
+        contains(
+          'next_structural_move=write the immediate reaction or consequence',
+        ),
       );
       expect(prompt, contains('quality_checks='));
-      expect(
-        prompt,
-        contains('add new action, image, decision, or revelation'),
-      );
+      expect(prompt, contains('causally follow the latest beat'));
       expect(prompt, contains('replace them'));
       expect(prompt, contains('For story/book tasks'));
+    });
+
+    test('finishes an open dialogue line before changing story beats', () {
+      const userText =
+          'write a first person present tense short story about Nia guarding a sealed red door';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+I keep one palm against the red door while the hinges tremble beneath it. Nia's warning circles in my head, steady as the alarm bell.
+
+"Do not open it until I
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+unfinished-sentence',
+        confidence: 0.9,
+        completedSummary: 'The narrator is recalling Nia mid-warning.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('artifact_kind=short-story'));
+      expect(prompt, contains('cursor=inside-dialogue'));
+      expect(prompt, contains('pov=first-person; tense=present-tense'));
+      expect(prompt, contains('entities=Nia'));
+      expect(
+        prompt,
+        contains('finish the open utterance in the same speaker voice'),
+      );
+      expect(
+        prompt,
+        contains('next_structural_move=continue the current speaker utterance'),
+      );
+      expect(prompt, contains('finish an open sentence or utterance first'));
+    });
+
+    test('continues completed dialogue with the immediate listener reaction', () {
+      const userText =
+          'write a fantasy story about Mira and Tomas escaping a flooded archive';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+Water climbed the archive steps behind Mira, carrying ribbons of ink between the shelves. Tomas braced the bronze hatch with both hands.
+
+"Leave the maps," Mira said.
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+long-artifact-task',
+        confidence: 0.8,
+        completedSummary: 'Mira has ordered Tomas to abandon the maps.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('cursor=post-dialogue-beat'));
+      expect(prompt, contains('entities=Mira,Tomas'));
+      expect(prompt, contains('last_speaker=Mira'));
+      expect(
+        prompt,
+        contains('speaker attribution and conversational turn order'),
+      );
+      expect(
+        prompt,
+        contains('next_structural_move=write the immediate listener reaction'),
+      );
+      expect(prompt, contains('without repeating the previous dialogue'));
+    });
+
+    test('uses a completed scene as the causal anchor for the next scene', () {
+      const userText =
+          'write a science fiction novel chapter about Imani reaching a silent station';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      const partial = '''
+Imani sealed the shuttle and watched its lights vanish into the station's fog. The docking clamps closed behind her with a final metallic knock.
+
+***
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+long-artifact-task',
+        confidence: 0.8,
+        completedSummary: 'Imani has crossed alone onto the silent station.',
+        tail: partial,
+      );
+
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 4,
+        accumulatedReply: partial,
+      );
+
+      expect(prompt, contains('cursor=scene-boundary'));
+      expect(prompt, contains('entities=Imani'));
+      expect(prompt, contains('latest_beat=Imani sealed the shuttle'));
+      expect(
+        prompt,
+        contains(
+          'next_structural_move=open the next scene with a concrete consequence',
+        ),
+      );
+      expect(
+        prompt,
+        contains('without recap, reset, or an unearned time jump'),
+      );
     });
 
     test('continues underfilled requested long artifacts', () {

@@ -565,6 +565,10 @@ final class NazaContinuationTaskMemory {
   final String taskType;
   final String targetLanguage;
   final String domain;
+  final String artifactKind;
+  final String structureState;
+  final String continuityState;
+  final String entrypointPolicy;
   final String deliverable;
   final int progressPercent;
   final List<String> completedItems;
@@ -581,6 +585,10 @@ final class NazaContinuationTaskMemory {
     required this.taskType,
     required this.targetLanguage,
     required this.domain,
+    required this.artifactKind,
+    required this.structureState,
+    required this.continuityState,
+    required this.entrypointPolicy,
     required this.deliverable,
     required this.progressPercent,
     required this.completedItems,
@@ -597,10 +605,14 @@ final class NazaContinuationTaskMemory {
   String toPromptBlock() {
     return '''
 [task_memory]
-source=local-continuation-task-memory-agent-v2
+source=local-continuation-task-memory-agent-v4
 task_type=$taskType
 target_language=$targetLanguage
 domain=$domain
+artifact_kind=$artifactKind
+structure_state=$structureState
+continuity_state=$continuityState
+entrypoint_policy=$entrypointPolicy
 deliverable=$deliverable
 progress_estimate=$progressPercent%
 cursor_state=$cursorState
@@ -623,6 +635,968 @@ ${_bullets(qualityChecks)}
   static String _bullets(List<String> items) {
     if (items.isEmpty) return '- none recorded yet';
     return items.map((item) => '- $item').join('\n');
+  }
+}
+
+final class _NazaPythonScope {
+  final int indent;
+  final String kind;
+  final String name;
+
+  const _NazaPythonScope({
+    required this.indent,
+    required this.kind,
+    required this.name,
+  });
+
+  String get label => '$kind $name';
+}
+
+final class _NazaPythonScriptSnapshot {
+  final String artifactKind;
+  final String entrypointPolicy;
+  final List<String> definedSymbols;
+  final String activeScope;
+  final bool activeScopeEndsWithTerminal;
+  final bool lastLineOpensBlock;
+  final bool hasImports;
+  final bool hasMainFunction;
+  final bool hasAsyncMain;
+  final bool hasMainGuard;
+  final bool hasLaunchCall;
+
+  const _NazaPythonScriptSnapshot({
+    required this.artifactKind,
+    required this.entrypointPolicy,
+    required this.definedSymbols,
+    required this.activeScope,
+    required this.activeScopeEndsWithTerminal,
+    required this.lastLineOpensBlock,
+    required this.hasImports,
+    required this.hasMainFunction,
+    required this.hasAsyncMain,
+    required this.hasMainGuard,
+    required this.hasLaunchCall,
+  });
+
+  factory _NazaPythonScriptSnapshot.analyze({
+    required String original,
+    required String reply,
+  }) {
+    final lowerSource = '$original\n$reply'.toLowerCase();
+    final artifactKind = _artifactKind(lowerSource);
+    final symbols = <String>[];
+    final scopes = <_NazaPythonScope>[];
+    final lines = reply.replaceAll(RegExp(r'\r\n?'), '\n').split('\n');
+    final hasFence = reply.contains('```');
+    var insideFence = false;
+    var parseFence = false;
+    var hasImports = false;
+    var hasMainFunction = false;
+    var hasAsyncMain = false;
+    var hasMainGuard = false;
+    var lastCodeLine = '';
+
+    final definition = RegExp(
+      r'^\s*(?:(async)\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(|^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b',
+    );
+    final import = RegExp(r'^\s*(?:from\s+\S+\s+import\s+|import\s+)');
+    final mainGuard = RegExp(
+      r'''^\s*if\s+__name__\s*==\s*["']__main__["']\s*:''',
+    );
+
+    for (final rawLine in lines) {
+      final trimmed = rawLine.trim();
+      if (trimmed.startsWith('```')) {
+        if (!insideFence) {
+          insideFence = true;
+          final language = trimmed.substring(3).trim().toLowerCase();
+          parseFence =
+              language.isEmpty || language == 'python' || language == 'py';
+        } else {
+          insideFence = false;
+          parseFence = false;
+        }
+        continue;
+      }
+      if (hasFence && (!insideFence || !parseFence)) continue;
+      if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
+
+      final indent = _indentOf(rawLine);
+      while (scopes.isNotEmpty && indent <= scopes.last.indent) {
+        scopes.removeLast();
+      }
+
+      if (import.hasMatch(rawLine) && indent == 0) hasImports = true;
+      if (mainGuard.hasMatch(rawLine) && indent == 0) hasMainGuard = true;
+
+      final match = definition.firstMatch(rawLine);
+      if (match != null) {
+        final functionName = match.group(2);
+        final className = match.group(3);
+        final name = functionName ?? className ?? '';
+        final kind = functionName == null
+            ? 'class'
+            : (match.group(1) == null ? 'function' : 'async function');
+        if (name.isNotEmpty) {
+          if (!symbols.contains(name)) symbols.add(name);
+          scopes.add(_NazaPythonScope(indent: indent, kind: kind, name: name));
+          if (indent == 0 && name == 'main') {
+            hasMainFunction = true;
+            hasAsyncMain = match.group(1) != null;
+          }
+        }
+      }
+      lastCodeLine = trimmed;
+    }
+
+    final activeScope = scopes.isEmpty
+        ? 'top-level module'
+        : scopes.map((scope) => scope.label).join(' > ');
+    final activeScopeEndsWithTerminal = RegExp(
+      r'^(?:return\b|raise\b|pass\b|break\b|continue\b|\.\.\.$)',
+    ).hasMatch(lastCodeLine);
+    final hasLaunchCall = _containsAny(lowerSource, const [
+      'asyncio.run(',
+      '.mainloop(',
+      'uvicorn.run(',
+      'app.run(',
+      'sys.exit(',
+    ]);
+
+    return _NazaPythonScriptSnapshot(
+      artifactKind: artifactKind,
+      entrypointPolicy: _entrypointPolicy(artifactKind),
+      definedSymbols: symbols.take(10).toList(growable: false),
+      activeScope: activeScope,
+      activeScopeEndsWithTerminal: activeScopeEndsWithTerminal,
+      lastLineOpensBlock: lastCodeLine.endsWith(':'),
+      hasImports: hasImports,
+      hasMainFunction: hasMainFunction,
+      hasAsyncMain: hasAsyncMain,
+      hasMainGuard: hasMainGuard,
+      hasLaunchCall: hasLaunchCall,
+    );
+  }
+
+  String get structureState {
+    final symbols = definedSymbols.isEmpty
+        ? 'none-yet'
+        : definedSymbols.join(',');
+    final entrypoint = hasMainGuard
+        ? 'main-guard-present'
+        : hasMainFunction
+        ? (hasAsyncMain ? 'async-main-present' : 'main-present')
+        : hasLaunchCall
+        ? 'framework-launch-present'
+        : 'not-yet-visible';
+    return 'imports=${hasImports ? 'present' : 'not-yet-visible'}; symbols=$symbols; active_scope=$activeScope; entrypoint=$entrypoint';
+  }
+
+  bool get shouldHaveConventionalMain => const {
+    'command-line-application',
+    'async-application',
+    'data-pipeline',
+    'automation-script',
+    'gui-application',
+    'executable-script',
+  }.contains(artifactKind);
+
+  static String _artifactKind(String source) {
+    if (_containsAny(source, const [
+      'pytest',
+      'unittest',
+      'def test_',
+      'test suite',
+      'test-suite',
+    ])) {
+      return 'test-suite';
+    }
+    if (_containsAny(source, const [
+      'fastapi',
+      'flask',
+      'django',
+      'starlette',
+      'uvicorn',
+      '@app.route',
+      '@app.get',
+      '@app.post',
+      'web service',
+      'rest api',
+    ])) {
+      return 'web-service';
+    }
+    if (_containsAny(source, const [
+          'customtkinter',
+          'tkinter',
+          'pyqt',
+          'pyside',
+          'wxpython',
+          'kivy',
+          'textual',
+          'desktop app',
+        ]) ||
+        _hasWord(source, 'gui')) {
+      return 'gui-application';
+    }
+    if (_containsAny(source, const [
+          'argparse',
+          'click.command',
+          'typer.',
+          'sys.argv',
+          'command line',
+          'command-line',
+        ]) ||
+        _hasWord(source, 'cli')) {
+      return 'command-line-application';
+    }
+    if (_containsAny(source, const [
+          'asyncio',
+          'async def',
+          'await ',
+          'aiohttp',
+        ]) ||
+        _hasWord(source, 'async')) {
+      return 'async-application';
+    }
+    if (_containsAny(source, const [
+      'pandas',
+      'polars',
+      'dataframe',
+      'data pipeline',
+      'data-pipeline',
+      ' etl ',
+    ])) {
+      return 'data-pipeline';
+    }
+    if (_containsAny(source, const [
+      'python library',
+      'library module',
+      'reusable module',
+      'python package',
+      'importable module',
+      ' sdk ',
+    ])) {
+      return 'library-module';
+    }
+    if (_containsAny(source, const [
+      'automation',
+      'scraper',
+      'scraping',
+      'selenium',
+      'playwright',
+      'beautifulsoup',
+      'subprocess',
+      'shutil',
+    ])) {
+      return 'automation-script';
+    }
+    if (_containsAny(source, const [
+      'python script',
+      '.py',
+      'python program',
+    ])) {
+      return 'executable-script';
+    }
+    return 'python-module';
+  }
+
+  static String _entrypointPolicy(String artifactKind) {
+    return switch (artifactKind) {
+      'test-suite' =>
+        'test runner owns execution; keep fixtures, helpers, and tests import-safe and do not invent main()',
+      'library-module' || 'python-module' =>
+        'keep imports side-effect-free; expose connected public symbols and add no main guard unless a demo was requested',
+      'web-service' =>
+        'keep one framework app object and connected handlers; add guarded server startup only for a requested standalone runner',
+      'gui-application' =>
+        'construct one app/root, connect callbacks, and enter the event loop exactly once from a coherent launch path',
+      'command-line-application' =>
+        'main() owns argument parsing and orchestration; one main guard invokes it exactly once',
+      'async-application' =>
+        'use one async main() call chain; one main guard invokes asyncio.run(main()) exactly once',
+      'data-pipeline' =>
+        'compose load, transform, and output stages in main(); one main guard invokes the pipeline once',
+      _ =>
+        'use one main() orchestration path and one main guard when the module is intended to execute directly',
+    };
+  }
+
+  static int _indentOf(String line) {
+    var indent = 0;
+    for (var i = 0; i < line.length; i++) {
+      final char = line[i];
+      if (char == ' ') {
+        indent++;
+      } else if (char == '\t') {
+        indent += 4;
+      } else {
+        break;
+      }
+    }
+    return indent;
+  }
+
+  static bool _containsAny(String text, List<String> needles) {
+    for (final needle in needles) {
+      if (text.contains(needle)) return true;
+    }
+    return false;
+  }
+
+  static bool _hasWord(String text, String word) {
+    return RegExp('\\b${RegExp.escape(word)}\\b').hasMatch(text);
+  }
+}
+
+final class _NazaCodeSnapshot {
+  final String language;
+  final String artifactKind;
+  final String entrypointPolicy;
+  final List<String> definedSymbols;
+  final String activeConstruct;
+  final String modulePhase;
+  final int openParentheses;
+  final int openBrackets;
+  final int openBraces;
+  final bool hasOpenString;
+  final bool insideCodeFence;
+  final bool hasImports;
+  final bool hasEntrypoint;
+  final bool lastLineOpensBlock;
+  final bool lastLineContinuesExpression;
+
+  const _NazaCodeSnapshot({
+    required this.language,
+    required this.artifactKind,
+    required this.entrypointPolicy,
+    required this.definedSymbols,
+    required this.activeConstruct,
+    required this.modulePhase,
+    required this.openParentheses,
+    required this.openBrackets,
+    required this.openBraces,
+    required this.hasOpenString,
+    required this.insideCodeFence,
+    required this.hasImports,
+    required this.hasEntrypoint,
+    required this.lastLineOpensBlock,
+    required this.lastLineContinuesExpression,
+  });
+
+  factory _NazaCodeSnapshot.analyze({
+    required String language,
+    required String original,
+    required String reply,
+  }) {
+    final source = '$original\n$reply'.toLowerCase();
+    final artifactKind = _artifactKind(language, source);
+    final codeLines = _codeLines(reply, language);
+    final symbols = <String>[];
+    var hasImports = false;
+    var hasEntrypoint = false;
+    var latestConstruct = '';
+    var latestConstructBraceBase = 0;
+    var paren = 0;
+    var bracket = 0;
+    var brace = 0;
+    String? quote;
+    var escaped = false;
+    var inBlockComment = false;
+    var lastCodeLine = '';
+
+    for (final rawLine in codeLines) {
+      final clean = rawLine.trim();
+      if (clean.isEmpty || clean.startsWith('```')) continue;
+      lastCodeLine = clean;
+      if (RegExp(
+        r'^\s*(?:import\b|from\s+\S+\s+import\b|#include\b|using\s+\S+|require\s*\(|use\s+\S+)',
+        caseSensitive: false,
+      ).hasMatch(rawLine)) {
+        hasImports = true;
+      }
+      if (_containsAny(clean.toLowerCase(), const [
+            'if __name__',
+            'static void main(',
+            'public static void main(',
+            'fun main(',
+            'func main(',
+            'runapp(',
+          ]) ||
+          RegExp(
+            r'^\s*(?:async\s+)?(?:def|function)\s+main\s*\(',
+          ).hasMatch(rawLine) ||
+          RegExp(
+            r'^\s*(?:future<[^>]+>|void|int)\s+main\s*\(',
+          ).hasMatch(rawLine)) {
+        hasEntrypoint = true;
+      }
+
+      final definition = _definition(rawLine);
+      if (definition != null) {
+        if (!symbols.contains(definition.$2)) symbols.add(definition.$2);
+        latestConstruct = '${definition.$1} ${definition.$2}';
+        latestConstructBraceBase = brace;
+      }
+
+      for (var i = 0; i < rawLine.length; i++) {
+        final char = rawLine[i];
+        final next = i + 1 < rawLine.length ? rawLine[i + 1] : '';
+        if (inBlockComment) {
+          if (char == '*' && next == '/') {
+            inBlockComment = false;
+            i++;
+          }
+          continue;
+        }
+        if (quote != null) {
+          if (escaped) {
+            escaped = false;
+          } else if (char == '\\') {
+            escaped = true;
+          } else if (char == quote) {
+            quote = null;
+          }
+          continue;
+        }
+        if (char == '/' && next == '*') {
+          inBlockComment = true;
+          i++;
+          continue;
+        }
+        if ((char == '/' && next == '/') ||
+            (language == 'SQL' && char == '-' && next == '-') ||
+            ((language == 'Python' || language == 'Bash') && char == '#')) {
+          break;
+        }
+        if (char == '"' || char == "'" || char == '`') {
+          quote = char;
+          continue;
+        }
+        if (char == '(') {
+          paren++;
+        } else if (char == ')') {
+          if (paren > 0) paren--;
+        } else if (char == '[') {
+          bracket++;
+        } else if (char == ']') {
+          if (bracket > 0) bracket--;
+        } else if (char == '{') {
+          brace++;
+        } else if (char == '}') {
+          if (brace > 0) brace--;
+        }
+      }
+    }
+
+    final activeConstruct = quote != null
+        ? 'open string or template literal'
+        : latestConstruct.isNotEmpty &&
+              (brace > latestConstructBraceBase ||
+                  language == 'Python' &&
+                      codeLines.isNotEmpty &&
+                      RegExp(r'^\s').hasMatch(codeLines.last))
+        ? latestConstruct
+        : paren > 0
+        ? 'open call or grouped expression'
+        : bracket > 0
+        ? 'open list or indexed expression'
+        : brace > 0
+        ? 'open block or object literal'
+        : 'top-level artifact';
+    final insideFence = RegExp(r'```').allMatches(reply).length.isOdd;
+    final lastLineOpensBlock = RegExp(
+      r'(?:\{|:|=>)\s*$',
+    ).hasMatch(lastCodeLine);
+    final lastLineContinuesExpression = RegExp(
+      r'(?:,|=|\.|\+|-|\*|/|&&|\|\||\?|:|->|=>|\(|\[|\{)\s*$',
+    ).hasMatch(lastCodeLine);
+    final modulePhase = codeLines.isEmpty
+        ? 'empty'
+        : quote != null || paren > 0 || bracket > 0 || brace > 0
+        ? 'active-construct'
+        : symbols.isNotEmpty && !hasEntrypoint
+        ? 'definitions'
+        : hasEntrypoint
+        ? 'entrypoint-orchestration'
+        : hasImports
+        ? 'imports-and-setup'
+        : 'artifact-body';
+
+    return _NazaCodeSnapshot(
+      language: language,
+      artifactKind: artifactKind,
+      entrypointPolicy: _entrypointPolicy(artifactKind, language),
+      definedSymbols: symbols.take(12).toList(growable: false),
+      activeConstruct: activeConstruct,
+      modulePhase: modulePhase,
+      openParentheses: paren,
+      openBrackets: bracket,
+      openBraces: brace,
+      hasOpenString: quote != null,
+      insideCodeFence: insideFence,
+      hasImports: hasImports,
+      hasEntrypoint: hasEntrypoint,
+      lastLineOpensBlock: lastLineOpensBlock,
+      lastLineContinuesExpression: lastLineContinuesExpression,
+    );
+  }
+
+  bool get hasOpenDelimiter =>
+      openParentheses > 0 || openBrackets > 0 || openBraces > 0;
+
+  bool get hasOpenSyntax => hasOpenString || hasOpenDelimiter;
+
+  bool get shouldHaveEntrypoint => const {
+    'executable-program',
+    'command-line-application',
+    'gui-application',
+    'shell-script',
+  }.contains(artifactKind);
+
+  String get structureState =>
+      'module_phase=$modulePhase; active_construct=$activeConstruct; open_delimiters=$delimiterState; open_string=${hasOpenString ? 'yes' : 'no'}; fence=${insideCodeFence ? 'open' : 'closed'}; imports=${hasImports ? 'present' : 'not-yet-visible'}; entrypoint=${hasEntrypoint ? 'present' : 'not-yet-visible'}';
+
+  String get continuityState {
+    final symbols = definedSymbols.isEmpty
+        ? 'none-yet'
+        : definedSymbols.join(',');
+    return 'defined_symbols=$symbols; symbol_policy=reuse existing names and connect every new definition to a caller, owner, or output path';
+  }
+
+  String get delimiterState =>
+      'paren=$openParentheses,bracket=$openBrackets,brace=$openBraces';
+
+  static List<String> _codeLines(String reply, String language) {
+    final lines = reply.replaceAll(RegExp(r'\r\n?'), '\n').split('\n');
+    if (!reply.contains('```')) return lines;
+    final accepted = _fenceLabels(language);
+    final out = <String>[];
+    var inside = false;
+    var include = false;
+    for (final line in lines) {
+      final clean = line.trim();
+      if (clean.startsWith('```')) {
+        if (!inside) {
+          inside = true;
+          final label = clean.substring(3).trim().toLowerCase();
+          include = label.isEmpty || accepted.contains(label);
+        } else {
+          inside = false;
+          include = false;
+        }
+        continue;
+      }
+      if (inside && include) out.add(line);
+    }
+    return out;
+  }
+
+  static Set<String> _fenceLabels(String language) {
+    return switch (language) {
+      'Python' => const {'python', 'py'},
+      'Dart/Flutter' => const {'dart', 'flutter'},
+      'JavaScript' => const {'javascript', 'js', 'node'},
+      'TypeScript' => const {'typescript', 'ts', 'tsx'},
+      'C++' => const {'cpp', 'c++', 'cc'},
+      'Bash' => const {'bash', 'sh', 'shell'},
+      _ => {language.toLowerCase()},
+    };
+  }
+
+  static (String, String)? _definition(String line) {
+    final patterns = <(String, RegExp)>[
+      (
+        'type',
+        RegExp(
+          r'^\s*(?:export\s+)?(?:abstract\s+)?(?:class|struct|interface|enum|mixin|extension)\s+([A-Za-z_][A-Za-z0-9_]*)',
+        ),
+      ),
+      (
+        'function',
+        RegExp(
+          r'^\s*(?:(?:export|public|private|protected|static|async)\s+)*(?:def|function|fun|func)\s+([A-Za-z_][A-Za-z0-9_]*)',
+        ),
+      ),
+      (
+        'function',
+        RegExp(
+          r'^\s*(?:(?:public|private|protected|static|final|const|async|external|override)\s+)*(?:Future(?:<[^>]+>)?|Stream(?:<[^>]+>)?|void|int|double|bool|String|Widget|Task(?:<[^>]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+        ),
+      ),
+      (
+        'function',
+        RegExp(
+          r'^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*=>',
+        ),
+      ),
+      ('function', RegExp(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{')),
+      (
+        'sql object',
+        RegExp(
+          r'^\s*create\s+(?:or\s+replace\s+)?(?:table|view|function|procedure|trigger)\s+([A-Za-z_][A-Za-z0-9_.]*)',
+          caseSensitive: false,
+        ),
+      ),
+    ];
+    for (final (kind, pattern) in patterns) {
+      final match = pattern.firstMatch(line);
+      final name = match?.group(1);
+      if (name != null && name.isNotEmpty) return (kind, name);
+    }
+    return null;
+  }
+
+  static String _artifactKind(String language, String source) {
+    if (_containsAny(source, const [
+      ' test ',
+      'tests ',
+      'pytest',
+      'unittest',
+      'jest',
+      'vitest',
+    ])) {
+      return 'test-suite';
+    }
+    if (_containsAny(source, const [
+      ' library',
+      ' module',
+      ' package',
+      ' sdk ',
+    ])) {
+      return 'library-module';
+    }
+    if (_containsAny(source, const [
+      'web service',
+      'rest api',
+      'server',
+      'fastapi',
+      'flask',
+      'express',
+    ])) {
+      return 'web-service';
+    }
+    if (_containsAny(source, const [
+      ' gui',
+      'ui app',
+      'desktop app',
+      'flutter app',
+      'swiftui',
+    ])) {
+      return 'gui-application';
+    }
+    if (_containsAny(source, const ['command line', 'command-line']) ||
+        _hasWord(source, 'cli')) {
+      return 'command-line-application';
+    }
+    if (language == 'SQL') return 'sql-statement';
+    if (language == 'Bash') return 'shell-script';
+    if (_containsAny(source, const [
+      ' script',
+      ' program',
+      ' application',
+      ' app ',
+    ])) {
+      return 'executable-program';
+    }
+    return 'code-module';
+  }
+
+  static String _entrypointPolicy(String artifactKind, String language) {
+    return switch (artifactKind) {
+      'test-suite' =>
+        'the test runner owns execution; keep helpers and tests connected without production startup code',
+      'library-module' || 'code-module' =>
+        'keep the artifact importable/reusable and do not invent an executable entrypoint unless requested',
+      'web-service' =>
+        'reuse one framework application/server and its native handler and startup conventions',
+      'sql-statement' =>
+        'complete the current SQL statement or migration in dependency order; no program entrypoint applies',
+      'shell-script' =>
+        'define reusable shell functions before one guarded or final orchestration sequence',
+      _ =>
+        'use one $language-native entrypoint or launch path that connects existing definitions exactly once',
+    };
+  }
+
+  static bool _containsAny(String text, List<String> needles) {
+    for (final needle in needles) {
+      if (text.contains(needle)) return true;
+    }
+    return false;
+  }
+
+  static bool _hasWord(String text, String word) {
+    return RegExp('\\b${RegExp.escape(word)}\\b').hasMatch(text);
+  }
+}
+
+final class _NazaNarrativeSnapshot {
+  final String form;
+  final String pointOfView;
+  final String tense;
+  final List<String> entities;
+  final String sceneHeading;
+  final String cursorMode;
+  final String lastSpeaker;
+  final String latestBeat;
+  final String paragraphPattern;
+  final bool openDialogue;
+  final bool endsMidSentence;
+  final bool lastParagraphHasDialogue;
+  final bool atSceneBoundary;
+
+  const _NazaNarrativeSnapshot({
+    required this.form,
+    required this.pointOfView,
+    required this.tense,
+    required this.entities,
+    required this.sceneHeading,
+    required this.cursorMode,
+    required this.lastSpeaker,
+    required this.latestBeat,
+    required this.paragraphPattern,
+    required this.openDialogue,
+    required this.endsMidSentence,
+    required this.lastParagraphHasDialogue,
+    required this.atSceneBoundary,
+  });
+
+  factory _NazaNarrativeSnapshot.analyze({
+    required String original,
+    required String reply,
+  }) {
+    final lowerOriginal = original.toLowerCase();
+    final form =
+        _containsAny(lowerOriginal, const ['screenplay', 'movie script'])
+        ? 'screenplay'
+        : _containsAny(lowerOriginal, const ['poem', 'poetry', 'verse'])
+        ? 'verse'
+        : lowerOriginal.contains('short story')
+        ? 'short-story'
+        : lowerOriginal.contains('chapter')
+        ? 'novel-chapter'
+        : _containsAny(lowerOriginal, const ['book', 'novel'])
+        ? 'long-form-prose'
+        : 'narrative-prose';
+    final paragraphs = reply
+        .split(RegExp(r'\n\s*\n'))
+        .map((part) => part.trim())
+        .where(
+          (part) =>
+              part.isNotEmpty &&
+              !part.startsWith('```') &&
+              !RegExp(
+                r'^(?:\*\s*\*\s*\*|---|#{1,6}\s+.+|chapter\s+\S+|scene\s+\S+)$',
+                caseSensitive: false,
+              ).hasMatch(part),
+        )
+        .toList(growable: false);
+    final lastParagraph = paragraphs.isEmpty ? reply.trim() : paragraphs.last;
+    final proseWithoutDialogue = reply
+        .replaceAll(RegExp(r'"[^"\n]*"'), ' ')
+        .replaceAll(RegExp(r'“[^”\n]*”'), ' ');
+    final pointOfView = _pointOfView(lowerOriginal, proseWithoutDialogue);
+    final tense = _tense(lowerOriginal, proseWithoutDialogue);
+    final openDialogue = _hasOpenDialogue(reply);
+    final atSceneBoundary = RegExp(
+      r'(?:^|\n)\s*(?:\*\s*\*\s*\*|---|#{1,6}\s+.+|chapter\s+\S+|scene\s+\S+)\s*$',
+      caseSensitive: false,
+    ).hasMatch(reply.trimRight());
+    final endsMidSentence =
+        !atSceneBoundary &&
+        lastParagraph.isNotEmpty &&
+        !RegExp(r'''[.!?…]["'”’)]?$''').hasMatch(lastParagraph.trimRight());
+    final lastParagraphHasDialogue = RegExp(r'["“”]').hasMatch(lastParagraph);
+    final cursorMode = openDialogue
+        ? 'inside-dialogue'
+        : atSceneBoundary
+        ? 'scene-boundary'
+        : endsMidSentence
+        ? 'inside-sentence'
+        : lastParagraphHasDialogue
+        ? 'post-dialogue-beat'
+        : 'between-prose-beats';
+    final paragraphPattern = paragraphs.isEmpty
+        ? 'none-yet'
+        : paragraphs
+              .skip(math.max(0, paragraphs.length - 4))
+              .map((paragraph) => paragraph.length)
+              .join('/');
+
+    return _NazaNarrativeSnapshot(
+      form: form,
+      pointOfView: pointOfView,
+      tense: tense,
+      entities: _entities('$original\n$reply'),
+      sceneHeading: _sceneHeading(reply),
+      cursorMode: cursorMode,
+      lastSpeaker: _lastSpeaker(reply),
+      latestBeat: _oneLine(lastParagraph, maxChars: 190),
+      paragraphPattern: paragraphPattern,
+      openDialogue: openDialogue,
+      endsMidSentence: endsMidSentence,
+      lastParagraphHasDialogue: lastParagraphHasDialogue,
+      atSceneBoundary: atSceneBoundary,
+    );
+  }
+
+  String get structureState =>
+      'form=$form; scene=${sceneHeading.isEmpty ? 'current-scene' : sceneHeading}; paragraph_lengths=$paragraphPattern; cursor=$cursorMode';
+
+  String get continuityState {
+    final names = entities.isEmpty ? 'none-detected' : entities.join(',');
+    return 'pov=$pointOfView; tense=$tense; entities=$names; last_speaker=$lastSpeaker; latest_beat=$latestBeat';
+  }
+
+  static String _pointOfView(String original, String prose) {
+    if (original.contains('first person') ||
+        original.contains('first-person')) {
+      return 'first-person';
+    }
+    if (original.contains('second person') ||
+        original.contains('second-person')) {
+      return 'second-person';
+    }
+    if (original.contains('third person') ||
+        original.contains('third-person')) {
+      return 'third-person';
+    }
+    final first = RegExp(
+      r'\b(?:I|me|my|mine|we|our|ours)\b',
+    ).allMatches(prose).length;
+    final second = RegExp(
+      r'\b(?:you|your|yours)\b',
+      caseSensitive: false,
+    ).allMatches(prose).length;
+    final third = RegExp(
+      r'\b(?:he|she|they|him|her|them|his|hers|their)\b',
+      caseSensitive: false,
+    ).allMatches(prose).length;
+    if (first > second && first > third) return 'first-person';
+    if (second > first && second > third) return 'second-person';
+    if (third > 0) return 'third-person';
+    return 'preserve-established-pov';
+  }
+
+  static String _tense(String original, String prose) {
+    if (original.contains('past tense') || original.contains('past-tense')) {
+      return 'past-tense';
+    }
+    if (original.contains('present tense') ||
+        original.contains('present-tense')) {
+      return 'present-tense';
+    }
+    final past = RegExp(
+      r'\b(?:was|were|had|said|asked|went|saw|felt|stood|turned|looked|walked|[A-Za-z]+ed)\b',
+      caseSensitive: false,
+    ).allMatches(prose).length;
+    final present = RegExp(
+      r'\b(?:am|is|are|has|have|says|asks|goes|sees|feels|stands|turns|looks|walks)\b',
+      caseSensitive: false,
+    ).allMatches(prose).length;
+    if (past > present) return 'past-tense';
+    if (present > past) return 'present-tense';
+    return 'preserve-established-tense';
+  }
+
+  static List<String> _entities(String text) {
+    const ignored = <String>{
+      'The',
+      'This',
+      'That',
+      'There',
+      'Then',
+      'When',
+      'Where',
+      'What',
+      'Why',
+      'Every',
+      'Each',
+      'After',
+      'Before',
+      'Chapter',
+      'Scene',
+      'Write',
+      'Avoid',
+      'She',
+      'Her',
+      'He',
+      'His',
+      'They',
+      'Their',
+      'It',
+      'Its',
+      'We',
+      'You',
+      'And',
+      'But',
+      'For',
+      'With',
+      'Into',
+      'From',
+      'Under',
+      'Over',
+      'Through',
+    };
+    final counts = <String, int>{};
+    for (final match in RegExp(
+      r'''\b[A-Z][A-Za-z’'-]{2,}\b''',
+    ).allMatches(text)) {
+      final value = match.group(0)!;
+      if (ignored.contains(value)) continue;
+      counts[value] = (counts[value] ?? 0) + 1;
+    }
+    final ranked = counts.entries.toList()
+      ..sort((a, b) {
+        final byCount = b.value.compareTo(a.value);
+        return byCount != 0 ? byCount : a.key.compareTo(b.key);
+      });
+    return ranked.take(8).map((entry) => entry.key).toList(growable: false);
+  }
+
+  static bool _hasOpenDialogue(String text) {
+    final straight = RegExp(r'(?<!\\)"').allMatches(text).length;
+    final curlyOpen = '“'.allMatches(text).length;
+    final curlyClose = '”'.allMatches(text).length;
+    return straight.isOdd || curlyOpen > curlyClose;
+  }
+
+  static String _sceneHeading(String text) {
+    final lines = text.split(RegExp(r'\r\n?|\n'));
+    for (var i = lines.length - 1; i >= 0; i--) {
+      final clean = lines[i].trim();
+      if (RegExp(
+        r'^(?:#{1,6}\s+|chapter\s+|scene\s+)',
+        caseSensitive: false,
+      ).hasMatch(clean)) {
+        return _oneLine(
+          clean.replaceFirst(RegExp(r'^#+\s*'), ''),
+          maxChars: 80,
+        );
+      }
+    }
+    return '';
+  }
+
+  static String _lastSpeaker(String text) {
+    final pattern = RegExp(
+      r'\b([A-Z][a-z]+)\s+(?:said|asked|replied|answered|whispered|murmured|shouted)\b',
+    );
+    final matches = pattern.allMatches(text).toList(growable: false);
+    return matches.isEmpty ? 'unknown' : matches.last.group(1)!;
+  }
+
+  static String _oneLine(String text, {required int maxChars}) {
+    final clean = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return clean.length <= maxChars ? clean : clean.substring(0, maxChars);
+  }
+
+  static bool _containsAny(String text, List<String> needles) {
+    for (final needle in needles) {
+      if (text.contains(needle)) return true;
+    }
+    return false;
   }
 }
 
@@ -656,6 +1630,30 @@ final class NazaContinuationTaskAgent {
     final targetLanguage = _targetLanguage(lowerOriginal, lowerReply);
     final taskType = _taskType(actionProfile, lowerOriginal, targetLanguage);
     final domain = _domain(lowerOriginal, lowerReply, taskType);
+    final python = targetLanguage == 'Python'
+        ? _NazaPythonScriptSnapshot.analyze(
+            original: lowerOriginal,
+            reply: reply,
+          )
+        : null;
+    final code = taskType == 'coding' && targetLanguage != 'unspecified'
+        ? _NazaCodeSnapshot.analyze(
+            language: targetLanguage,
+            original: original,
+            reply: reply,
+          )
+        : null;
+    final narrative = taskType.contains('writing')
+        ? _NazaNarrativeSnapshot.analyze(original: original, reply: reply)
+        : null;
+    final artifactKind =
+        python?.artifactKind ??
+        code?.artifactKind ??
+        narrative?.form ??
+        'not-applicable';
+    final structureState = python != null
+        ? '${python.structureState}; module_phase=${code?.modulePhase ?? 'unknown'}; open_delimiters=${code?.delimiterState ?? 'unknown'}'
+        : code?.structureState ?? narrative?.structureState ?? 'not-applicable';
     final progress = _progressPercent(
       original: lowerOriginal,
       reply: reply,
@@ -668,6 +1666,16 @@ final class NazaContinuationTaskAgent {
       taskType: taskType,
       targetLanguage: targetLanguage,
       domain: domain,
+      artifactKind: artifactKind,
+      structureState: structureState,
+      continuityState:
+          narrative?.continuityState ??
+          code?.continuityState ??
+          'preserve established names, structure, and causal connections',
+      entrypointPolicy:
+          python?.entrypointPolicy ??
+          code?.entrypointPolicy ??
+          'not-applicable',
       deliverable: _oneLine(original, maxChars: 320),
       progressPercent: progress,
       completedItems: _completedItems(reply, taskType, targetLanguage),
@@ -676,6 +1684,9 @@ final class NazaContinuationTaskAgent {
         reply: lowerReply,
         taskType: taskType,
         targetLanguage: targetLanguage,
+        python: python,
+        code: code,
+        narrative: narrative,
         progressPercent: progress,
         decision: decision,
       ),
@@ -685,19 +1696,27 @@ final class NazaContinuationTaskAgent {
         taskType: taskType,
         targetLanguage: targetLanguage,
         domain: domain,
+        python: python,
+        code: code,
+        narrative: narrative,
       ),
       styleRules: _styleRules(
         original: lowerOriginal,
         reply: lowerReply,
         taskType: taskType,
         targetLanguage: targetLanguage,
+        python: python,
+        code: code,
+        narrative: narrative,
       ),
       nextStructuralMove: _nextStructuralMove(
         original: lowerOriginal,
         reply: reply,
         taskType: taskType,
         targetLanguage: targetLanguage,
-        domain: domain,
+        python: python,
+        code: code,
+        narrative: narrative,
       ),
       qualityChecks: _qualityChecks(
         original: lowerOriginal,
@@ -705,10 +1724,18 @@ final class NazaContinuationTaskAgent {
         taskType: taskType,
         targetLanguage: targetLanguage,
         domain: domain,
+        python: python,
+        code: code,
+        narrative: narrative,
       ),
       cursorState: _cursorState(reply),
       nextTokenPolicy: _nextTokenPolicy(reply),
-      driftGuard: _driftGuard(taskType, targetLanguage, domain),
+      driftGuard: _driftGuard(
+        taskType,
+        targetLanguage,
+        domain,
+        artifactKind == 'not-applicable' ? null : artifactKind,
+      ),
     );
   }
 
@@ -717,20 +1744,33 @@ final class NazaContinuationTaskAgent {
     String original,
     String targetLanguage,
   ) {
+    final narrativeCue =
+        _hasAnyWord(original, const [
+          'story',
+          'book',
+          'novel',
+          'chapter',
+          'fiction',
+          'screenplay',
+        ]) ||
+        _hasAny(original, const ['movie script', 'film script']);
+    final explicitCodeCue = _hasAnyWord(original, const [
+      'code',
+      'program',
+      'function',
+      'api',
+      'sdk',
+      'cli',
+      'python',
+      'dart',
+      'javascript',
+      'typescript',
+    ]);
+    final executableScriptCue =
+        _hasAnyWord(original, const ['script']) && !narrativeCue;
     if (targetLanguage != 'unspecified' ||
-        _hasAny(original, const [
-          'code',
-          'script',
-          'program',
-          'function',
-          'api',
-          'sdk',
-          'cli',
-          'python',
-          'dart',
-          'javascript',
-          'typescript',
-        ])) {
+        explicitCodeCue ||
+        executableScriptCue) {
       return 'coding';
     }
     if (_hasAny(original, const [
@@ -742,6 +1782,9 @@ final class NazaContinuationTaskAgent {
     ])) {
       return 'teaching';
     }
+    if (narrativeCue) {
+      return 'long-form-writing';
+    }
     if (_hasAny(original, const [
       'research',
       'science',
@@ -751,9 +1794,6 @@ final class NazaContinuationTaskAgent {
       'study',
     ])) {
       return 'research-science';
-    }
-    if (_hasAny(original, const ['story', 'book', 'novel', 'chapter'])) {
-      return 'long-form-writing';
     }
     if (_hasAny(original, const ['plan', 'roadmap', 'architecture'])) {
       return 'planning';
@@ -776,7 +1816,17 @@ final class NazaContinuationTaskAgent {
         'python',
         '.py',
         'pip ',
+        '#!/usr/bin/env python',
         'openai api',
+        'customtkinter',
+        'tkinter',
+        'pyqt',
+        'pyside',
+        'fastapi',
+        'flask',
+        'pytest',
+        'argparse',
+        'ctk.',
         'def ',
         'import openai',
       ],
@@ -883,6 +1933,9 @@ final class NazaContinuationTaskAgent {
     required String reply,
     required String taskType,
     required String targetLanguage,
+    required _NazaPythonScriptSnapshot? python,
+    required _NazaCodeSnapshot? code,
+    required _NazaNarrativeSnapshot? narrative,
     required int progressPercent,
     required NazaContinuationDecision decision,
   }) {
@@ -901,8 +1954,35 @@ final class NazaContinuationTaskAgent {
       remaining.add('complete the truncated token before adding new content');
     }
     if (taskType == 'coding') {
-      if (!reply.contains('if __name__') && targetLanguage == 'Python') {
-        remaining.add('finish Python main execution path if it belongs next');
+      if (targetLanguage == 'Python' && python != null) {
+        if (python.activeScope != 'top-level module' &&
+            !python.activeScopeEndsWithTerminal) {
+          remaining.add(
+            'finish the active ${python.activeScope} before starting another top-level section',
+          );
+        }
+        remaining.add(
+          'preserve one coherent ${python.artifactKind} skeleton and extend existing symbols instead of restarting the script',
+        );
+        if (python.shouldHaveConventionalMain && !python.hasMainGuard) {
+          remaining.add(
+            'finish the ${python.artifactKind} launch path according to entrypoint_policy when it belongs next',
+          );
+        }
+      } else if (code != null) {
+        if (code.activeConstruct != 'top-level artifact') {
+          remaining.add(
+            'finish the active ${code.activeConstruct} and ${code.delimiterState} before starting another section',
+          );
+        }
+        remaining.add(
+          'preserve one coherent ${code.artifactKind} and extend the existing symbol graph instead of restarting setup',
+        );
+        if (code.shouldHaveEntrypoint && !code.hasEntrypoint) {
+          remaining.add(
+            'finish the ${code.language}-native execution path according to entrypoint_policy when it belongs next',
+          );
+        }
       }
       if (!reply.contains('```') && targetLanguage != 'unspecified') {
         remaining.add('keep output in $targetLanguage code style');
@@ -911,7 +1991,23 @@ final class NazaContinuationTaskAgent {
         'do not switch to Dart/Flutter unless the original task asked for it',
       );
     } else if (taskType.contains('writing')) {
-      remaining.add('continue the requested prose artifact in the same voice');
+      if (narrative?.openDialogue == true) {
+        remaining.add(
+          'finish the currently open line of dialogue before changing speaker or beat',
+        );
+      } else if (narrative?.endsMidSentence == true) {
+        remaining.add(
+          'finish the current sentence before beginning a new narrative beat',
+        );
+      }
+      remaining.add(
+        'continue the current scene causally from the latest beat without recap, reset, or an unearned time jump',
+      );
+      if (narrative != null) {
+        remaining.add(
+          'preserve ${narrative.pointOfView}, ${narrative.tense}, established entities, location, knowledge, and object state',
+        );
+      }
     } else if (taskType == 'research-science') {
       remaining.add('preserve claim/evidence/uncertainty structure');
     } else if (taskType == 'teaching') {
@@ -929,9 +2025,65 @@ final class NazaContinuationTaskAgent {
     required String taskType,
     required String targetLanguage,
     required String domain,
+    required _NazaPythonScriptSnapshot? python,
+    required _NazaCodeSnapshot? code,
+    required _NazaNarrativeSnapshot? narrative,
   }) {
     final tasks = <String>[];
-    if (taskType == 'coding' && targetLanguage == 'Python') {
+    if (taskType == 'coding' && targetLanguage == 'Python' && python != null) {
+      if (python.activeScope != 'top-level module' &&
+          !python.activeScopeEndsWithTerminal) {
+        tasks.add(
+          'complete the active ${python.activeScope} responsibility at its current indentation before dedenting',
+        );
+      }
+      tasks.add(
+        'preserve one coherent ${python.artifactKind}: reuse the existing imports, configuration, symbols, and object graph',
+      );
+
+      final artifactTask = switch (python.artifactKind) {
+        'test-suite' =>
+          'connect fixtures and helpers to focused tests; let the test runner own execution',
+        'library-module' || 'python-module' =>
+          'finish a connected import-safe public API without loose execution at import time',
+        'web-service' =>
+          'keep one framework app instance and connect configuration, dependencies, handlers, and responses to it',
+        'gui-application' =>
+          'complete the existing app/window state and callbacks, then construct the app and enter its event loop once',
+        'command-line-application' =>
+          'connect parser arguments to command handlers and a single main orchestration path',
+        'async-application' =>
+          'keep one awaitable call chain from async main through helpers to result handling',
+        'data-pipeline' =>
+          'connect load, validation, transformation, and output stages through explicit values',
+        'automation-script' =>
+          'connect input discovery, action helpers, failure handling, and reporting through one orchestration path',
+        _ =>
+          'connect input, core work, result handling, and execution through existing symbols',
+      };
+      tasks.add(artifactTask);
+      if (python.artifactKind == 'gui-application') {
+        tasks.add(
+          'keep blocking file, network, or compute work off the GUI event loop',
+        );
+      }
+
+      if (python.shouldHaveConventionalMain && !python.hasMainFunction) {
+        tasks.add(
+          python.artifactKind == 'async-application'
+              ? 'add one async main() that orchestrates the existing helpers'
+              : 'add one main() that orchestrates the existing helpers',
+        );
+      }
+      if (python.shouldHaveConventionalMain && !python.hasMainGuard) {
+        tasks.add(
+          python.artifactKind == 'async-application'
+              ? 'add one main guard that calls asyncio.run(main()) exactly once'
+              : 'add one main guard that invokes main() exactly once',
+        );
+      }
+
+      // Domain work is deliberately queued after the script-wide structure.
       if (domain.contains('openai-api')) {
         if (!reply.contains('from openai import openai') &&
             !reply.contains('import openai')) {
@@ -947,7 +2099,9 @@ final class NazaContinuationTaskAgent {
         }
         if (!reply.contains('chat.completions.create') &&
             !reply.contains('responses.create')) {
-          tasks.add('make the OpenAI generation call with model and messages');
+          tasks.add(
+            'make the OpenAI generation call inside the connected helper that owns external I/O',
+          );
         }
         if (!reply.contains('choices[0]') &&
             !reply.contains('output_text') &&
@@ -967,29 +2121,85 @@ final class NazaContinuationTaskAgent {
           tasks.add('save or print the generated book output clearly');
         }
       }
-      if (!reply.contains('def main')) {
-        tasks.add('add a main() orchestration function');
-      }
-      if (!reply.contains('if __name__')) {
-        tasks.add('add if __name__ == "__main__" entrypoint');
-      }
-      if (!reply.contains('try:') && !reply.contains('except ')) {
-        tasks.add('add minimal error handling around the API call');
-      }
       tasks.add('keep producing valid Python code, not explanatory prose');
       tasks.add('close any open function, string, list, dict, call, or fence');
-    } else if (taskType.contains('writing')) {
-      tasks.add('continue the current scene or section from the next sentence');
-      tasks.add('advance the active conflict, image, dialogue, or argument');
+    } else if (taskType == 'coding' && code != null) {
+      if (code.hasOpenSyntax || code.lastLineContinuesExpression) {
+        tasks.add(
+          'complete the current ${code.activeConstruct} with its existing delimiter nesting before adding a sibling statement',
+        );
+      } else if (code.activeConstruct != 'top-level artifact') {
+        tasks.add(
+          'finish the active ${code.activeConstruct} responsibility before leaving its scope',
+        );
+      }
       tasks.add(
-        'preserve established characters, names, setting, POV, and tense',
+        'preserve one coherent ${code.artifactKind}: reuse existing imports, setup, types, functions, and owners',
       );
       tasks.add(
-        'avoid recap, outline reset, or jumping to a new chapter unless cued',
+        'connect each new symbol to an existing caller, owner, result, handler, test, or execution path',
+      );
+      final artifactTask = switch (code.artifactKind) {
+        'test-suite' =>
+          'complete focused tests through existing fixtures/helpers and let the test runner own execution',
+        'library-module' || 'code-module' =>
+          'finish the reusable public surface without adding unrelated startup code',
+        'web-service' =>
+          'reuse the existing application/server and connect handlers, dependencies, errors, and responses',
+        'sql-statement' =>
+          'finish the SQL clause or migration in valid dependency and statement order',
+        _ =>
+          'connect input, core work, result handling, and the native execution path',
+      };
+      tasks.add(artifactTask);
+      if (code.shouldHaveEntrypoint && !code.hasEntrypoint) {
+        tasks.add(
+          'add one ${code.language}-native entrypoint or launch path that invokes existing definitions exactly once',
+        );
+      }
+      tasks.add(
+        'keep producing valid ${code.language} code, not restart prose',
+      );
+      tasks.add(
+        'close open strings, calls, collections, blocks, statements, and fences naturally',
+      );
+    } else if (taskType.contains('writing') && narrative != null) {
+      if (narrative.openDialogue) {
+        tasks.add(
+          'finish the open utterance in the same speaker voice before closing the quote or adding a beat',
+        );
+      } else if (narrative.endsMidSentence) {
+        tasks.add(
+          'finish the exact current sentence before starting a new paragraph',
+        );
+      } else {
+        tasks.add('continue the current scene from the next causal beat');
+      }
+      tasks.add(
+        'turn the latest beat into an immediate reaction, consequence, decision, or obstacle',
+      );
+      tasks.add(
+        'preserve ${narrative.pointOfView}, ${narrative.tense}, narrative distance, and paragraph cadence',
+      );
+      tasks.add(
+        'preserve established character identities, relationships, knowledge, injuries, carried objects, and location',
+      );
+      if (narrative.lastParagraphHasDialogue) {
+        tasks.add(
+          'keep speaker attribution and conversational turn order unambiguous without repeating the previous line',
+        );
+      }
+      tasks.add(
+        'avoid recap, premise reset, new cast injection, head-hopping, or a chapter jump unless the scene establishes it',
       );
       if (original.contains('book') || original.contains('novel')) {
         tasks.add('build toward the requested book-length artifact gradually');
       }
+    } else if (taskType.contains('writing')) {
+      tasks.add(
+        'continue the current scene or section from the exact next sentence',
+      );
+      tasks.add('advance the active conflict, image, dialogue, or argument');
     } else if (taskType == 'research-science') {
       tasks.add('continue the claim/evidence/uncertainty chain');
       tasks.add('separate observations from interpretation');
@@ -1007,6 +2217,9 @@ final class NazaContinuationTaskAgent {
     required String reply,
     required String taskType,
     required String targetLanguage,
+    required _NazaPythonScriptSnapshot? python,
+    required _NazaCodeSnapshot? code,
+    required _NazaNarrativeSnapshot? narrative,
   }) {
     final rules = <String>[];
     final noEmDash =
@@ -1032,17 +2245,41 @@ final class NazaContinuationTaskAgent {
       if (targetLanguage != 'unspecified') {
         rules.add('do not switch away from $targetLanguage');
       }
-      if (targetLanguage == 'Python') {
+      if (targetLanguage == 'Python' && python != null) {
         rules.add(
-          'use valid Python identifiers, imports, functions, and main guard structure',
+          'keep one coherent ${python.artifactKind} module from imports through its entrypoint policy',
         );
         rules.add(
-          'avoid duplicate imports, duplicate prompt constants, and duplicate setup blocks',
+          'continue ${python.activeScope} at the existing indentation before adding a sibling or top-level symbol',
+        );
+        rules.add(
+          'reuse established names and connect new helpers to callers; do not emit orphan functions or loose restart fragments',
+        );
+        rules.add(
+          'keep module order coherent: imports, constants/configuration, definitions, orchestration, then entrypoint when applicable',
+        );
+        rules.add(
+          'do not repeat imports, constants, setup, existing symbol definitions, or the Python fence opener',
+        );
+      } else if (code != null) {
+        rules.add(
+          'keep one coherent ${code.artifactKind} in $targetLanguage from setup through its native completion path',
+        );
+        rules.add(
+          'continue ${code.activeConstruct} with ${code.delimiterState} before adding a sibling construct',
+        );
+        rules.add(
+          'reuse established identifiers and attach new definitions to the existing call, ownership, or data flow',
+        );
+        rules.add(
+          'do not repeat imports, setup, type/function definitions, entrypoints, or the code fence opener',
         );
       }
     } else if (taskType.contains('writing')) {
       rules.add(
-        'keep the same narrative distance, tense, voice, and paragraph rhythm',
+        narrative == null
+            ? 'keep the same narrative distance, tense, voice, and paragraph rhythm'
+            : 'keep ${narrative.pointOfView}, ${narrative.tense}, narrative distance, voice, and the established paragraph rhythm',
       );
       rules.add(
         'continue with fresh prose instead of summarizing completed prose',
@@ -1053,6 +2290,14 @@ final class NazaContinuationTaskAgent {
       rules.add(
         'prefer concrete sensory/action beats over outline labels unless the user requested an outline',
       );
+      rules.add(
+        'continue cause to reaction to consequence; do not teleport characters, objects, knowledge, or emotional state',
+      );
+      if (narrative?.lastParagraphHasDialogue == true) {
+        rules.add(
+          'preserve speaker voices, attribution style, and turn order without echoing the prior utterance',
+        );
+      }
     } else {
       rules.add('preserve the current structure and formatting');
     }
@@ -1069,35 +2314,91 @@ final class NazaContinuationTaskAgent {
     required String reply,
     required String taskType,
     required String targetLanguage,
-    required String domain,
+    required _NazaPythonScriptSnapshot? python,
+    required _NazaCodeSnapshot? code,
+    required _NazaNarrativeSnapshot? narrative,
   }) {
     final trimmed = reply.trimRight();
     if (trimmed.isEmpty) return 'start the requested artifact directly';
     final lastLine = trimmed.split(RegExp(r'\r\n?|\n')).last.trimRight();
 
-    if (taskType == 'coding' && targetLanguage == 'Python') {
-      final lowerLine = lastLine.toLowerCase();
-      if (lowerLine.endsWith('chat.completions.create(') ||
-          lowerLine.endsWith('responses.create(') ||
-          lowerLine.contains('client.chat.completions.create(')) {
-        return 'continue the OpenAI API call arguments: model, messages/prompt, token limits, and close the call';
-      }
+    if (taskType == 'coding' && targetLanguage == 'Python' && python != null) {
       if (lastLine.trimRight().endsWith(',')) {
         return 'continue the current Python argument/list/dict item on the next indented line';
       }
       if (lastLine.trimRight().endsWith('(')) {
         return 'fill the open Python call or function arguments before adding new statements';
       }
-      if (trimmed.contains('def ') && !trimmed.contains('return ')) {
-        return 'complete the active function body with return/output handling';
+      if (python.lastLineOpensBlock) {
+        return 'indent and write the body of the Python block opened at the cursor';
       }
-      if (!trimmed.toLowerCase().contains('def main')) {
-        return 'add the next missing Python function or main orchestration block';
+      if (python.activeScope != 'top-level module' &&
+          !python.activeScopeEndsWithTerminal) {
+        return 'continue the active ${python.activeScope} at its current indentation and finish that responsibility before dedenting';
       }
-      if (!trimmed.toLowerCase().contains('if __name__')) {
-        return 'add the Python main guard and call main()';
+      if (python.shouldHaveConventionalMain && !python.hasMainFunction) {
+        return python.artifactKind == 'async-application'
+            ? 'dedent and add async main() that connects the existing helpers into one call chain'
+            : 'dedent and add main() that connects the existing helpers into one orchestration path';
       }
-      return 'finish structural closure: error handling, output path, and any open delimiters';
+      if (python.shouldHaveConventionalMain && !python.hasMainGuard) {
+        return python.artifactKind == 'async-application'
+            ? 'add the Python main guard and invoke asyncio.run(main()) exactly once'
+            : 'add the Python main guard and invoke main() exactly once';
+      }
+      return switch (python.artifactKind) {
+        'test-suite' =>
+          'add the next focused test that uses the existing fixture or helper without adding an entrypoint',
+        'library-module' || 'python-module' =>
+          'add the next connected public symbol or finish the current public API without import-time execution',
+        'web-service' =>
+          'add the next connected dependency or handler on the existing framework app',
+        _ =>
+          'finish result handling and structural closure through the existing Python symbol graph',
+      };
+    }
+
+    if (taskType == 'coding' && code != null) {
+      if (code.lastLineOpensBlock) {
+        return 'write the body of the ${code.activeConstruct} opened at the cursor before adding another declaration';
+      }
+      if (code.hasOpenSyntax || code.lastLineContinuesExpression) {
+        return 'continue the current ${code.activeConstruct} using ${code.delimiterState} until the expression or statement is structurally complete';
+      }
+      if (code.activeConstruct != 'top-level artifact') {
+        return 'continue the active ${code.activeConstruct} and finish its responsibility before returning to top level';
+      }
+      if (code.shouldHaveEntrypoint && !code.hasEntrypoint) {
+        return 'add the $targetLanguage-native entrypoint that connects and invokes the existing symbols exactly once';
+      }
+      return switch (code.artifactKind) {
+        'test-suite' =>
+          'add the next focused test through existing fixtures and helpers without production startup code',
+        'library-module' || 'code-module' =>
+          'add the next connected public definition or finish the reusable API surface',
+        'web-service' =>
+          'add the next connected handler, dependency, error path, or response on the existing server',
+        'sql-statement' =>
+          'continue the current SQL clause or add the next dependency-ordered migration statement',
+        _ =>
+          'finish result handling and closure through the existing symbol and execution graph',
+      };
+    }
+
+    if (taskType.contains('writing') && narrative != null) {
+      if (narrative.openDialogue) {
+        return 'continue the current speaker utterance from the exact next word, then close or tag it only when the line is complete';
+      }
+      if (narrative.atSceneBoundary) {
+        return 'open the next scene with a concrete consequence of the scene just completed, preserving established continuity';
+      }
+      if (narrative.endsMidSentence) {
+        return 'finish the current sentence in ${narrative.pointOfView} ${narrative.tense} before starting another beat';
+      }
+      if (narrative.lastParagraphHasDialogue) {
+        return 'write the immediate listener reaction, reply, or physical consequence without repeating the previous dialogue';
+      }
+      return 'write the immediate reaction or consequence caused by the latest beat, then introduce the next choice or obstacle';
     }
 
     if (taskType.contains('writing')) {
@@ -1105,13 +2406,7 @@ final class NazaContinuationTaskAgent {
       if (!_endsCompleteSentence(lastParagraph)) {
         return 'finish the current sentence and paragraph in the same voice';
       }
-      if (_looksLikeDialogueCue(lastParagraph)) {
-        return 'continue with the next dialogue response or immediate physical reaction';
-      }
-      if (_hasAny(original, const ['chapter', 'scene', 'novel', 'story'])) {
-        return 'write the next scene beat that escalates tension or reveals consequence';
-      }
-      return 'write the next paragraph of the requested prose artifact';
+      return 'write the next causally connected paragraph of the requested prose artifact';
     }
 
     if (taskType == 'research-science') {
@@ -1129,6 +2424,9 @@ final class NazaContinuationTaskAgent {
     required String taskType,
     required String targetLanguage,
     required String domain,
+    required _NazaPythonScriptSnapshot? python,
+    required _NazaCodeSnapshot? code,
+    required _NazaNarrativeSnapshot? narrative,
   }) {
     final checks = <String>[];
     if (taskType == 'coding') {
@@ -1142,29 +2440,61 @@ final class NazaContinuationTaskAgent {
       checks.add(
         'close delimiters only when that is the next natural code step',
       );
-      if (targetLanguage == 'Python') {
+      if (code != null) {
         checks.add(
-          'use environment variables for secrets; never hardcode an API key',
+          'preserve ${code.delimiterState}, active construct depth, and the existing code fence state',
         );
         checks.add(
-          'keep indentation at 4 spaces and preserve open block depth',
+          'every new symbol must connect to an existing caller, owner, value flow, handler, test, or execution path',
         );
         checks.add(
-          'include clear response extraction and output handling before finishing',
+          'follow entrypoint_policy for ${code.artifactKind}; never create a second startup path or force one into a reusable artifact',
+        );
+      }
+      if (targetLanguage == 'Python' && python != null) {
+        checks.add(
+          'keep Python indentation at 4 spaces, preserve open block depth, and keep module sections in dependency order',
+        );
+        final artifactCheck = switch (python.artifactKind) {
+          'test-suite' =>
+            'keep tests independently runnable by the test runner and avoid production startup code',
+          'library-module' || 'python-module' =>
+            'keep the module import-safe and its public API internally connected',
+          'web-service' =>
+            'reuse one framework app instance and keep handler dependencies and response paths complete',
+          'gui-application' =>
+            'reuse one app/root and event loop; keep blocking I/O or compute off the UI thread',
+          'command-line-application' =>
+            'connect parsed arguments to handlers, exit behavior, and one main call',
+          'async-application' =>
+            'preserve async/await through the whole call chain and invoke the event loop once',
+          'data-pipeline' =>
+            'pass validated data explicitly through load, transform, and output stages',
+          _ =>
+            'keep inputs, core work, outputs, and the execution path connected',
+        };
+        checks.add(artifactCheck);
+      } else if (code != null) {
+        checks.add(
+          'keep $targetLanguage syntax, declarations, imports, and framework conventions internally consistent',
         );
       }
       if (domain.contains('openai-api')) {
-        checks.add('keep the OpenAI request shape internally consistent');
+        checks.add(
+          'keep the OpenAI request shape internally consistent and use environment variables for secrets; never hardcode an API key',
+        );
       }
     } else if (taskType.contains('writing')) {
       checks.add(
-        'each new paragraph should add new action, image, decision, or revelation',
+        'each new paragraph must causally follow the latest beat and add action, image, decision, consequence, or revelation',
       );
       checks.add(
         'avoid recap sentences that only restate what already happened',
       );
       checks.add(
-        'keep character names, setting details, POV, and tense consistent',
+        narrative == null
+            ? 'keep character names, setting details, POV, and tense consistent'
+            : 'preserve ${narrative.pointOfView}, ${narrative.tense}, entities, relationships, location, object state, injuries, and character knowledge',
       );
       checks.add(
         'vary sentence length while preserving the established rhythm',
@@ -1172,6 +2502,14 @@ final class NazaContinuationTaskAgent {
       checks.add(
         'prefer concrete sensory detail and behavior over abstract explanation',
       );
+      checks.add(
+        'do not head-hop, resurrect resolved beats, inject an unrelated character, or jump time/place without a visible transition',
+      );
+      if (narrative?.lastParagraphHasDialogue == true) {
+        checks.add(
+          'keep dialogue turn order, speaker identity, voice, and attribution clear without replaying the previous line',
+        );
+      }
       if (_hasAny(original, const [
         'avoid em dash',
         'no em dash',
@@ -1210,15 +2548,6 @@ final class NazaContinuationTaskAgent {
     return RegExp(r"""[.!?]["')\]]?$""").hasMatch(clean);
   }
 
-  static bool _looksLikeDialogueCue(String text) {
-    final clean = text.trimRight();
-    if (clean.contains('"') || clean.contains("'")) return true;
-    return RegExp(
-      r'\b(said|asked|whispered|answered|replied|murmured)\b',
-      caseSensitive: false,
-    ).hasMatch(clean);
-  }
-
   static String _cursorState(String reply) {
     final trimmed = reply.trimRight();
     if (trimmed.isEmpty) return 'empty-answer';
@@ -1237,7 +2566,7 @@ final class NazaContinuationTaskAgent {
     final trimmed = reply.trimRight();
     final fragment = _trailingFragment(trimmed);
     if (fragment.isNotEmpty && !trimmed.endsWith(' ')) {
-      return 'begin with the remaining letters for "$fragment"; do not insert a newline first';
+      return 'continue directly after "$fragment" without repeating it; if it is truncated, begin with only its missing letters';
     }
     final last = trimmed.isEmpty ? '' : trimmed[trimmed.length - 1];
     if ('([{'.contains(last)) {
@@ -1253,11 +2582,15 @@ final class NazaContinuationTaskAgent {
     String taskType,
     String targetLanguage,
     String domain,
+    String? artifactKind,
   ) {
     final lang = targetLanguage == 'unspecified'
         ? 'preserve the language/domain implied by the current answer'
         : 'stay in $targetLanguage';
-    return '$lang; stay on $taskType/$domain; do not introduce a different app/framework/task unless the original user asked for it';
+    final artifact = artifactKind == null
+        ? ''
+        : '; preserve the existing $artifactKind artifact shape and symbol graph';
+    return '$lang; stay on $taskType/$domain$artifact; do not introduce a different app/framework/task unless the original user asked for it';
   }
 
   static String _trailingFragment(String text) {
@@ -1270,6 +2603,13 @@ final class NazaContinuationTaskAgent {
   static bool _hasAny(String text, List<String> needles) {
     for (final needle in needles) {
       if (text.contains(needle)) return true;
+    }
+    return false;
+  }
+
+  static bool _hasAnyWord(String text, List<String> words) {
+    for (final word in words) {
+      if (RegExp('\\b${RegExp.escape(word)}\\b').hasMatch(text)) return true;
     }
     return false;
   }
@@ -4137,8 +5477,10 @@ Rules:
 - Treat task_memory.style_rules as hard output constraints.
 - Use task_memory.next_structural_move to choose the first structural action of this chunk.
 - Before ending, silently check task_memory.quality_checks against the chunk you just wrote.
-- For Python coding tasks, continue the actual script: imports/config, prompt constants, functions, API call, response extraction, output handling, main guard, and closure as needed.
-- For story/book tasks, continue the active scene or prose from the next sentence with the same POV, tense, voice, and paragraph rhythm.
+- For every coding task, preserve one independently coherent artifact. Continue the active string/expression/call/block/function/type first, respect structure_state delimiter depth, and reuse continuity_state symbols before adding a new section.
+- Follow artifact_kind and entrypoint_policy for the detected language. Never restart with another fence, imports/setup, application instance, type skeleton, or entrypoint, and never emit an orphan helper with no caller, owner, result, or test path.
+- For Python, also preserve indentation and the detected script/module shape. Domain-specific completion tasks remain secondary to whole-artifact coherence.
+- For story/book tasks, obey continuity_state and structure_state: finish an open sentence or utterance first, preserve POV/tense/entities and physical knowledge state, then continue the latest beat through reaction and consequence without recap or reset.
 - If task_memory.remaining_items contains work, perform the next remaining item instead of declaring completion.
 - Do not emit ${NazaAppConfig.continuationDoneMarker} or [done]. Finish the chunk with normal artifact text.
 ''';
@@ -4296,28 +5638,42 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
       return continuation;
     }
 
+    var candidateContinuation = secondTrimmedLeft;
+    var strippedDuplicateFence = false;
+    if (hasOpenCodeFence(prefix)) {
+      final duplicateFence = RegExp(
+        r'^```[A-Za-z0-9_-]*\s*\n',
+      ).firstMatch(candidateContinuation);
+      if (duplicateFence != null) {
+        strippedDuplicateFence = true;
+        candidateContinuation = candidateContinuation
+            .substring(duplicateFence.end)
+            .trimLeft();
+      }
+    }
+
     final tail = prefix.length > 5200
         ? prefix.substring(prefix.length - 5200)
         : prefix;
-    final paragraphs = secondTrimmedLeft.split(RegExp(r'\n\s*\n'));
+    final paragraphs = candidateContinuation.split(RegExp(r'\n\s*\n'));
     if (paragraphs.isNotEmpty) {
       final firstParagraph = paragraphs.first.trim();
       if (firstParagraph.length >= 48 && tail.contains(firstParagraph)) {
         final cut =
-            secondTrimmedLeft.indexOf(paragraphs.first) +
+            candidateContinuation.indexOf(paragraphs.first) +
             paragraphs.first.length;
-        return secondTrimmedLeft.substring(cut).trimLeft();
+        return candidateContinuation.substring(cut).trimLeft();
       }
     }
 
-    final lines = secondTrimmedLeft.split('\n');
+    final lines = candidateContinuation.split('\n');
     var consumed = 0;
     var bestCut = 0;
     for (var i = 0; i < math.min(lines.length, 12); i++) {
       final line = lines[i];
       final nextConsumed =
           consumed + line.length + (i < lines.length - 1 ? 1 : 0);
-      final candidate = secondTrimmedLeft.substring(0, nextConsumed).trim();
+      final candidate = candidateContinuation.substring(0, nextConsumed).trim();
       final enoughSignal =
           candidate.length >= 30 || (i >= 1 && candidate.length >= 18);
       if (enoughSignal && tail.contains(candidate)) {
@@ -4326,8 +5682,10 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
       consumed = nextConsumed;
     }
 
-    if (bestCut <= 0) return continuation;
-    return secondTrimmedLeft.substring(bestCut).trimLeft();
+    if (bestCut <= 0) {
+      return strippedDuplicateFence ? candidateContinuation : continuation;
+    }
+    return candidateContinuation.substring(bestCut).trimLeft();
   }
 
   static String stripDoneMarker(
