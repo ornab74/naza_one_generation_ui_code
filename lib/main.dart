@@ -89,6 +89,7 @@ final class NazaAppConfig {
   static const String desktopGpuEnvironmentVariable = 'NAZA_DESKTOP_GPU';
   static const String desktopCpuEnvironmentVariable = 'NAZA_DESKTOP_CPU';
   static const int contextTokens = 3072;
+  static const int modelInputTokenSafetyMargin = 1024;
   static const int outputTokens = 768;
   static const int continuationOutputTokens = 512;
   static const int liveVoiceOutputTokens = 160;
@@ -137,7 +138,8 @@ final class NazaAppConfig {
   static const int memorySummaryChars = 560;
   static const int memoryKeywordCount = 18;
   static const int ragPromptSurfaceChars = 7600;
-  static const int contextInputBudgetChars = 9300;
+  static const int contextInputBudgetChars = 3600;
+  static const int currentTaskMaxChars = 1800;
   static const int contextShrinkTargetChars = 1800;
   static const double contextTargetFillRatio = 0.74;
   static const String memoryClassName = 'NazaChatMemory';
@@ -5324,7 +5326,14 @@ final class NazaContinuationEngine {
       originalUserText,
       actionProfile,
     );
+    final requestedLines = _targetLineCount(originalUserText.toLowerCase());
+    final producedNonEmptyLines = _lines(
+      clean,
+    ).where((line) => line.trim().isNotEmpty).length;
+    final underfilledLineTarget =
+        requestedLines != null && producedNonEmptyLines < requestedLines;
     final underfilledRequestedArtifact =
+        underfilledLineTarget ||
         requestedLongArtifact && clean.length < requestedMinChars;
     final shortHardSignal =
         hasOpenCodeFence(clean) ||
@@ -5448,14 +5457,17 @@ final class NazaContinuationEngine {
 pass=$pass/$maxPasses
 reason=${decision.reason}
 confidence=${decision.confidence.toStringAsFixed(3)}
+[continuation_priority]
+artifact_kind=${taskMemory.artifactKind}
+structure_state=${taskMemory.structureState}
+continuity_state=${taskMemory.continuityState}
+cursor_state=${taskMemory.cursorState}
+next_token_policy=${taskMemory.nextTokenPolicy}
+next_structural_move=${taskMemory.nextStructuralMove}
+[/continuation_priority]
 ${taskMemory.toPromptBlock()}
 $antiRepeat
 compressed_completed_summary=${_oneLine(decision.completedSummary, maxChars: NazaAppConfig.continuationSummaryChars)}
-exact_tail_start
-<<<NAZA_CONTINUATION_TAIL
-${decision.tail}
-NAZA_CONTINUATION_TAIL
-exact_tail_end
 [/continuation_window]
 
 [completion_agent_contract]
@@ -5483,6 +5495,14 @@ Rules:
 - For story/book tasks, obey continuity_state and structure_state: finish an open sentence or utterance first, preserve POV/tense/entities and physical knowledge state, then continue the latest beat through reaction and consequence without recap or reset.
 - If task_memory.remaining_items contains work, perform the next remaining item instead of declaring completion.
 - Do not emit ${NazaAppConfig.continuationDoneMarker} or [done]. Finish the chunk with normal artifact text.
+
+[exact_cursor]
+exact_tail_start
+<<<NAZA_CONTINUATION_TAIL
+${decision.tail}
+NAZA_CONTINUATION_TAIL
+exact_tail_end
+[/exact_cursor]
 ''';
   }
 
@@ -5549,6 +5569,49 @@ reply_tail_end
     return hasHardContinuationSignal(decision) ||
         decision.reason.contains('underfilled-requested-artifact') ||
         decision.reason.contains('premature-done-marker');
+  }
+
+  static int recommendedMaxPasses(
+    String originalUserText, {
+    required int configuredPasses,
+  }) {
+    final configured = NazaGenerationSettings.normalizeMaxContinuations(
+      configuredPasses,
+    );
+    if (configured == 0) return 0;
+    final lower = originalUserText.toLowerCase();
+    final targetLines = _targetLineCount(lower);
+    final required = targetLines == null
+        ? _hasAny(lower, const [
+                'complete script',
+                'full script',
+                'entire script',
+                'complete story',
+                'full story',
+                'full chapter',
+                'full novel',
+                'novel chapter',
+                'complete chapter',
+                'long-form',
+              ])
+              ? 6
+              : configured
+        : targetLines >= 600
+        ? 12
+        : targetLines >= 350
+        ? 10
+        : targetLines >= 180
+        ? 8
+        : targetLines >= 80
+        ? 6
+        : configured;
+    return math
+        .max(configured, required)
+        .clamp(
+          NazaAppConfig.minAutoContinuationPasses,
+          NazaAppConfig.maxAutoContinuationPasses,
+        )
+        .toInt();
   }
 
   static String _antiRepeatBlock(String accumulatedReply) {
@@ -5650,6 +5713,10 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
             .substring(duplicateFence.end)
             .trimLeft();
       }
+      candidateContinuation = _trimLeadingCodeRestart(
+        prefix,
+        candidateContinuation,
+      );
     }
 
     final tail = prefix.length > 5200
@@ -5663,6 +5730,17 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
             candidateContinuation.indexOf(paragraphs.first) +
             paragraphs.first.length;
         return candidateContinuation.substring(cut).trimLeft();
+      }
+    }
+
+    final firstSentence = RegExp(
+      r'''^(.{20,}?[.!?]["'”’)]?)(?:\s+|$)''',
+      dotAll: true,
+    ).firstMatch(candidateContinuation);
+    if (firstSentence != null) {
+      final sentence = firstSentence.group(1)?.trim() ?? '';
+      if (sentence.isNotEmpty && tail.contains(sentence)) {
+        return candidateContinuation.substring(firstSentence.end).trimLeft();
       }
     }
 
@@ -5686,6 +5764,36 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
       return strippedDuplicateFence ? candidateContinuation : continuation;
     }
     return candidateContinuation.substring(bestCut).trimLeft();
+  }
+
+  static String _trimLeadingCodeRestart(String prefix, String continuation) {
+    final prefixLines = prefix
+        .split(RegExp(r'\r\n?|\n'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toSet();
+    final lines = continuation.split('\n');
+    var consumed = 0;
+    var skippedAny = false;
+    for (var i = 0; i < math.min(lines.length, 16); i++) {
+      final line = lines[i];
+      final clean = line.trim();
+      final nextConsumed =
+          consumed + line.length + (i < lines.length - 1 ? 1 : 0);
+      if (clean.isEmpty && skippedAny) {
+        consumed = nextConsumed;
+        continue;
+      }
+      final restartLine = RegExp(
+        r'^(?:import\b|from\s+\S+\s+import\b|#include\b|using\s+\S+|package\s+\S+|class\s+\w+|(?:async\s+)?def\s+\w+|(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*=)',
+        caseSensitive: false,
+      ).hasMatch(clean);
+      if (!restartLine || !prefixLines.contains(clean)) break;
+      skippedAny = true;
+      consumed = nextConsumed;
+    }
+    if (!skippedAny || consumed <= 0) return continuation;
+    return continuation.substring(consumed).trimLeft();
   }
 
   static String stripDoneMarker(
@@ -6058,6 +6166,246 @@ final class NazaContextFrame {
   });
 }
 
+final class NazaPromptBudget {
+  NazaPromptBudget._();
+
+  static int get safeInputTokenLimit =>
+      NazaAppConfig.contextTokens - NazaAppConfig.modelInputTokenSafetyMargin;
+
+  static int estimateTokens(String text) {
+    var tokens = 4;
+    var wordRun = 0;
+
+    void flushWord() {
+      if (wordRun <= 0) return;
+      tokens += (wordRun / 3).ceil();
+      wordRun = 0;
+    }
+
+    for (final rune in text.runes) {
+      final asciiWord =
+          rune == 95 ||
+          rune >= 48 && rune <= 57 ||
+          rune >= 65 && rune <= 90 ||
+          rune >= 97 && rune <= 122;
+      if (asciiWord) {
+        wordRun++;
+        continue;
+      }
+      flushWord();
+      if (rune == 9 || rune == 10 || rune == 13 || rune == 32) continue;
+      tokens += rune <= 0x7F ? 1 : 2;
+    }
+    flushWord();
+    return tokens;
+  }
+
+  static int estimateChatInputTokens({
+    required String systemInstruction,
+    required String prompt,
+  }) {
+    return estimateTokens(systemInstruction) + estimateTokens(prompt) + 8;
+  }
+
+  static bool fits({
+    required String systemInstruction,
+    required String prompt,
+  }) {
+    return estimateChatInputTokens(
+          systemInstruction: systemInstruction,
+          prompt: prompt,
+        ) <=
+        safeInputTokenLimit;
+  }
+
+  static String fitPrompt({
+    required String systemInstruction,
+    required String prompt,
+    String marker = '\n[prompt_middle_compacted_for_model_window]\n',
+    double headFraction = 0.42,
+  }) {
+    if (fits(systemInstruction: systemInstruction, prompt: prompt)) {
+      return prompt;
+    }
+    final systemTokens = estimateTokens(systemInstruction) + 8;
+    final promptTokenBudget = math.max(64, safeInputTokenLimit - systemTokens);
+    final runes = prompt.runes.toList(growable: false);
+    if (runes.isEmpty) return prompt;
+
+    var low = 0;
+    var high = runes.length;
+    var best = _headTail(
+      runes,
+      keepRunes: math.min(64, runes.length),
+      marker: marker,
+      headFraction: headFraction,
+    );
+    while (low <= high) {
+      final keep = (low + high) ~/ 2;
+      final candidate = _headTail(
+        runes,
+        keepRunes: keep,
+        marker: marker,
+        headFraction: headFraction,
+      );
+      if (estimateTokens(candidate) <= promptTokenBudget) {
+        best = candidate;
+        low = keep + 1;
+      } else {
+        high = keep - 1;
+      }
+    }
+    return best;
+  }
+
+  static String compactText(
+    String text, {
+    required int maxChars,
+    String marker = '\n[...middle compacted...]\n',
+    double headFraction = 0.55,
+  }) {
+    if (text.length <= maxChars) return text;
+    return _headTail(
+      text.runes.toList(growable: false),
+      keepRunes: maxChars,
+      marker: marker,
+      headFraction: headFraction,
+    );
+  }
+
+  static String fitContinuationPrompt(String prompt) {
+    final priority = _between(
+      prompt,
+      '[continuation_priority]',
+      '[/continuation_priority]',
+    );
+    final summary = _lineValue(prompt, 'compressed_completed_summary=');
+    final cursor = _between(
+      prompt,
+      '<<<NAZA_CONTINUATION_TAIL',
+      'NAZA_CONTINUATION_TAIL',
+    );
+    final completionTasks = _listSection(
+      prompt,
+      'completion_tasks=',
+      'style_rules=',
+      maxItems: 5,
+    );
+    final styleRules = _listSection(
+      prompt,
+      'style_rules=',
+      'next_structural_move=',
+      maxItems: 4,
+    );
+    final qualityChecks = _listSection(
+      prompt,
+      'quality_checks=',
+      '[/task_memory]',
+      maxItems: 4,
+    );
+    final compactCursor = compactText(
+      cursor,
+      maxChars: 900,
+      marker: '\n[...older cursor context compacted...]\n',
+      headFraction: 0.30,
+    );
+    final capsule =
+        '''
+[continuation_chunk]
+mode=stateless-artifact-chunk
+input_window=bounded
+[continuation_priority]
+$priority
+[/continuation_priority]
+compressed_completed_summary=$summary
+[chunk_queue]
+$completionTasks
+[/chunk_queue]
+[style_guard]
+$styleRules
+[/style_guard]
+[quality_guard]
+$qualityChecks
+[/quality_guard]
+[chunk_contract]
+- Continue from the exact cursor; never restart or recap.
+- Finish the active sentence, string, expression, call, block, function, scene beat, or dialogue turn first.
+- Reuse established symbols, entities, POV, tense, formatting, and indentation.
+- Produce only the next substantive artifact chunk. Do not claim the whole artifact is complete unless the requested structure and length are complete.
+- Do not emit ${NazaAppConfig.continuationDoneMarker} or [done].
+[/chunk_contract]
+[prompt middle compacted for continuation window]
+[/continuation_chunk]
+[exact_cursor]
+exact_tail_start
+<<<NAZA_CONTINUATION_TAIL
+$compactCursor
+NAZA_CONTINUATION_TAIL
+exact_tail_end
+[/exact_cursor]
+''';
+    return fitPrompt(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      prompt: capsule,
+      marker:
+          '\n[/continuation_chunk]\n[prompt middle compacted for continuation window]\n[exact_cursor]\n',
+      headFraction: 0.34,
+    );
+  }
+
+  static String _between(String text, String startMarker, String endMarker) {
+    final start = text.indexOf(startMarker);
+    if (start < 0) return '';
+    final contentStart = start + startMarker.length;
+    final end = text.indexOf(endMarker, contentStart);
+    if (end < 0) return text.substring(contentStart).trim();
+    return text.substring(contentStart, end).trim();
+  }
+
+  static String _lineValue(String text, String prefix) {
+    final start = text.indexOf(prefix);
+    if (start < 0) return '';
+    final contentStart = start + prefix.length;
+    final end = text.indexOf('\n', contentStart);
+    return (end < 0
+            ? text.substring(contentStart)
+            : text.substring(contentStart, end))
+        .trim();
+  }
+
+  static String _listSection(
+    String text,
+    String startMarker,
+    String endMarker, {
+    required int maxItems,
+  }) {
+    final content = _between(text, startMarker, endMarker);
+    return content
+        .split(RegExp(r'\r\n?|\n'))
+        .map((line) => line.trim())
+        .where((line) => line.startsWith('- '))
+        .take(maxItems)
+        .join('\n');
+  }
+
+  static String _headTail(
+    List<int> runes, {
+    required int keepRunes,
+    required String marker,
+    required double headFraction,
+  }) {
+    if (keepRunes >= runes.length) return String.fromCharCodes(runes);
+    final safeKeep = math.max(0, keepRunes);
+    final head = (safeKeep * headFraction).floor().clamp(0, safeKeep).toInt();
+    final tail = safeKeep - head;
+    final start = String.fromCharCodes(runes.take(head)).trimRight();
+    final end = String.fromCharCodes(
+      tail <= 0 ? const <int>[] : runes.skip(runes.length - tail),
+    ).trimLeft();
+    return '$start$marker$end';
+  }
+}
+
 final class NazaContextManager {
   NazaContextManager._();
 
@@ -6067,6 +6415,11 @@ final class NazaContextManager {
     required NazaActionProfile actionProfile,
     NazaMemoryAllocation? memoryAllocation,
   }) {
+    final boundedUserText = NazaPromptBudget.compactText(
+      userText,
+      maxChars: NazaAppConfig.currentTaskMaxChars,
+      marker: '\n[...current task middle compacted for model window...]\n',
+    );
     final memoryBlock = memoryAllocation?.contextBlock.trim() ?? '';
     var ragSection = memoryBlock.isEmpty
         ? '''
@@ -6075,10 +6428,10 @@ source=local-encrypted-vector-memory
 status=no relevant memory allocated
 [/rag]'''
         : memoryBlock;
-    var shrinkApplied = false;
+    var shrinkApplied = boundedUserText != userText;
 
     final baseWithoutRag = _basePrompt(
-      userText: userText,
+      userText: boundedUserText,
       route: route,
       actionProfile: actionProfile,
       contextSection: '',
@@ -6101,7 +6454,7 @@ status=no relevant memory allocated
     }
 
     var prompt = _basePrompt(
-      userText: userText,
+      userText: boundedUserText,
       route: route,
       actionProfile: actionProfile,
       contextSection: _contextBlock(
@@ -6125,7 +6478,7 @@ status=no relevant memory allocated
       );
       shrinkApplied = true;
       prompt = _basePrompt(
-        userText: userText,
+        userText: boundedUserText,
         route: route,
         actionProfile: actionProfile,
         contextSection: _contextBlock(
@@ -6138,11 +6491,29 @@ status=no relevant memory allocated
       );
     }
 
-    final used = math.min(prompt.length, NazaAppConfig.contextInputBudgetChars);
+    final charBoundedPrompt = NazaPromptBudget.compactText(
+      prompt,
+      maxChars: NazaAppConfig.contextInputBudgetChars,
+      marker:
+          '\n[/rag]\n[prompt middle compacted for local model window]\n[current_task]\n',
+    );
+    final fittedPrompt = NazaPromptBudget.fitPrompt(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      prompt: charBoundedPrompt,
+      marker:
+          '\n[/rag]\n[prompt middle compacted for local model window]\n[current_task]\n',
+      headFraction: 0.38,
+    );
+    if (fittedPrompt != prompt) shrinkApplied = true;
+    prompt = shrinkApplied
+        ? fittedPrompt.replaceFirst(
+            'shrink_applied=false',
+            'shrink_applied=true',
+          )
+        : fittedPrompt;
+    final used = prompt.length;
     return NazaContextFrame(
-      prompt: prompt.length <= NazaAppConfig.contextInputBudgetChars
-          ? prompt
-          : prompt.substring(0, NazaAppConfig.contextInputBudgetChars),
+      prompt: prompt,
       budgetChars: NazaAppConfig.contextInputBudgetChars,
       usedChars: used,
       fillRatio: (used / NazaAppConfig.contextInputBudgetChars)
@@ -6150,6 +6521,39 @@ status=no relevant memory allocated
           .toDouble(),
       shrinkApplied: shrinkApplied,
       rotatedChunks: memoryAllocation?.rotatedChunks ?? 0,
+    );
+  }
+
+  static String emergencyTaskPrompt({
+    required String userText,
+    required NazaRoute route,
+    required NazaActionProfile actionProfile,
+  }) {
+    final boundedUserText = NazaPromptBudget.compactText(
+      userText,
+      maxChars: 1200,
+      marker: '\n[...task middle compacted...]\n',
+    );
+    final prompt =
+        '''
+[bounded_task]
+route=${route.label}
+mode=${actionProfile.label}
+task=${actionProfile.taskSummary}
+required=
+${actionProfile.actions.take(3).map((item) => '- $item').join('\n')}
+constraints=
+${actionProfile.constraints.take(3).map((item) => '- $item').join('\n')}
+chunk_policy=Produce the first coherent artifact chunk only. The host will request later chunks with exact cursor state. Do not try to fit the entire long artifact in this response.
+[[USER_INPUT]]
+${_escapedUserInput(boundedUserText)}
+[[/USER_INPUT]]
+[/bounded_task]
+''';
+    return NazaPromptBudget.fitPrompt(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      prompt: prompt,
+      headFraction: 0.30,
     );
   }
 
@@ -6525,7 +6929,10 @@ final class NazaLocalGemma {
           )
         : NazaMemoryAllocation.disabled();
     final maxContinuations = maxContinuationsOverride == null
-        ? await _savedMaxContinuations()
+        ? NazaContinuationEngine.recommendedMaxPasses(
+            trimmed,
+            configuredPasses: await _savedMaxContinuations(),
+          )
         : NazaGenerationSettings.normalizeMaxContinuations(
             maxContinuationsOverride,
           );
@@ -6562,14 +6969,12 @@ final class NazaLocalGemma {
         actionProfile: actionProfile,
         memoryAllocation: memoryAllocation,
       );
-      if (memoryAllocation.shouldResetNativeContext) {
-        generation.value = generation.value.copyWith(
-          stage: contextFrame.shrinkApplied
-              ? 'shrinking rotating context'
-              : 'allocating rotating context',
-        );
-        await _replaceChatSessionForAllocatedMemory();
-      }
+      generation.value = generation.value.copyWith(
+        stage: contextFrame.shrinkApplied
+            ? 'opening compact bounded context'
+            : 'opening bounded context',
+      );
+      await _replaceChatSessionForBoundedTurn();
 
       generation.value = generation.value.copyWith(stage: 'submitting prompt');
       await _addQueryChunkWithTimeout(
@@ -6578,10 +6983,33 @@ final class NazaLocalGemma {
         label: 'local prompt',
       );
 
-      var stream = await _streamResponse(
-        generationId: generationId,
-        onPartial: onPartial,
-      );
+      late NazaStreamResult stream;
+      try {
+        stream = await _streamResponse(
+          generationId: generationId,
+          onPartial: onPartial,
+        );
+      } catch (error) {
+        if (!_isInputWindowError(error)) rethrow;
+        generation.value = generation.value.copyWith(
+          stage: 'retrying with emergency task capsule',
+        );
+        await _replaceChatSessionForBoundedTurn();
+        final emergencyPrompt = NazaContextManager.emergencyTaskPrompt(
+          userText: trimmed,
+          route: route,
+          actionProfile: actionProfile,
+        );
+        await _addQueryChunkWithTimeout(
+          _chat,
+          Message.text(text: emergencyPrompt, isUser: true),
+          label: 'emergency bounded prompt',
+        );
+        stream = await _streamResponse(
+          generationId: generationId,
+          onPartial: onPartial,
+        );
+      }
       var clean = stream.text;
 
       if (_cancelledGeneration == generationId) {
@@ -6781,9 +7209,10 @@ final class NazaLocalGemma {
           systemInstruction: NazaAppConfig.systemInstruction,
           maxOutputTokens: NazaAppConfig.continuationOutputTokens,
         );
+        final fittedPrompt = NazaPromptBudget.fitContinuationPrompt(prompt);
         await _addQueryChunkWithTimeout(
           continuationChat,
-          Message.text(text: prompt, isUser: true),
+          Message.text(text: fittedPrompt, isUser: true),
           label: 'continuation prompt',
         );
         return await _streamResponse(
@@ -6815,6 +7244,14 @@ final class NazaLocalGemma {
     final text = error.toString().toLowerCase();
     return text.contains('session is closed') ||
         text.contains('bad state') && text.contains('closed');
+  }
+
+  bool _isInputWindowError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('input token ids are too long') ||
+        text.contains('maximum number of tokens allowed') ||
+        text.contains('invalid_argument') &&
+            (text.contains('token') || text.contains('context'));
   }
 
   Future<void> _refreshPrimaryChatAfterContinuation() async {
@@ -6861,7 +7298,7 @@ final class NazaLocalGemma {
     }
   }
 
-  Future<void> _replaceChatSessionForAllocatedMemory() async {
+  Future<void> _replaceChatSessionForBoundedTurn() async {
     final chat = _chat;
     _chat = null;
 
@@ -6872,7 +7309,7 @@ final class NazaLocalGemma {
     } catch (_) {}
 
     if (_model == null) {
-      throw StateError('Model closed while allocating long-session memory.');
+      throw StateError('Model closed while rotating the bounded chat context.');
     }
 
     _chat = await _createChatWithTimeout(
@@ -6941,9 +7378,13 @@ final class NazaLocalGemma {
       generation.value = generation.value.copyWith(
         stage: 'submitting voice prompt',
       );
+      final voicePrompt = NazaPromptBudget.fitPrompt(
+        systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
+        prompt: _buildVoicePrompt(trimmed, route),
+      );
       await _addQueryChunkWithTimeout(
         voiceChat,
-        Message.text(text: _buildVoicePrompt(trimmed, route), isUser: true),
+        Message.text(text: voicePrompt, isUser: true),
         label: 'voice prompt',
       );
 
