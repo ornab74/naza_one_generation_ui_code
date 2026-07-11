@@ -1498,6 +1498,532 @@ $uniqueSuffix''';
     });
   });
 
+  group('hierarchical artifact continuation state', () {
+    test('builds deterministic graph identifiers and order per session', () {
+      const userText =
+          'write a complete Python command line application that summarizes log files';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+
+      final first = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final second = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+
+      final firstIds = first.graph.nodes
+          .map((node) => node.id)
+          .toList(growable: false);
+      final secondIds = second.graph.nodes
+          .map((node) => node.id)
+          .toList(growable: false);
+      expect(firstIds, secondIds);
+      expect(first.graph.activeNodeId, second.graph.activeNodeId);
+      expect(
+        firstIds,
+        orderedEquals(const [
+          'code-foundation',
+          'code-definitions',
+          'code-integration',
+          'code-orchestration',
+          'code-verification',
+        ]),
+      );
+    });
+
+    test('uses a public-surface node for import-safe Python libraries', () {
+      const userText =
+          'write a complete reusable Python library module for temperature conversion';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final ids = session.graph.nodes
+          .map((node) => node.id)
+          .toList(growable: false);
+
+      expect(ids, contains('code-public-surface'));
+      expect(ids, isNot(contains('code-orchestration')));
+    });
+
+    test(
+      'keeps an open Python function as the semantic unit and hard budget',
+      () {
+        const userText =
+            'write a complete Python CLI with argparse that summarizes log files';
+        const partial = '''
+from pathlib import Path
+
+def collect_files(root: Path):
+    files = []
+    for path in root.rglob("*.log"):
+        if path.is_file():
+            files.append(path)
+''';
+        const decision = NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'token-ceiling+open-code-scope',
+          confidence: 0.94,
+          completedSummary: 'The CLI is inside its file collection function.',
+          tail: partial,
+        );
+        final route = NazaQuantumRouter.route(userText);
+        final profile = NazaActionSelector.select(userText, route);
+        final session = NazaArtifactSession.start(
+          originalUserText: userText,
+          actionProfile: profile,
+        );
+
+        final context = session.preparePass(
+          accumulatedReply: partial,
+          decision: decision,
+          pass: 1,
+          maxPasses: 6,
+        );
+        final plan = NazaContinuationEngine.planChunk(
+          originalUserText: userText,
+          actionProfile: profile,
+          decision: context.completion.toLegacyDecision(),
+          accumulatedReply: partial,
+        );
+
+        expect(
+          context.memory.structureState,
+          contains('active_scope=function collect_files'),
+        );
+        expect(context.contract.unitId, endsWith(':open-cursor'));
+        expect(context.contract.unitType, 'active-construct');
+        expect(
+          context.contract.effectiveHardOutputTokens,
+          plan.maxOutputTokens,
+        );
+      },
+    );
+
+    test('prioritizes an open code scope over a missing deliverable', () {
+      const userText = 'write a complete 600 line Python script';
+      const partial = '''
+def render_report(rows):
+    for row in rows:
+        if row.is_valid:
+            print(row.name)
+''';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+
+      final assessment = NazaContinuationEngine.classify(
+        text: partial,
+        stream: const NazaStreamResult(
+          text: partial,
+          estimatedTokens: 48,
+          maxTokens: NazaAppConfig.outputTokens,
+          nearTokenCeiling: false,
+        ),
+        actionProfile: profile,
+        pass: 1,
+        originalUserText: userText,
+        legacyDecision: const NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'open-code-scope+underfilled-requested-artifact',
+          confidence: 0.93,
+          completedSummary: 'The report renderer is still open.',
+          tail: partial,
+        ),
+      );
+
+      expect(assessment.primary, NazaCompletionKind.openCodeScope);
+      expect(
+        assessment.signals,
+        contains(NazaCompletionKind.missingDeliverable),
+      );
+      expect(assessment.hardSignal, isTrue);
+    });
+
+    test('does not classify a completed short bullet as an open list', () {
+      const userText = 'give one short status bullet';
+      const reply = '- Ready.';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+
+      final assessment = NazaContinuationEngine.classify(
+        text: reply,
+        stream: const NazaStreamResult(
+          text: reply,
+          estimatedTokens: 3,
+          maxTokens: NazaAppConfig.outputTokens,
+          nearTokenCeiling: false,
+        ),
+        actionProfile: profile,
+        pass: 1,
+        originalUserText: userText,
+        legacyDecision: const NazaContinuationDecision(
+          shouldContinue: false,
+          reason: 'complete-boundary',
+          confidence: 0,
+          completedSummary: reply,
+          tail: reply,
+        ),
+      );
+
+      expect(assessment.primary, NazaCompletionKind.complete);
+      expect(assessment.signals, isNot(contains(NazaCompletionKind.openList)));
+      expect(assessment.shouldContinue, isFalse);
+    });
+
+    test(
+      'bounded continuation capsule retains artifact state and exact suffix',
+      () {
+        const userText =
+            'write a complete 600 line Python CLI that processes records';
+        final noisyBody = List.generate(
+          900,
+          (index) =>
+              '    transformed_${index.toString().padLeft(3, '0')} = transform(source_${index.toString().padLeft(3, '0')})',
+        ).join('\n');
+        const exactSuffix =
+            '    FINAL_EXACT_CURSOR_SENTINEL = resolve_pending_record(record_id)';
+        final partial =
+            '''
+```python
+def process_records(records):
+$noisyBody
+$exactSuffix''';
+        final decision = NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'token-ceiling+open-code-fence+open-code-scope',
+          confidence: 0.98,
+          completedSummary: 'The record-processing CLI is mid-function.',
+          tail: partial,
+        );
+        final route = NazaQuantumRouter.route(userText);
+        final profile = NazaActionSelector.select(userText, route);
+        final session = NazaArtifactSession.start(
+          originalUserText: userText,
+          actionProfile: profile,
+        );
+        final context = session.preparePass(
+          accumulatedReply: partial,
+          decision: decision,
+          pass: 2,
+          maxPasses: 10,
+        );
+        final raw = NazaContinuationEngine.buildPrompt(
+          originalUserText: userText,
+          actionProfile: profile,
+          decision: decision,
+          pass: 2,
+          maxPasses: 10,
+          accumulatedReply: partial,
+          passContext: context,
+        );
+
+        final fitted = NazaPromptBudget.fitContinuationPrompt(raw);
+        const cursorStartMarker = '<<<NAZA_CONTINUATION_TAIL\n';
+        const cursorEndMarker = '\nNAZA_CONTINUATION_TAIL';
+        final cursorMarkerIndex = fitted.indexOf(cursorStartMarker);
+        final cursorStart = cursorMarkerIndex + cursorStartMarker.length;
+        final cursorEnd = fitted.indexOf(cursorEndMarker, cursorStart);
+        final exactCursor = fitted.substring(cursorStart, cursorEnd);
+
+        expect(fitted.length, lessThan(raw.length));
+        expect(fitted, contains('unit_id=${context.contract.unitId}'));
+        expect(fitted, contains('active_node=${context.graph.activeNodeId}'));
+        expect(fitted, contains('- model_context_tokens=3072'));
+        expect(cursorMarkerIndex, greaterThanOrEqualTo(0));
+        expect(cursorEnd, greaterThan(cursorStart));
+        expect(exactCursor, endsWith(exactSuffix));
+        expect(exactCursor, isNot(contains('compacted')));
+        expect(
+          NazaPromptBudget.fits(
+            systemInstruction: NazaAppConfig.systemInstruction,
+            prompt: fitted,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('hard-rejects a second Python main without mutating the prefix', () {
+      const userText = 'write a complete Python CLI with one main entrypoint';
+      const prefix = '''
+```python
+import argparse
+
+def parse_args():
+    return argparse.ArgumentParser().parse_args()
+
+def main():
+    args = parse_args()
+    print(args)
+''';
+      const continuation = '''
+def render_status():
+    return "ready"
+
+def main():
+    print(render_status())
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The CLI already has its execution path.',
+        tail: prefix,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final context = session.preparePass(
+        accumulatedReply: prefix,
+        decision: decision,
+        pass: 2,
+        maxPasses: 6,
+      );
+
+      final assembly = NazaContinuationEngine.assembleCandidate(
+        prefix: prefix,
+        continuation: continuation,
+        passContext: context,
+      );
+
+      expect(assembly.accepted, isFalse);
+      expect(assembly.reason, 'duplicate-unique-entrypoint');
+      expect(assembly.text, prefix);
+      expect(session.acceptedChunks, 0);
+    });
+
+    test('allows the first runApp call inside an existing Dart main', () {
+      const userText = 'write a complete Dart Flutter application';
+      const prefix = '''
+```dart
+void main() {
+''';
+      const continuation = '''
+  runApp(const App());
+}
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence+open-code-scope',
+        confidence: 0.94,
+        completedSummary: 'The Flutter entrypoint is open.',
+        tail: prefix,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final context = session.preparePass(
+        accumulatedReply: prefix,
+        decision: decision,
+        pass: 1,
+        maxPasses: 6,
+      );
+
+      final assembly = NazaContinuationEngine.assembleCandidate(
+        prefix: prefix,
+        continuation: continuation,
+        passContext: context,
+      );
+
+      expect(assembly.accepted, isTrue);
+      expect(assembly.text, contains('runApp(const App())'));
+    });
+
+    test('exposes Python delimiter diagnostics and fence state in memory', () {
+      const userText = 'write a complete Python CLI';
+      const partial = '''
+```python
+def main():
+    print("ready")
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The Python CLI code fence is open.',
+        tail: partial,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+
+      final context = session.preparePass(
+        accumulatedReply: partial,
+        decision: decision,
+        pass: 1,
+        maxPasses: 6,
+      );
+
+      expect(
+        context.memory.structureState,
+        contains('delimiter_diagnostics=valid'),
+      );
+      expect(context.memory.structureState, contains('fence=open'));
+    });
+
+    test('ranks a new active-node continuation above a setup replay', () {
+      const userText =
+          'write a complete fantasy chapter about Mira escaping the flooded archive';
+      const prefix = '''
+Mira forced the bronze hatch shut as water climbed the archive stairs. The map case remained trapped beneath the fallen shelf.
+
+Tomas reached for the case, but Mira caught his sleeve.
+''';
+      const good =
+          '"Leave it," she said. The next surge struck the hatch, forcing them both toward the service ladder.';
+      const replay =
+          'Mira forced the bronze hatch shut as water climbed the archive stairs. The map case remained trapped beneath the fallen shelf.';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+long-artifact-task',
+        confidence: 0.84,
+        completedSummary: 'Mira stopped Tomas from retrieving the map case.',
+        tail: prefix,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final context = session.preparePass(
+        accumulatedReply: prefix,
+        decision: decision,
+        pass: 2,
+        maxPasses: 8,
+      );
+
+      final ranked = NazaContinuationEngine.rankCandidates(
+        candidates: const [good, replay],
+        prefix: prefix,
+        originalUserText: userText,
+        passContext: context,
+      );
+      final tied = NazaContinuationEngine.rankCandidates(
+        candidates: const [good, good],
+        prefix: prefix,
+        originalUserText: userText,
+        passContext: context,
+      );
+
+      expect(ranked.first.index, 0);
+      expect(ranked.first.accepted, isTrue);
+      expect(ranked.last.total, lessThan(ranked.first.total));
+      expect(tied.map((candidate) => candidate.index), orderedEquals([0, 1]));
+    });
+
+    test(
+      'retains story ledgers and gives open dialogue a speaker-turn contract',
+      () {
+        const userText =
+            'write a complete third-person past-tense fantasy chapter about Mira and Tomas';
+        const partial = '''
+Mira held the brass locket against her ribs as she limped toward the sealed gate. Tomas knew nothing about the map hidden inside it, and the torchlight made his shadow lean toward her.
+
+Stone scraped beyond the arch. Mira caught Tomas by the sleeve and said, "If the gate opens
+''';
+        const decision = NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'token-ceiling+unfinished-sentence',
+          confidence: 0.92,
+          completedSummary:
+              'Mira is injured, carries the secret locket, and warns Tomas at the gate.',
+          tail: partial,
+        );
+        final route = NazaQuantumRouter.route(userText);
+        final profile = NazaActionSelector.select(userText, route);
+        final session = NazaArtifactSession.start(
+          originalUserText: userText,
+          actionProfile: profile,
+        );
+
+        final context = session.preparePass(
+          accumulatedReply: partial,
+          decision: decision,
+          pass: 1,
+          maxPasses: 8,
+        );
+        final continuityFact = context.coherence.mutableState.firstWhere(
+          (fact) => fact.key == 'continuity',
+        );
+
+        expect(context.completion.primary, NazaCompletionKind.openDialogue);
+        expect(context.contract.unitType, 'speaker-turn');
+        expect(context.contract.effectiveStoppingBoundary, contains('speaker'));
+        expect(context.memory.continuityState, contains('story_ledger='));
+        expect(continuityFact.value, contains('object:'));
+        expect(continuityFact.value, contains('physical:'));
+        expect(continuityFact.value, contains('knowledge:'));
+        expect(
+          context.coherence.invariants.any(
+            (fact) =>
+                fact.value.contains('third-person') &&
+                fact.value.contains('past-tense'),
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('keeps research method blocked until the model is complete', () {
+      const userText =
+          'write a complete research paper about deterministic local inference routing';
+      const scopedReply = '''
+# Scope
+This paper studies deterministic local inference routing.
+It limits the analysis to offline mobile execution.
+The central question concerns coherent long-output generation.
+The evaluation boundary excludes remote inference services.
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'underfilled-requested-artifact',
+        confidence: 0.82,
+        completedSummary:
+            'The paper scope and central question are established.',
+        tail: scopedReply,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+
+      session.preparePass(
+        accumulatedReply: scopedReply,
+        decision: decision,
+        pass: 1,
+        maxPasses: 8,
+      );
+      final model = session.graph.nodes.firstWhere(
+        (node) => node.id == 'research-model',
+      );
+      final method = session.graph.nodes.firstWhere(
+        (node) => node.id == 'research-method',
+      );
+
+      expect(model.status, NazaArtifactNodeStatus.active);
+      expect(method.status, NazaArtifactNodeStatus.blocked);
+      expect(method.dependencies, contains('research-model'));
+    });
+  });
+
   group('NazaMemoryChunk', () {
     test('hydrates legacy chunks with access metadata defaults', () {
       final createdAt = DateTime.utc(2026, 1, 2, 3, 4, 5);

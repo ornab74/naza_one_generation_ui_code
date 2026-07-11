@@ -571,25 +571,497 @@ final class NazaContinuationChunkPlan {
   final String goal;
   final String boundary;
   final int maxOutputTokens;
+  final String unitId;
+  final String unitType;
+  final String openingStateFingerprint;
+  final String requiredOutcome;
+  final List<String> requiredReferences;
+  final String legalStoppingBoundary;
+  final int softOutputTokens;
+  final int hardOutputTokens;
 
   const NazaContinuationChunkPlan({
     required this.phase,
     required this.goal,
     required this.boundary,
     required this.maxOutputTokens,
+    this.unitId = 'current-unit',
+    this.unitType = 'artifact-unit',
+    this.openingStateFingerprint = '',
+    this.requiredOutcome = '',
+    this.requiredReferences = const [],
+    this.legalStoppingBoundary = '',
+    this.softOutputTokens = 0,
+    this.hardOutputTokens = 0,
   });
+
+  int get effectiveSoftOutputTokens => softOutputTokens > 0
+      ? softOutputTokens
+      : (maxOutputTokens * 0.75).round();
+
+  int get effectiveHardOutputTokens =>
+      hardOutputTokens > 0 ? hardOutputTokens : maxOutputTokens;
+
+  String get effectiveStoppingBoundary =>
+      legalStoppingBoundary.isNotEmpty ? legalStoppingBoundary : boundary;
+
+  NazaContinuationChunkPlan withContract({
+    required String unitId,
+    required String unitType,
+    required String openingStateFingerprint,
+    required String requiredOutcome,
+    required List<String> requiredReferences,
+  }) {
+    return NazaContinuationChunkPlan(
+      phase: phase,
+      goal: goal,
+      boundary: boundary,
+      maxOutputTokens: maxOutputTokens,
+      unitId: unitId,
+      unitType: unitType,
+      openingStateFingerprint: openingStateFingerprint,
+      requiredOutcome: requiredOutcome,
+      requiredReferences: List.unmodifiable(requiredReferences),
+      legalStoppingBoundary: boundary,
+      softOutputTokens: (maxOutputTokens * 0.75).round(),
+      hardOutputTokens: maxOutputTokens,
+    );
+  }
 }
 
 final class NazaContinuationAssembly {
   final bool accepted;
   final String text;
   final String reason;
+  final bool boundarySatisfied;
+  final String? completedUnitId;
+  final List<String> violations;
 
   const NazaContinuationAssembly({
     required this.accepted,
     required this.text,
     required this.reason,
+    this.boundarySatisfied = false,
+    this.completedUnitId,
+    this.violations = const [],
   });
+}
+
+enum NazaArtifactNodeStatus { pending, ready, active, complete, blocked }
+
+enum NazaLedgerProvenance { user, artifact, derived }
+
+final class NazaArtifactNode {
+  final String id;
+  final String title;
+  final String purpose;
+  final List<String> dependencies;
+  final List<String> requiredFacts;
+  final List<String> introducedSymbols;
+  final List<String> requiredOutcomes;
+  final List<String> requiredReferences;
+  final List<String> evidenceFingerprints;
+  final NazaArtifactNodeStatus status;
+
+  const NazaArtifactNode({
+    required this.id,
+    required this.title,
+    required this.purpose,
+    this.dependencies = const [],
+    this.requiredFacts = const [],
+    this.introducedSymbols = const [],
+    this.requiredOutcomes = const [],
+    this.requiredReferences = const [],
+    this.evidenceFingerprints = const [],
+    this.status = NazaArtifactNodeStatus.pending,
+  });
+
+  NazaArtifactNode copyWith({
+    List<String>? introducedSymbols,
+    List<String>? evidenceFingerprints,
+    NazaArtifactNodeStatus? status,
+  }) {
+    return NazaArtifactNode(
+      id: id,
+      title: title,
+      purpose: purpose,
+      dependencies: dependencies,
+      requiredFacts: requiredFacts,
+      introducedSymbols: introducedSymbols ?? this.introducedSymbols,
+      requiredOutcomes: requiredOutcomes,
+      requiredReferences: requiredReferences,
+      evidenceFingerprints: evidenceFingerprints ?? this.evidenceFingerprints,
+      status: status ?? this.status,
+    );
+  }
+}
+
+final class NazaArtifactGraph {
+  final String artifactKind;
+  final bool enforced;
+  final List<NazaArtifactNode> nodes;
+  final String? activeNodeId;
+
+  const NazaArtifactGraph({
+    required this.artifactKind,
+    required this.enforced,
+    required this.nodes,
+    required this.activeNodeId,
+  });
+
+  NazaArtifactNode? get activeNode {
+    for (final node in nodes) {
+      if (node.id == activeNodeId) return node;
+    }
+    return null;
+  }
+
+  bool get hasUnfinishedNodes =>
+      nodes.any((node) => node.status != NazaArtifactNodeStatus.complete);
+
+  List<NazaArtifactNode> get readyNodes => nodes
+      .where(
+        (node) =>
+            node.status == NazaArtifactNodeStatus.ready ||
+            node.status == NazaArtifactNodeStatus.active,
+      )
+      .toList(growable: false);
+
+  String toPromptBlock() {
+    final active = activeNode;
+    final completed = nodes
+        .where((node) => node.status == NazaArtifactNodeStatus.complete)
+        .map((node) => node.id)
+        .join(',');
+    final ready = readyNodes.map((node) => node.id).join(',');
+    final blocked = nodes
+        .where((node) => node.status == NazaArtifactNodeStatus.blocked)
+        .map(
+          (node) =>
+              '${node.id}<-${node.dependencies.where((dependency) => !completed.split(',').contains(dependency)).join('+')}',
+        )
+        .join(',');
+    return '''
+[artifact_graph]
+artifact_kind=$artifactKind
+enforced=${enforced ? 'yes' : 'no'}
+active_node=${active?.id ?? 'none'}
+active_title=${active?.title ?? 'none'}
+active_purpose=${active?.purpose ?? 'none'}
+completed_nodes=${completed.isEmpty ? 'none' : completed}
+ready_nodes=${ready.isEmpty ? 'none' : ready}
+blocked_nodes=${blocked.isEmpty ? 'none' : blocked}
+[/artifact_graph]''';
+  }
+}
+
+final class NazaCoherenceFact {
+  final String key;
+  final String value;
+  final NazaLedgerProvenance provenance;
+  final int evidenceOffset;
+  final double confidence;
+
+  const NazaCoherenceFact({
+    required this.key,
+    required this.value,
+    required this.provenance,
+    this.evidenceOffset = -1,
+    this.confidence = 1,
+  });
+}
+
+final class NazaDesignDecision {
+  final String id;
+  final String decision;
+  final String rationale;
+  final NazaLedgerProvenance provenance;
+
+  const NazaDesignDecision({
+    required this.id,
+    required this.decision,
+    required this.rationale,
+    required this.provenance,
+  });
+}
+
+final class NazaOpenThread {
+  final String id;
+  final String description;
+  final String ownerNodeId;
+  final bool resolved;
+
+  const NazaOpenThread({
+    required this.id,
+    required this.description,
+    required this.ownerNodeId,
+    this.resolved = false,
+  });
+}
+
+final class NazaRelation {
+  final String sourceId;
+  final String relation;
+  final String targetId;
+
+  const NazaRelation({
+    required this.sourceId,
+    required this.relation,
+    required this.targetId,
+  });
+}
+
+final class NazaCoherenceState {
+  final List<NazaCoherenceFact> immutableFacts;
+  final List<NazaCoherenceFact> mutableState;
+  final List<NazaDesignDecision> decisions;
+  final List<NazaCoherenceFact> invariants;
+  final List<NazaOpenThread> openThreads;
+  final List<NazaRelation> relations;
+  final String globalSummary;
+  final String sectionSummary;
+  final String currentUnitSummary;
+
+  const NazaCoherenceState({
+    required this.immutableFacts,
+    required this.mutableState,
+    required this.decisions,
+    required this.invariants,
+    required this.openThreads,
+    required this.relations,
+    required this.globalSummary,
+    required this.sectionSummary,
+    required this.currentUnitSummary,
+  });
+
+  String toPromptBlock() {
+    String facts(List<NazaCoherenceFact> values, {int maxItems = 6}) => values
+        .take(maxItems)
+        .map((fact) => '- ${fact.key}=${fact.value}')
+        .join('\n');
+    final threadText = openThreads
+        .where((thread) => !thread.resolved)
+        .take(5)
+        .map((thread) => '- ${thread.ownerNodeId}: ${thread.description}')
+        .join('\n');
+    final decisionText = decisions
+        .take(4)
+        .map((item) => '- ${item.id}=${item.decision}')
+        .join('\n');
+    return '''
+[coherence_ledgers]
+global_summary=$globalSummary
+section_summary=$sectionSummary
+current_unit_summary=$currentUnitSummary
+immutable_facts=
+${facts(immutableFacts)}
+invariants=
+${facts(invariants)}
+decisions=
+${decisionText.isEmpty ? '- none' : decisionText}
+mutable_state=
+${facts(mutableState, maxItems: 4)}
+open_threads=
+${threadText.isEmpty ? '- none' : threadText}
+[/coherence_ledgers]''';
+  }
+}
+
+enum NazaCompletionKind {
+  midToken,
+  midSentence,
+  openDialogue,
+  openCodeFence,
+  openCodeScope,
+  openList,
+  openTable,
+  openEquation,
+  openArgument,
+  missingDeliverable,
+  underdevelopedSection,
+  unresolvedReference,
+  complete,
+}
+
+final class NazaCompletionAssessment {
+  final NazaCompletionKind primary;
+  final List<NazaCompletionKind> signals;
+  final String activeUnit;
+  final List<String> missingRequirements;
+  final String safeBoundary;
+  final int recommendedTokens;
+  final double continuationScore;
+  final double confidence;
+  final bool hardSignal;
+  final bool shouldContinue;
+  final NazaContinuationDecision legacyDecision;
+
+  const NazaCompletionAssessment({
+    required this.primary,
+    required this.signals,
+    required this.activeUnit,
+    required this.missingRequirements,
+    required this.safeBoundary,
+    required this.recommendedTokens,
+    required this.continuationScore,
+    required this.confidence,
+    required this.hardSignal,
+    required this.shouldContinue,
+    required this.legacyDecision,
+  });
+
+  NazaContinuationDecision toLegacyDecision() => legacyDecision.copyWith(
+    shouldContinue: shouldContinue,
+    confidence: math.max(legacyDecision.confidence, continuationScore),
+  );
+}
+
+final class NazaContinuationPassContext {
+  final NazaContinuationTaskMemory memory;
+  final NazaArtifactGraph graph;
+  final NazaCoherenceState coherence;
+  final NazaContinuationChunkPlan contract;
+  final NazaCompletionAssessment completion;
+
+  const NazaContinuationPassContext({
+    required this.memory,
+    required this.graph,
+    required this.coherence,
+    required this.contract,
+    required this.completion,
+  });
+}
+
+enum NazaDiscourseRelation {
+  define,
+  explain,
+  support,
+  contrast,
+  example,
+  derive,
+  qualify,
+  conclude,
+  transition,
+  continueUnit,
+}
+
+final class NazaContentFingerprint {
+  final Set<String> entities;
+  final Set<String> claims;
+  final Set<String> keywords;
+  final NazaDiscourseRelation discoursePurpose;
+
+  const NazaContentFingerprint({
+    required this.entities,
+    required this.claims,
+    required this.keywords,
+    required this.discoursePurpose,
+  });
+
+  double similarityTo(NazaContentFingerprint other) {
+    final keywordSimilarity = _jaccard(keywords, other.keywords);
+    final entitySimilarity = _jaccard(entities, other.entities);
+    final claimSimilarity = _jaccard(claims, other.claims);
+    final discourseSimilarity = discoursePurpose == other.discoursePurpose
+        ? 1.0
+        : 0.0;
+    return (keywordSimilarity * 0.55 +
+            claimSimilarity * 0.25 +
+            entitySimilarity * 0.10 +
+            discourseSimilarity * 0.10)
+        .clamp(0.0, 1.0)
+        .toDouble();
+  }
+
+  static double _jaccard(Set<String> left, Set<String> right) {
+    if (left.isEmpty && right.isEmpty) return 0;
+    final union = left.union(right);
+    if (union.isEmpty) return 0;
+    return left.intersection(right).length / union.length;
+  }
+}
+
+enum NazaCandidateViolationKind {
+  noDelta,
+  structuralRegression,
+  duplicateEntrypoint,
+  languageDrift,
+  continuationMetaText,
+  dominantReplay,
+  lowPlanProgress,
+  styleDrift,
+}
+
+final class NazaCandidateViolation {
+  final NazaCandidateViolationKind kind;
+  final String message;
+  final bool hard;
+
+  const NazaCandidateViolation({
+    required this.kind,
+    required this.message,
+    required this.hard,
+  });
+}
+
+final class NazaCandidateScoreBreakdown {
+  final double localSeam;
+  final double structure;
+  final double planProgress;
+  final double factContinuity;
+  final double style;
+  final double novelty;
+  final double completionProgress;
+
+  const NazaCandidateScoreBreakdown({
+    required this.localSeam,
+    required this.structure,
+    required this.planProgress,
+    required this.factContinuity,
+    required this.style,
+    required this.novelty,
+    required this.completionProgress,
+  });
+
+  double get weightedTotal =>
+      (localSeam * 0.25 +
+              structure * 0.20 +
+              planProgress * 0.15 +
+              factContinuity * 0.15 +
+              style * 0.10 +
+              novelty * 0.10 +
+              completionProgress * 0.05)
+          .clamp(0.0, 1.0)
+          .toDouble();
+}
+
+final class NazaCandidateEvaluation {
+  final int index;
+  final NazaContinuationAssembly assembly;
+  final String acceptedDelta;
+  final double total;
+  final NazaCandidateScoreBreakdown breakdown;
+  final List<NazaCandidateViolation> violations;
+
+  const NazaCandidateEvaluation({
+    required this.index,
+    required this.assembly,
+    required this.acceptedDelta,
+    required this.total,
+    required this.breakdown,
+    required this.violations,
+  });
+
+  bool get accepted =>
+      assembly.accepted && !violations.any((violation) => violation.hard);
+
+  String get rejectionSummary {
+    final messages = violations
+        .map((violation) => violation.message)
+        .join('; ');
+    if (messages.isNotEmpty) return messages;
+    return 'candidate coherence score=${total.toStringAsFixed(3)}';
+  }
 }
 
 final class NazaContinuationTaskMemory {
@@ -636,7 +1108,7 @@ final class NazaContinuationTaskMemory {
   String toPromptBlock() {
     return '''
 [task_memory]
-source=local-continuation-task-memory-agent-v5
+source=local-continuation-task-memory-agent-v6
 task_type=$taskType
 target_language=$targetLanguage
 domain=$domain
@@ -1886,7 +2358,7 @@ final class NazaContinuationTaskAgent {
         narrative?.form ??
         'not-applicable';
     final structureState = python != null
-        ? '${python.structureState}; module_phase=${code?.modulePhase ?? 'unknown'}; open_delimiters=${code?.delimiterState ?? 'unknown'}'
+        ? '${python.structureState}; module_phase=${code?.modulePhase ?? 'unknown'}; open_delimiters=${code?.delimiterState ?? 'unknown'}; delimiter_diagnostics=${code?.delimiters.diagnosticState ?? 'unknown'}; open_string=${code?.hasOpenString == true ? 'yes' : 'no'}; fence=${code?.insideCodeFence == true ? 'open' : 'closed'}'
         : code?.structureState ?? narrative?.structureState ?? 'not-applicable';
     final progress = _progressPercent(
       original: lowerOriginal,
@@ -5526,6 +5998,749 @@ instructions=Preserve durable facts, user intent, decisions, constraints, file n
   }
 }
 
+final class NazaArtifactSession {
+  final String originalUserText;
+  final NazaActionProfile actionProfile;
+  NazaArtifactGraph _graph;
+  NazaCoherenceState _coherence;
+  String _lastAcceptedText;
+  var _acceptedChunks = 0;
+
+  NazaArtifactSession._({
+    required this.originalUserText,
+    required this.actionProfile,
+    required this._graph,
+    required this._coherence,
+  }) : _lastAcceptedText = '';
+
+  factory NazaArtifactSession.start({
+    required String originalUserText,
+    required NazaActionProfile actionProfile,
+  }) {
+    final seedDecision = const NazaContinuationDecision(
+      shouldContinue: true,
+      reason: 'initial-artifact-plan',
+      confidence: 0.8,
+      completedSummary: '',
+      tail: '',
+    );
+    final memory = NazaContinuationTaskAgent.build(
+      originalUserText: originalUserText,
+      actionProfile: actionProfile,
+      accumulatedReply: '',
+      decision: seedDecision,
+      pass: 0,
+      maxPasses: 1,
+    );
+    final graph = _initialGraph(originalUserText, memory);
+    final coherence = _buildCoherence(
+      originalUserText: originalUserText,
+      memory: memory,
+      graph: graph,
+      decision: seedDecision,
+    );
+    return NazaArtifactSession._(
+      originalUserText: originalUserText,
+      actionProfile: actionProfile,
+      graph: graph,
+      coherence: coherence,
+    );
+  }
+
+  NazaArtifactGraph get graph => _graph;
+  NazaCoherenceState get coherence => _coherence;
+  int get acceptedChunks => _acceptedChunks;
+
+  String initialPromptBlock() {
+    if (!_isHierarchicalTask(_graph.artifactKind)) return '';
+    return '''
+[artifact_generation_control]
+mode=hierarchical-semantic-units
+Build one coherent artifact in dependency order. Begin with active_node, then proceed only to dependency-ready nodes. Do not print or explain this hidden graph.
+${_graph.toPromptBlock()}
+${_coherence.toPromptBlock()}
+[/artifact_generation_control]''';
+  }
+
+  NazaContinuationPassContext preparePass({
+    required String accumulatedReply,
+    required NazaContinuationDecision decision,
+    required int pass,
+    required int maxPasses,
+  }) {
+    if (_lastAcceptedText.isNotEmpty && accumulatedReply != _lastAcceptedText) {
+      // Only accepted assembly text is allowed to advance persistent state.
+      accumulatedReply = _lastAcceptedText;
+    }
+    final memory = NazaContinuationTaskAgent.build(
+      originalUserText: originalUserText,
+      actionProfile: actionProfile,
+      accumulatedReply: accumulatedReply,
+      decision: decision,
+      pass: pass,
+      maxPasses: maxPasses,
+    );
+    _graph = _refreshGraph(
+      graph: _graph,
+      reply: accumulatedReply,
+      memory: memory,
+      decision: decision,
+    );
+    _coherence = _buildCoherence(
+      originalUserText: originalUserText,
+      memory: memory,
+      graph: _graph,
+      decision: decision,
+    );
+    final completion = NazaContinuationEngine.classify(
+      text: accumulatedReply,
+      stream: NazaStreamResult(
+        text: accumulatedReply,
+        estimatedTokens: decision.reason.contains('token-ceiling')
+            ? NazaAppConfig.outputTokens
+            : math.min(
+                NazaAppConfig.outputTokens,
+                (accumulatedReply.length / 4).ceil(),
+              ),
+        maxTokens: NazaAppConfig.outputTokens,
+        nearTokenCeiling: decision.reason.contains('token-ceiling'),
+      ),
+      actionProfile: actionProfile,
+      pass: pass,
+      originalUserText: originalUserText,
+      artifactGraph: _graph,
+      taskMemory: memory,
+      legacyDecision: decision,
+    );
+    final basePlan = NazaContinuationEngine._planChunkFromMemory(
+      originalUserText: originalUserText,
+      decision: completion.toLegacyDecision(),
+      memory: memory,
+    );
+    final active = _graph.activeNode;
+    final hardCursor =
+        decision.reason.contains('partial-token') ||
+        decision.reason.contains('open-code-scope') ||
+        completion.primary == NazaCompletionKind.openDialogue ||
+        completion.primary == NazaCompletionKind.openList ||
+        completion.primary == NazaCompletionKind.openTable ||
+        completion.primary == NazaCompletionKind.openEquation;
+    final unitType = completion.primary == NazaCompletionKind.openDialogue
+        ? 'speaker-turn'
+        : hardCursor
+        ? 'active-construct'
+        : memory.taskType == 'coding'
+        ? _codeUnitType(active?.id)
+        : memory.taskType.contains('writing')
+        ? (completion.primary == NazaCompletionKind.openDialogue
+              ? 'speaker-turn'
+              : 'narrative-event')
+        : memory.taskType == 'research-science'
+        ? 'research-subsection'
+        : 'artifact-section';
+    final contract = basePlan.withContract(
+      unitId: hardCursor
+          ? '${active?.id ?? 'artifact'}:open-cursor'
+          : active?.id ?? 'artifact-completion',
+      unitType: unitType,
+      openingStateFingerprint: _fingerprint(
+        '${memory.structureState}|${memory.continuityState}|${memory.cursorState}',
+      ),
+      requiredOutcome: hardCursor
+          ? basePlan.goal
+          : active?.purpose ?? basePlan.goal,
+      requiredReferences: [...?active?.dependencies, ...?active?.requiredFacts],
+    );
+    return NazaContinuationPassContext(
+      memory: memory,
+      graph: _graph,
+      coherence: _coherence,
+      contract: contract,
+      completion: completion,
+    );
+  }
+
+  void accept(String assembledText) {
+    _lastAcceptedText = assembledText;
+    _acceptedChunks++;
+  }
+
+  void acceptInitial(String text) {
+    _lastAcceptedText = text;
+  }
+
+  static NazaArtifactGraph _initialGraph(
+    String original,
+    NazaContinuationTaskMemory memory,
+  ) {
+    final lower = original.toLowerCase();
+    final enforced =
+        RegExp(
+          r'\b(?:\d{2,5}\s*lines?|complete|full|entire|long-form|book|novel|chapter|paper|report)\b',
+          caseSensitive: false,
+        ).hasMatch(original) ||
+        lower.contains('all sections');
+    final explicit = _explicitNodes(original);
+    final nodes = explicit.length >= 2
+        ? explicit
+        : memory.taskType == 'coding'
+        ? _codeNodes(memory)
+        : memory.taskType.contains('writing')
+        ? _storyNodes(memory)
+        : memory.taskType == 'research-science'
+        ? _researchNodes()
+        : _generalNodes();
+    final initialized = <NazaArtifactNode>[];
+    for (var i = 0; i < nodes.length; i++) {
+      initialized.add(
+        nodes[i].copyWith(
+          status: i == 0
+              ? NazaArtifactNodeStatus.active
+              : NazaArtifactNodeStatus.blocked,
+        ),
+      );
+    }
+    return NazaArtifactGraph(
+      artifactKind: memory.artifactKind,
+      enforced: enforced,
+      nodes: List.unmodifiable(initialized),
+      activeNodeId: initialized.isEmpty ? null : initialized.first.id,
+    );
+  }
+
+  static List<NazaArtifactNode> _explicitNodes(String original) {
+    final units = <String>[];
+    for (final line in original.split(RegExp(r'\r\n?|\n'))) {
+      final match = RegExp(
+        r'^\s*(?:#{1,6}\s+|\d+[.)]\s+|[-*]\s+)(.{3,100})$',
+      ).firstMatch(line);
+      final title = match?.group(1)?.trim();
+      if (title != null && !units.contains(title)) units.add(title);
+    }
+    return List.generate(units.length, (index) {
+      final id = 'user-unit-${index + 1}';
+      return NazaArtifactNode(
+        id: id,
+        title: units[index],
+        purpose: 'complete the requested ${units[index]} unit',
+        dependencies: index == 0 ? const [] : ['user-unit-$index'],
+        requiredOutcomes: [units[index]],
+      );
+    });
+  }
+
+  static List<NazaArtifactNode> _codeNodes(NazaContinuationTaskMemory memory) {
+    final nodes = <NazaArtifactNode>[
+      const NazaArtifactNode(
+        id: 'code-foundation',
+        title: 'Foundation',
+        purpose:
+            'establish imports, configuration, constants, and core data contracts once',
+        requiredOutcomes: ['coherent setup without duplicate initialization'],
+      ),
+      const NazaArtifactNode(
+        id: 'code-definitions',
+        title: 'Core definitions',
+        purpose: 'complete connected types, functions, and core operations',
+        dependencies: ['code-foundation'],
+        requiredOutcomes: ['connected core symbol graph'],
+      ),
+      const NazaArtifactNode(
+        id: 'code-integration',
+        title: 'Integration and ownership',
+        purpose:
+            'connect definitions through callers, owners, values, handlers, or tests',
+        dependencies: ['code-definitions'],
+        requiredOutcomes: ['no loose restart fragments'],
+      ),
+    ];
+    final noEntrypoint =
+        memory.entrypointPolicy.contains('do not invent') ||
+        memory.entrypointPolicy.contains('test runner owns') ||
+        memory.entrypointPolicy.contains('no program entrypoint') ||
+        memory.entrypointPolicy.contains('add no main guard') ||
+        memory.artifactKind == 'library-module' ||
+        memory.artifactKind == 'python-module' ||
+        memory.artifactKind == 'test-suite';
+    nodes.add(
+      NazaArtifactNode(
+        id: noEntrypoint ? 'code-public-surface' : 'code-orchestration',
+        title: noEntrypoint ? 'Public surface' : 'Orchestration',
+        purpose: noEntrypoint
+            ? 'finish the reusable or test-owned public surface without startup side effects'
+            : 'connect the artifact through one native execution path and entrypoint',
+        dependencies: const ['code-integration'],
+        requiredOutcomes: [memory.entrypointPolicy],
+      ),
+    );
+    nodes.add(
+      NazaArtifactNode(
+        id: 'code-verification',
+        title: 'Verification and closure',
+        purpose:
+            'close syntax and deliver a coherent, independently usable artifact',
+        dependencies: [nodes.last.id],
+        requiredOutcomes: const [
+          'structural closure',
+          'requested deliverable present',
+        ],
+      ),
+    );
+    return nodes;
+  }
+
+  static List<NazaArtifactNode> _storyNodes(NazaContinuationTaskMemory memory) {
+    return const [
+      NazaArtifactNode(
+        id: 'story-continuity',
+        title: 'Scene continuity',
+        purpose:
+            'establish the active scene, entities, viewpoint, tense, and physical state',
+        requiredOutcomes: ['stable narrative state'],
+      ),
+      NazaArtifactNode(
+        id: 'story-pressure',
+        title: 'Pressure or complication',
+        purpose:
+            'introduce or sharpen the active obstacle without resetting the premise',
+        dependencies: ['story-continuity'],
+        requiredOutcomes: ['concrete obstacle or pressure'],
+      ),
+      NazaArtifactNode(
+        id: 'story-consequence',
+        title: 'Reaction and consequence',
+        purpose:
+            'carry the latest event through reaction, consequence, and a meaningful choice',
+        dependencies: ['story-pressure'],
+        requiredOutcomes: ['causal reaction and consequence'],
+      ),
+      NazaArtifactNode(
+        id: 'story-turn',
+        title: 'Scene turn',
+        purpose:
+            'complete a scene-level turn or transition while preserving world state',
+        dependencies: ['story-consequence'],
+        requiredOutcomes: ['earned scene turn'],
+      ),
+    ];
+  }
+
+  static List<NazaArtifactNode> _researchNodes() => const [
+    NazaArtifactNode(
+      id: 'research-scope',
+      title: 'Scope and question',
+      purpose:
+          'state the problem, scope, constraints, and central claim precisely',
+      requiredOutcomes: ['defined scope and question'],
+    ),
+    NazaArtifactNode(
+      id: 'research-model',
+      title: 'Definitions and model',
+      purpose:
+          'define terms, variables, assumptions, and the explanatory model before use',
+      dependencies: ['research-scope'],
+      requiredOutcomes: ['defined concepts and symbols'],
+    ),
+    NazaArtifactNode(
+      id: 'research-method',
+      title: 'Method and evidence',
+      purpose:
+          'present dependency-ready method, evidence, experiments, or examples',
+      dependencies: ['research-model'],
+      requiredOutcomes: ['method or evidence chain'],
+    ),
+    NazaArtifactNode(
+      id: 'research-analysis',
+      title: 'Analysis',
+      purpose:
+          'connect evidence to claims and distinguish observation from interpretation',
+      dependencies: ['research-method'],
+      requiredOutcomes: ['supported analysis'],
+    ),
+    NazaArtifactNode(
+      id: 'research-limitations',
+      title: 'Limitations and uncertainty',
+      purpose:
+          'qualify claims, assumptions, uncertainty, and unresolved questions',
+      dependencies: ['research-analysis'],
+      requiredOutcomes: ['explicit limitations'],
+    ),
+    NazaArtifactNode(
+      id: 'research-conclusion',
+      title: 'Conclusion',
+      purpose:
+          'resolve the central question without introducing unsupported new claims',
+      dependencies: ['research-limitations'],
+      requiredOutcomes: ['complete conclusion'],
+    ),
+  ];
+
+  static List<NazaArtifactNode> _generalNodes() => const [
+    NazaArtifactNode(
+      id: 'answer-core',
+      title: 'Core deliverable',
+      purpose: 'produce the requested central deliverable directly',
+    ),
+    NazaArtifactNode(
+      id: 'answer-support',
+      title: 'Support',
+      purpose:
+          'add only the evidence, explanation, or examples needed for completeness',
+      dependencies: ['answer-core'],
+    ),
+    NazaArtifactNode(
+      id: 'answer-closure',
+      title: 'Closure',
+      purpose:
+          'close remaining requirements without repeating the introduction',
+      dependencies: ['answer-support'],
+    ),
+  ];
+
+  static NazaArtifactGraph _refreshGraph({
+    required NazaArtifactGraph graph,
+    required String reply,
+    required NazaContinuationTaskMemory memory,
+    required NazaContinuationDecision decision,
+  }) {
+    final priorActive = graph.activeNodeId;
+    final completedIds = <String>{};
+    final evidenceById = <String, List<String>>{};
+    for (final node in graph.nodes) {
+      final wasComplete = node.status == NazaArtifactNodeStatus.complete;
+      final dependenciesComplete = node.dependencies.every(
+        completedIds.contains,
+      );
+      final keepOpen =
+          node.id == priorActive &&
+          (decision.reason.contains('partial-token') ||
+              decision.reason.contains('open-code-scope') ||
+              memory.structureState.contains('cursor=inside-dialogue') ||
+              memory.structureState.contains('cursor=inside-sentence'));
+      final complete =
+          wasComplete ||
+          dependenciesComplete &&
+              !keepOpen &&
+              _hasCompletionEvidence(node.id, reply, memory, decision);
+      if (complete) {
+        completedIds.add(node.id);
+        evidenceById[node.id] = [
+          _fingerprint('${node.id}|${reply.length}|${memory.progressPercent}'),
+        ];
+      }
+    }
+
+    final staged = <NazaArtifactNode>[];
+    for (final node in graph.nodes) {
+      if (completedIds.contains(node.id)) {
+        staged.add(
+          node.copyWith(
+            status: NazaArtifactNodeStatus.complete,
+            evidenceFingerprints: evidenceById[node.id],
+          ),
+        );
+        continue;
+      }
+      final dependenciesReady = node.dependencies.every(completedIds.contains);
+      staged.add(
+        node.copyWith(
+          status: dependenciesReady
+              ? NazaArtifactNodeStatus.ready
+              : NazaArtifactNodeStatus.blocked,
+        ),
+      );
+    }
+
+    String? activeId;
+    final oldActive = staged.where((node) => node.id == priorActive);
+    if (oldActive.isNotEmpty &&
+        oldActive.first.status == NazaArtifactNodeStatus.ready) {
+      activeId = oldActive.first.id;
+    } else {
+      for (final node in staged) {
+        if (node.status == NazaArtifactNodeStatus.ready) {
+          activeId = node.id;
+          break;
+        }
+      }
+    }
+    final finalized = staged
+        .map(
+          (node) => node.id == activeId
+              ? node.copyWith(status: NazaArtifactNodeStatus.active)
+              : node,
+        )
+        .toList(growable: false);
+    return NazaArtifactGraph(
+      artifactKind: graph.artifactKind,
+      enforced: graph.enforced,
+      nodes: List.unmodifiable(finalized),
+      activeNodeId: activeId,
+    );
+  }
+
+  static bool _hasCompletionEvidence(
+    String nodeId,
+    String reply,
+    NazaContinuationTaskMemory memory,
+    NazaContinuationDecision decision,
+  ) {
+    final lower = reply.toLowerCase();
+    final nonEmptyLines = reply
+        .split(RegExp(r'\r\n?|\n'))
+        .where((line) => line.trim().isNotEmpty)
+        .length;
+    final paragraphs = reply
+        .split(RegExp(r'\n\s*\n'))
+        .where((part) => part.trim().isNotEmpty)
+        .length;
+    final symbolCount = memory.completedItems
+        .where((item) => item.startsWith('symbol:'))
+        .length;
+    return switch (nodeId) {
+      'code-foundation' =>
+        memory.structureState.contains('imports=present') ||
+            symbolCount > 0 ||
+            nonEmptyLines >= 8,
+      'code-definitions' =>
+        symbolCount >= 2 ||
+            memory.structureState.contains('entrypoint=present') ||
+            memory.progressPercent >= 35,
+      'code-integration' =>
+        memory.continuityState.contains('connected[') &&
+                !memory.continuityState.contains('connected[none-yet]') ||
+            memory.progressPercent >= 52,
+      'code-orchestration' => memory.structureState.contains(
+        'entrypoint=present',
+      ),
+      'code-public-surface' => symbolCount >= 2 && memory.progressPercent >= 55,
+      'code-verification' =>
+        !decision.shouldContinue &&
+            memory.structureState.contains('delimiter_diagnostics=valid') &&
+            memory.structureState.contains('fence=closed'),
+      'story-continuity' => paragraphs >= 1 && reply.length >= 180,
+      'story-pressure' =>
+        paragraphs >= 3 ||
+            RegExp(
+              r'\b(?:but|until|threat|danger|obstacle|refused|failed|could not)\b',
+            ).hasMatch(lower),
+      'story-consequence' =>
+        paragraphs >= 5 ||
+            RegExp(
+              r'\b(?:therefore|so she|so he|because of this|decided|chose|forced)\b',
+            ).hasMatch(lower),
+      'story-turn' =>
+        memory.structureState.contains('cursor=scene-boundary') ||
+            memory.progressPercent >= 88 && !decision.shouldContinue,
+      'research-scope' =>
+        lower.contains('introduction') ||
+            lower.contains('scope') ||
+            nonEmptyLines >= 5,
+      'research-model' =>
+        lower.contains('definition') ||
+            lower.contains('model') ||
+            lower.contains('architecture'),
+      'research-method' =>
+        lower.contains('method') ||
+            lower.contains('experiment') ||
+            lower.contains('evidence'),
+      'research-analysis' =>
+        lower.contains('analysis') || lower.contains('result'),
+      'research-limitations' =>
+        lower.contains('limitation') || lower.contains('uncertainty'),
+      'research-conclusion' =>
+        lower.contains('conclusion') && !decision.shouldContinue,
+      'answer-core' => reply.trim().isNotEmpty,
+      'answer-support' => nonEmptyLines >= 5,
+      'answer-closure' => !decision.shouldContinue,
+      _ => _explicitNodeEvidence(nodeId, graphlessText: lower),
+    };
+  }
+
+  static bool _explicitNodeEvidence(
+    String nodeId, {
+    required String graphlessText,
+  }) {
+    final index = int.tryParse(nodeId.split('-').last) ?? 1;
+    final headings = RegExp(
+      r'(?:^|\n)\s*(?:#{1,6}\s+|\d+[.)]\s+)',
+    ).allMatches(graphlessText).length;
+    return headings >= index;
+  }
+
+  static NazaCoherenceState _buildCoherence({
+    required String originalUserText,
+    required NazaContinuationTaskMemory memory,
+    required NazaArtifactGraph graph,
+    required NazaContinuationDecision decision,
+  }) {
+    final immutable = <NazaCoherenceFact>[
+      NazaCoherenceFact(
+        key: 'deliverable',
+        value: _clip(originalUserText, 180),
+        provenance: NazaLedgerProvenance.user,
+      ),
+      NazaCoherenceFact(
+        key: 'target_language',
+        value: memory.targetLanguage,
+        provenance: NazaLedgerProvenance.derived,
+      ),
+      NazaCoherenceFact(
+        key: 'artifact_kind',
+        value: memory.artifactKind,
+        provenance: NazaLedgerProvenance.derived,
+      ),
+    ];
+    final lineTarget = RegExp(
+      r'\b(\d{2,5})\s*lines?\b',
+      caseSensitive: false,
+    ).firstMatch(originalUserText)?.group(1);
+    if (lineTarget != null) {
+      immutable.add(
+        NazaCoherenceFact(
+          key: 'requested_lines',
+          value: lineTarget,
+          provenance: NazaLedgerProvenance.user,
+        ),
+      );
+    }
+    final invariants = <NazaCoherenceFact>[
+      const NazaCoherenceFact(
+        key: 'model_context_tokens',
+        value: '${NazaAppConfig.contextTokens}',
+        provenance: NazaLedgerProvenance.derived,
+      ),
+      NazaCoherenceFact(
+        key: 'language_and_artifact_shape',
+        value: memory.driftGuard,
+        provenance: NazaLedgerProvenance.derived,
+      ),
+      NazaCoherenceFact(
+        key: 'entrypoint_policy',
+        value: memory.entrypointPolicy,
+        provenance: NazaLedgerProvenance.derived,
+      ),
+      ...memory.styleRules
+          .take(2)
+          .map(
+            (rule) => NazaCoherenceFact(
+              key: 'style_rule',
+              value: rule,
+              provenance: NazaLedgerProvenance.user,
+            ),
+          ),
+    ];
+    final active = graph.activeNode;
+    final mutable = <NazaCoherenceFact>[
+      NazaCoherenceFact(
+        key: 'active_node',
+        value: active?.id ?? 'none',
+        provenance: NazaLedgerProvenance.derived,
+      ),
+      NazaCoherenceFact(
+        key: 'progress',
+        value: '${memory.progressPercent}%',
+        provenance: NazaLedgerProvenance.derived,
+      ),
+      NazaCoherenceFact(
+        key: 'structure',
+        value: _clip(memory.structureState, 220),
+        provenance: NazaLedgerProvenance.artifact,
+      ),
+      NazaCoherenceFact(
+        key: 'continuity',
+        value: _clip(memory.continuityState, 720),
+        provenance: NazaLedgerProvenance.artifact,
+      ),
+    ];
+    final threads = <NazaOpenThread>[
+      ...graph.nodes
+          .where((node) => node.status != NazaArtifactNodeStatus.complete)
+          .take(5)
+          .map(
+            (node) => NazaOpenThread(
+              id: node.id,
+              description: node.purpose,
+              ownerNodeId: node.id,
+            ),
+          ),
+      ...memory.remainingItems
+          .take(2)
+          .toList()
+          .asMap()
+          .entries
+          .map(
+            (entry) => NazaOpenThread(
+              id: 'memory-thread-${entry.key + 1}',
+              description: entry.value,
+              ownerNodeId: active?.id ?? 'artifact',
+            ),
+          ),
+    ];
+    final relations = graph.nodes
+        .expand(
+          (node) => node.dependencies.map(
+            (dependency) => NazaRelation(
+              sourceId: node.id,
+              relation: 'DEPENDS_ON',
+              targetId: dependency,
+            ),
+          ),
+        )
+        .toList(growable: false);
+    return NazaCoherenceState(
+      immutableFacts: List.unmodifiable(immutable),
+      mutableState: List.unmodifiable(mutable),
+      decisions: [
+        NazaDesignDecision(
+          id: 'entrypoint-policy',
+          decision: memory.entrypointPolicy,
+          rationale: 'derived from the requested artifact kind',
+          provenance: NazaLedgerProvenance.derived,
+        ),
+      ],
+      invariants: List.unmodifiable(invariants),
+      openThreads: List.unmodifiable(threads),
+      relations: List.unmodifiable(relations),
+      globalSummary: _clip(originalUserText, 220),
+      sectionSummary:
+          '${active?.title ?? 'artifact closure'}: ${active?.purpose ?? 'complete remaining deliverables'}',
+      currentUnitSummary: _clip(
+        decision.completedSummary.isEmpty
+            ? memory.cursorState
+            : decision.completedSummary,
+        180,
+      ),
+    );
+  }
+
+  static bool _isHierarchicalTask(String artifactKind) =>
+      artifactKind != 'not-applicable';
+
+  static String _codeUnitType(String? nodeId) {
+    if (nodeId == 'code-definitions') return 'function-or-type';
+    if (nodeId == 'code-orchestration') return 'orchestration-function';
+    if (nodeId == 'code-verification') return 'verification-section';
+    return 'code-section';
+  }
+
+  static String _fingerprint(String value) {
+    var hash = 0x811C9DC5;
+    for (final unit in value.codeUnits) {
+      hash ^= unit;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return (hash & 0x7FFFFFFF).toRadixString(16).padLeft(8, '0');
+  }
+
+  static String _clip(String value, int maxChars) {
+    final clean = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return clean.length <= maxChars
+        ? clean
+        : clean.substring(0, maxChars).trimRight();
+  }
+}
+
 final class NazaContinuationEngine {
   NazaContinuationEngine._();
 
@@ -5556,6 +6771,164 @@ final class NazaContinuationEngine {
   );
 
   static NazaContinuationDecision analyze({
+    required String text,
+    required NazaStreamResult stream,
+    required NazaActionProfile actionProfile,
+    required int pass,
+    String originalUserText = '',
+  }) {
+    return classify(
+      text: text,
+      stream: stream,
+      actionProfile: actionProfile,
+      pass: pass,
+      originalUserText: originalUserText,
+    ).toLegacyDecision();
+  }
+
+  static NazaCompletionAssessment classify({
+    required String text,
+    required NazaStreamResult stream,
+    required NazaActionProfile actionProfile,
+    required int pass,
+    String originalUserText = '',
+    NazaArtifactGraph? artifactGraph,
+    NazaContinuationTaskMemory? taskMemory,
+    NazaContinuationDecision? legacyDecision,
+  }) {
+    final legacy =
+        legacyDecision ??
+        _analyzeLegacy(
+          text: text,
+          stream: stream,
+          actionProfile: actionProfile,
+          pass: pass,
+          originalUserText: originalUserText,
+        );
+    final clean = stripDoneMarker(text).trimRight();
+    final lastLine = _lastNonEmptyLine(clean).trimRight();
+    final signals = <NazaCompletionKind>[];
+    final budgetPressure =
+        stream.nearTokenCeiling ||
+        stream.estimatedTokens >=
+            (math.max(1, stream.maxTokens) *
+                    NazaAppConfig.continuationTokenPressureRatio)
+                .round();
+    final isWriting =
+        taskMemory?.taskType.contains('writing') ??
+        RegExp(
+          r'\b(?:story|novel|chapter|fiction|screenplay)\b',
+          caseSensitive: false,
+        ).hasMatch(originalUserText);
+    if (legacy.reason.contains('partial-token') && budgetPressure) {
+      signals.add(NazaCompletionKind.midToken);
+    }
+    if (legacy.reason.contains('open-code-fence')) {
+      signals.add(NazaCompletionKind.openCodeFence);
+    }
+    if (legacy.reason.contains('open-code-scope')) {
+      signals.add(NazaCompletionKind.openCodeScope);
+    }
+    if (isWriting && _NazaNarrativeSnapshot._hasOpenDialogue(clean)) {
+      signals.add(NazaCompletionKind.openDialogue);
+    }
+    if (_isOpenTableLine(lastLine)) signals.add(NazaCompletionKind.openTable);
+    if (_hasOpenEquation(clean)) signals.add(NazaCompletionKind.openEquation);
+    if (_isIncompleteListItem(lastLine)) {
+      signals.add(NazaCompletionKind.openList);
+    }
+    if (legacy.reason.contains('underfilled-requested-artifact')) {
+      signals.add(NazaCompletionKind.missingDeliverable);
+    }
+    final graphNeedsWork =
+        artifactGraph?.enforced == true && artifactGraph!.hasUnfinishedNodes;
+    if (graphNeedsWork) {
+      signals.add(NazaCompletionKind.underdevelopedSection);
+    }
+    if (legacy.shouldContinue &&
+        signals.isEmpty &&
+        !_sentenceEndRegExp.hasMatch(clean)) {
+      signals.add(NazaCompletionKind.midSentence);
+    }
+    if (legacy.shouldContinue && signals.isEmpty) {
+      signals.add(NazaCompletionKind.openArgument);
+    }
+    if (signals.isEmpty) signals.add(NazaCompletionKind.complete);
+
+    final primary = signals.first;
+    final hardSignal = const {
+      NazaCompletionKind.midToken,
+      NazaCompletionKind.openDialogue,
+      NazaCompletionKind.openCodeFence,
+      NazaCompletionKind.openCodeScope,
+      NazaCompletionKind.openList,
+      NazaCompletionKind.openTable,
+      NazaCompletionKind.openEquation,
+    }.contains(primary);
+    final shouldContinue = legacy.shouldContinue || graphNeedsWork;
+    final activeUnit =
+        artifactGraph?.activeNodeId ??
+        taskMemory?.nextStructuralMove ??
+        'current-artifact-unit';
+    final missing = <String>[
+      if (artifactGraph?.activeNode != null) artifactGraph!.activeNode!.purpose,
+      ...?taskMemory?.remainingItems.take(3),
+    ];
+    final recommendedTokens = switch (primary) {
+      NazaCompletionKind.midToken =>
+        NazaAppConfig.continuationRepairOutputTokens,
+      NazaCompletionKind.openCodeFence ||
+      NazaCompletionKind.openCodeScope ||
+      NazaCompletionKind.openDialogue ||
+      NazaCompletionKind.openList ||
+      NazaCompletionKind.openTable ||
+      NazaCompletionKind.openEquation =>
+        NazaAppConfig.continuationStructureOutputTokens,
+      NazaCompletionKind.missingDeliverable ||
+      NazaCompletionKind.underdevelopedSection =>
+        NazaAppConfig.continuationExpansionOutputTokens,
+      _ => NazaAppConfig.continuationOutputTokens,
+    };
+    final safeBoundary = switch (primary) {
+      NazaCompletionKind.midToken => 'after the current token and construct',
+      NazaCompletionKind.openDialogue => 'after the current speaker turn',
+      NazaCompletionKind.openCodeFence || NazaCompletionKind.openCodeScope =>
+        'after a structurally closed statement, function, or type',
+      NazaCompletionKind.openList => 'after the current complete list item',
+      NazaCompletionKind.openTable => 'after a complete table row or table',
+      NazaCompletionKind.openEquation =>
+        'after the equation and its immediate explanation',
+      NazaCompletionKind.underdevelopedSection ||
+      NazaCompletionKind.missingDeliverable =>
+        'after the active artifact node satisfies its required outcome',
+      _ => 'after the nearest complete semantic and structural unit',
+    };
+    final forcedLegacy = graphNeedsWork && !legacy.shouldContinue
+        ? legacy.copyWith(
+            shouldContinue: true,
+            reason:
+                'underdeveloped-artifact-node:${artifactGraph.activeNodeId ?? 'unknown'}',
+            confidence: math.max(0.72, legacy.confidence),
+          )
+        : legacy;
+    return NazaCompletionAssessment(
+      primary: primary,
+      signals: List.unmodifiable(signals),
+      activeUnit: activeUnit,
+      missingRequirements: List.unmodifiable(missing.take(5)),
+      safeBoundary: safeBoundary,
+      recommendedTokens: recommendedTokens,
+      continuationScore: shouldContinue
+          ? math.max(legacy.confidence, graphNeedsWork ? 0.72 : 0.0)
+          : 0,
+      confidence: math.max(0.62, legacy.confidence),
+      hardSignal: hardSignal,
+      shouldContinue: shouldContinue,
+      legacyDecision: forcedLegacy,
+    );
+  }
+
+  static NazaContinuationDecision _analyzeLegacy({
     required String text,
     required NazaStreamResult stream,
     required NazaActionProfile actionProfile,
@@ -5685,7 +7058,9 @@ final class NazaContinuationEngine {
     required NazaActionProfile actionProfile,
     required NazaContinuationDecision decision,
     required String accumulatedReply,
+    NazaContinuationPassContext? passContext,
   }) {
+    if (passContext != null) return passContext.contract;
     final memory = NazaContinuationTaskAgent.build(
       originalUserText: originalUserText,
       actionProfile: actionProfile,
@@ -5821,22 +7196,30 @@ final class NazaContinuationEngine {
     required int pass,
     required int maxPasses,
     String accumulatedReply = '',
+    NazaContinuationPassContext? passContext,
   }) {
-    final taskMemory = NazaContinuationTaskAgent.build(
-      originalUserText: originalUserText,
-      actionProfile: actionProfile,
-      accumulatedReply: accumulatedReply.trim().isEmpty
-          ? '${decision.completedSummary}\n${decision.tail}'
-          : accumulatedReply,
-      decision: decision,
-      pass: pass,
-      maxPasses: maxPasses,
-    );
-    final chunkPlan = _planChunkFromMemory(
-      originalUserText: originalUserText,
-      decision: decision,
-      memory: taskMemory,
-    );
+    final taskMemory =
+        passContext?.memory ??
+        NazaContinuationTaskAgent.build(
+          originalUserText: originalUserText,
+          actionProfile: actionProfile,
+          accumulatedReply: accumulatedReply.trim().isEmpty
+              ? '${decision.completedSummary}\n${decision.tail}'
+              : accumulatedReply,
+          decision: decision,
+          pass: pass,
+          maxPasses: maxPasses,
+        );
+    final chunkPlan =
+        passContext?.contract ??
+        _planChunkFromMemory(
+          originalUserText: originalUserText,
+          decision: decision,
+          memory: taskMemory,
+        );
+    final graphBlock = passContext?.graph.toPromptBlock() ?? '';
+    final coherenceBlock = passContext?.coherence.toPromptBlock() ?? '';
+    final completion = passContext?.completion;
     final antiRepeat = _antiRepeatBlock(accumulatedReply);
     return '''
 [continuation_window]
@@ -5846,15 +7229,34 @@ confidence=${decision.confidence.toStringAsFixed(3)}
 [continuation_priority]
 artifact_kind=${taskMemory.artifactKind}
 chunk_phase=${chunkPlan.phase}
+unit_id=${chunkPlan.unitId}
+unit_type=${chunkPlan.unitType}
 chunk_goal=${chunkPlan.goal}
+required_outcome=${chunkPlan.requiredOutcome.isEmpty ? chunkPlan.goal : chunkPlan.requiredOutcome}
+required_references=${chunkPlan.requiredReferences.isEmpty ? 'none' : chunkPlan.requiredReferences.join(',')}
 chunk_boundary=${chunkPlan.boundary}
-chunk_output_tokens=${chunkPlan.maxOutputTokens}
+semantic_soft_tokens=${chunkPlan.effectiveSoftOutputTokens}
+hard_output_tokens=${chunkPlan.effectiveHardOutputTokens}
+completion_class=${completion?.primary.name ?? 'legacy'}
+completion_safe_boundary=${completion?.safeBoundary ?? chunkPlan.effectiveStoppingBoundary}
 structure_state=${taskMemory.structureState}
 continuity_state=${taskMemory.continuityState}
 cursor_state=${taskMemory.cursorState}
 next_token_policy=${taskMemory.nextTokenPolicy}
 next_structural_move=${taskMemory.nextStructuralMove}
 [/continuation_priority]
+$graphBlock
+$coherenceBlock
+[semantic_chunk_contract]
+unit_id=${chunkPlan.unitId}
+unit_type=${chunkPlan.unitType}
+opening_state_fingerprint=${chunkPlan.openingStateFingerprint}
+required_outcome=${chunkPlan.requiredOutcome.isEmpty ? chunkPlan.goal : chunkPlan.requiredOutcome}
+required_references=${chunkPlan.requiredReferences.isEmpty ? 'none' : chunkPlan.requiredReferences.join(',')}
+legal_stopping_boundary=${chunkPlan.effectiveStoppingBoundary}
+soft_token_budget=${chunkPlan.effectiveSoftOutputTokens}
+hard_token_ceiling=${chunkPlan.effectiveHardOutputTokens}
+[/semantic_chunk_contract]
 ${taskMemory.toPromptBlock()}
 $antiRepeat
 compressed_completed_summary=${_oneLine(decision.completedSummary, maxChars: NazaAppConfig.continuationSummaryChars)}
@@ -5877,6 +7279,8 @@ Rules:
 - Never drift to Dart/Flutter/app repair unless task_memory says that was the original task.
 - Treat task_memory.completion_tasks as the active next-work queue. Complete the earliest missing task that belongs at the cursor.
 - Obey chunk_phase and chunk_boundary. Finish one coherent unit before starting the next phase.
+- Work only on semantic_chunk_contract.unit_id until required_outcome is satisfied. Dependencies and required references must already exist before you use them.
+- Treat the soft token budget as a cue to seek the legal stopping boundary; the hard token ceiling is not permission to stop mid-unit.
 - Treat task_memory.style_rules as hard output constraints.
 - Use task_memory.next_structural_move to choose the first structural action of this chunk.
 - Before ending, silently check task_memory.quality_checks against the chunk you just wrote.
@@ -6070,6 +7474,7 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
     required int maxPasses,
     required String accumulatedReply,
     required String failureReason,
+    NazaContinuationPassContext? passContext,
   }) {
     final base = buildPrompt(
       originalUserText: originalUserText,
@@ -6078,6 +7483,7 @@ ${lines.map((line) => '- ${_oneLine(line, maxChars: 140)}').join('\n')}
       pass: pass,
       maxPasses: maxPasses,
       accumulatedReply: accumulatedReply,
+      passContext: passContext,
     );
     final safeReason = _oneLine(failureReason, maxChars: 240);
     return base.replaceFirst(
@@ -6087,6 +7493,8 @@ chunk_phase=repair-rejected-candidate
 chunk_goal=emit a corrected replacement chunk from the unchanged exact cursor
 chunk_boundary=stop at the first structurally valid coherent boundary
 chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
+semantic_soft_tokens=${(NazaAppConfig.continuationRepairOutputTokens * 0.75).round()}
+hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
 [/continuation_priority]''',
     );
   }
@@ -6094,6 +7502,7 @@ chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
   static NazaContinuationAssembly assembleCandidate({
     required String prefix,
     required String continuation,
+    NazaContinuationPassContext? passContext,
   }) {
     final joined = _joinUnchecked(prefix, continuation);
     if (joined.trim() == prefix.trim()) {
@@ -6101,6 +7510,22 @@ chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         accepted: false,
         text: prefix,
         reason: 'no-new-content-after-replay-removal',
+        violations: const ['candidate adds no new artifact content'],
+      );
+    }
+    final delta = joined.startsWith(prefix)
+        ? joined.substring(prefix.length).trimLeft()
+        : continuation.trimLeft();
+    final metaRestart = RegExp(
+      r'''^(?:here(?:'s| is) the continuation|continuing (?:the|from)|\[/?(?:task_memory|artifact_graph|continuation_priority))''',
+      caseSensitive: false,
+    ).hasMatch(delta);
+    if (metaRestart) {
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'continuation-meta-restart',
+        violations: const ['candidate emits continuation control text'],
       );
     }
 
@@ -6114,10 +7539,22 @@ chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         language != 'unspecified' ||
         _lastLinesLookCode(combined);
     if (!looksLikeCode) {
+      final boundarySatisfied = RegExp(
+        r'''[.!?…]["'”’)]?$''',
+      ).hasMatch(joined.trimRight());
       return NazaContinuationAssembly(
         accepted: true,
         text: joined,
-        reason: 'accepted-prose-seam',
+        reason: boundarySatisfied
+            ? 'accepted-prose-boundary'
+            : 'accepted-intermediate-prose-unit',
+        boundarySatisfied: boundarySatisfied,
+        completedUnitId: boundarySatisfied
+            ? passContext?.contract.unitId
+            : null,
+        violations: boundarySatisfied
+            ? const []
+            : const ['semantic unit remains open'],
       );
     }
 
@@ -6140,6 +7577,7 @@ chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         accepted: false,
         text: prefix,
         reason: 'delimiter-regression: $firstNew',
+        violations: ['new delimiter diagnostic: $firstNew'],
       );
     }
     if (prefixSnapshot.insideCodeFence &&
@@ -6149,15 +7587,353 @@ chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         accepted: false,
         text: prefix,
         reason: 'premature-code-fence-close: ${joinedSnapshot.delimiterState}',
+        violations: const ['code fence closed while syntax remains open'],
       );
     }
+    final targetLanguage = passContext?.memory.targetLanguage;
+    final wrongFence = targetLanguage == null || targetLanguage == 'unspecified'
+        ? null
+        : _wrongLanguageFence(delta, targetLanguage);
+    if (wrongFence != null) {
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'target-language-regression: $wrongFence',
+        violations: ['candidate switches away from $targetLanguage'],
+      );
+    }
+    if (_addsForbiddenEntrypoint(prefix, joined, passContext?.memory)) {
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'duplicate-unique-entrypoint',
+        violations: const ['candidate adds a second unique entrypoint'],
+      );
+    }
+    final boundarySatisfied = !joinedSnapshot.hasOpenSyntax;
     return NazaContinuationAssembly(
       accepted: true,
       text: joined,
-      reason: joinedSnapshot.hasOpenSyntax
+      reason: !boundarySatisfied
           ? 'accepted-intermediate-code-boundary'
           : 'accepted-structural-boundary',
+      boundarySatisfied: boundarySatisfied,
+      completedUnitId: boundarySatisfied ? passContext?.contract.unitId : null,
+      violations: boundarySatisfied
+          ? const []
+          : const ['code semantic unit remains structurally open'],
     );
+  }
+
+  static NazaCandidateEvaluation evaluateCandidate({
+    int index = 0,
+    required String prefix,
+    required String continuation,
+    required String originalUserText,
+    required NazaContinuationPassContext passContext,
+  }) {
+    final assembly = assembleCandidate(
+      prefix: prefix,
+      continuation: continuation,
+      passContext: passContext,
+    );
+    final delta = assembly.text.startsWith(prefix)
+        ? assembly.text.substring(prefix.length).trimLeft()
+        : continuation.trimLeft();
+    final violations = <NazaCandidateViolation>[];
+    if (!assembly.accepted) {
+      final kind = assembly.reason.contains('entrypoint')
+          ? NazaCandidateViolationKind.duplicateEntrypoint
+          : assembly.reason.contains('language')
+          ? NazaCandidateViolationKind.languageDrift
+          : assembly.reason.contains('meta')
+          ? NazaCandidateViolationKind.continuationMetaText
+          : assembly.reason.contains('no-new-content')
+          ? NazaCandidateViolationKind.noDelta
+          : NazaCandidateViolationKind.structuralRegression;
+      violations.add(
+        NazaCandidateViolation(
+          kind: kind,
+          message: assembly.reason,
+          hard: true,
+        ),
+      );
+    }
+
+    final candidateFingerprint = _contentFingerprint(delta);
+    var maxReplay = 0.0;
+    for (final unit in _recentSemanticUnits(prefix)) {
+      maxReplay = math.max(
+        maxReplay,
+        candidateFingerprint.similarityTo(_contentFingerprint(unit)),
+      );
+    }
+    final coding = passContext.memory.taskType == 'coding';
+    if (delta.length >= 80 && maxReplay >= 0.94) {
+      violations.add(
+        NazaCandidateViolation(
+          kind: NazaCandidateViolationKind.dominantReplay,
+          message: 'candidate substantially replays a completed semantic unit',
+          hard: !coding,
+        ),
+      );
+    }
+
+    final taskFingerprint = _contentFingerprint(
+      '$originalUserText ${passContext.contract.requiredOutcome} '
+      '${passContext.graph.activeNode?.purpose ?? ''}',
+    );
+    final keywordOverlap = _setJaccard(
+      candidateFingerprint.keywords,
+      taskFingerprint.keywords,
+    );
+    final planProgress = candidateFingerprint.keywords.isEmpty
+        ? 0.45
+        : (0.40 + keywordOverlap * 0.60).clamp(0.0, 1.0).toDouble();
+    if (planProgress < 0.52) {
+      violations.add(
+        const NazaCandidateViolation(
+          kind: NazaCandidateViolationKind.lowPlanProgress,
+          message:
+              'candidate has weak lexical connection to the active artifact node',
+          hard: false,
+        ),
+      );
+    }
+
+    var factContinuity = 0.68;
+    final continuityTerms = _contentFingerprint(
+      passContext.memory.continuityState,
+    );
+    final continuityOverlap = _setJaccard(
+      candidateFingerprint.entities.union(candidateFingerprint.keywords),
+      continuityTerms.entities.union(continuityTerms.keywords),
+    );
+    factContinuity = (factContinuity + continuityOverlap * 0.32)
+        .clamp(0.0, 1.0)
+        .toDouble();
+
+    var styleScore = 1.0;
+    final forbidsEmDash = passContext.coherence.invariants.any(
+      (fact) => fact.value.toLowerCase().contains('avoid em dash'),
+    );
+    if (forbidsEmDash && delta.contains('—')) {
+      styleScore = 0.35;
+      violations.add(
+        const NazaCandidateViolation(
+          kind: NazaCandidateViolationKind.styleDrift,
+          message: 'candidate violates the no-em-dash invariant',
+          hard: false,
+        ),
+      );
+    }
+    if (candidateFingerprint.discoursePurpose ==
+            NazaDiscourseRelation.conclude &&
+        passContext.graph.activeNodeId != passContext.graph.nodes.last.id) {
+      styleScore = math.min(styleScore, 0.58);
+    }
+
+    final breakdown = NazaCandidateScoreBreakdown(
+      localSeam: assembly.accepted
+          ? assembly.reason.contains('boundary')
+                ? 1.0
+                : 0.82
+          : 0,
+      structure: assembly.accepted
+          ? assembly.boundarySatisfied
+                ? 1.0
+                : 0.72
+          : 0,
+      planProgress: planProgress,
+      factContinuity: factContinuity,
+      style: styleScore,
+      novelty: (1 - maxReplay).clamp(0.0, 1.0).toDouble(),
+      completionProgress: assembly.boundarySatisfied ? 1.0 : 0.55,
+    );
+    return NazaCandidateEvaluation(
+      index: index,
+      assembly: assembly,
+      acceptedDelta: delta,
+      total: breakdown.weightedTotal,
+      breakdown: breakdown,
+      violations: List.unmodifiable(violations),
+    );
+  }
+
+  static List<NazaCandidateEvaluation> rankCandidates({
+    required List<String> candidates,
+    required String prefix,
+    required String originalUserText,
+    required NazaContinuationPassContext passContext,
+  }) {
+    final ranked = candidates
+        .asMap()
+        .entries
+        .map(
+          (entry) => evaluateCandidate(
+            index: entry.key,
+            prefix: prefix,
+            continuation: entry.value,
+            originalUserText: originalUserText,
+            passContext: passContext,
+          ),
+        )
+        .toList(growable: false);
+    ranked.sort((left, right) {
+      if (left.accepted != right.accepted) return left.accepted ? -1 : 1;
+      final byScore = right.total.compareTo(left.total);
+      return byScore != 0 ? byScore : left.index.compareTo(right.index);
+    });
+    return ranked;
+  }
+
+  static NazaContentFingerprint _contentFingerprint(String text) {
+    const stop = <String>{
+      'the',
+      'and',
+      'that',
+      'with',
+      'from',
+      'this',
+      'into',
+      'then',
+      'when',
+      'where',
+      'while',
+      'return',
+      'final',
+      'const',
+      'class',
+      'function',
+    };
+    const aliases = <String, String>{
+      'device': 'local-execution',
+      'local': 'local-execution',
+      'offline': 'local-execution',
+      'private': 'privacy',
+      'privacy': 'privacy',
+      'protect': 'privacy',
+      'protects': 'privacy',
+      'protected': 'privacy',
+      'duplicate': 'repetition',
+      'repeated': 'repetition',
+      'repeat': 'repetition',
+    };
+    final keywords = <String>{};
+    for (final match in RegExp(
+      r'[A-Za-z_][A-Za-z0-9_-]{2,}',
+    ).allMatches(text)) {
+      final raw = match.group(0)!.toLowerCase();
+      if (stop.contains(raw)) continue;
+      keywords.add(aliases[raw] ?? raw);
+    }
+    final entities = RegExp(
+      r'\b[A-Z][A-Za-z0-9_]{2,}\b',
+    ).allMatches(text).map((match) => match.group(0)!.toLowerCase()).toSet();
+    final claims = <String>{};
+    final keywordList = keywords.toList()..sort();
+    for (var i = 0; i + 2 < keywordList.length; i++) {
+      claims.add(keywordList.sublist(i, i + 3).join('|'));
+    }
+    final lower = text.trimLeft().toLowerCase();
+    final purpose =
+        lower.startsWith('for example') || lower.startsWith('for instance')
+        ? NazaDiscourseRelation.example
+        : lower.startsWith('however') || lower.startsWith('in contrast')
+        ? NazaDiscourseRelation.contrast
+        : lower.startsWith('therefore') || lower.startsWith('thus')
+        ? NazaDiscourseRelation.derive
+        : lower.startsWith('although') || lower.startsWith('while')
+        ? NazaDiscourseRelation.qualify
+        : lower.startsWith('in conclusion') || lower.startsWith('overall')
+        ? NazaDiscourseRelation.conclude
+        : lower.startsWith('next') || lower.startsWith('after')
+        ? NazaDiscourseRelation.transition
+        : lower.contains(' means ') || lower.contains(' is defined as ')
+        ? NazaDiscourseRelation.define
+        : NazaDiscourseRelation.continueUnit;
+    return NazaContentFingerprint(
+      entities: Set.unmodifiable(entities),
+      claims: Set.unmodifiable(claims),
+      keywords: Set.unmodifiable(keywords),
+      discoursePurpose: purpose,
+    );
+  }
+
+  static List<String> _recentSemanticUnits(String prefix) {
+    final paragraphs = prefix
+        .split(RegExp(r'\n\s*\n'))
+        .map((unit) => unit.trim())
+        .where((unit) => unit.length >= 32)
+        .toList(growable: false);
+    if (paragraphs.length <= 8) return paragraphs;
+    return paragraphs.skip(paragraphs.length - 8).toList(growable: false);
+  }
+
+  static double _setJaccard(Set<String> left, Set<String> right) {
+    if (left.isEmpty && right.isEmpty) return 0;
+    final union = left.union(right);
+    return union.isEmpty ? 0 : left.intersection(right).length / union.length;
+  }
+
+  static String? _wrongLanguageFence(String delta, String targetLanguage) {
+    final match = RegExp(
+      r'^```([A-Za-z0-9_+#.-]+)',
+    ).firstMatch(delta.trimLeft());
+    final label = match?.group(1)?.toLowerCase();
+    if (label == null || label.isEmpty) return null;
+    final accepted = switch (targetLanguage) {
+      'Python' => const {'python', 'py'},
+      'Dart/Flutter' => const {'dart', 'flutter'},
+      'JavaScript' => const {'javascript', 'js', 'node'},
+      'TypeScript' => const {'typescript', 'ts', 'tsx'},
+      'C++' => const {'cpp', 'c++', 'cc'},
+      'Bash' => const {'bash', 'sh', 'shell'},
+      'SQL' => const {'sql'},
+      _ => {targetLanguage.toLowerCase()},
+    };
+    return accepted.contains(label) ? null : label;
+  }
+
+  static bool _addsForbiddenEntrypoint(
+    String prefix,
+    String joined,
+    NazaContinuationTaskMemory? memory,
+  ) {
+    if (memory == null ||
+        memory.entrypointPolicy.contains('test runner owns') ||
+        memory.entrypointPolicy.contains('do not invent')) {
+      return false;
+    }
+    for (final pattern in _uniqueEntrypointPatterns(memory.targetLanguage)) {
+      final before = pattern.allMatches(prefix).length;
+      final after = pattern.allMatches(joined).length;
+      if (before > 0 && after > before) return true;
+    }
+    return false;
+  }
+
+  static List<RegExp> _uniqueEntrypointPatterns(String language) {
+    return switch (language) {
+      'Python' => <RegExp>[
+        RegExp(r'^\s*(?:async\s+)?def\s+main\s*\(', multiLine: true),
+        RegExp(
+          r'''^\s*if\s+__name__\s*==\s*["']__main__["']\s*:''',
+          multiLine: true,
+        ),
+      ],
+      'Dart/Flutter' => <RegExp>[
+        RegExp(
+          r'^\s*(?:Future(?:<void>)?\s+|void\s+)?main\s*\(',
+          multiLine: true,
+        ),
+        RegExp(r'\brunApp\s*\('),
+      ],
+      'JavaScript' || 'TypeScript' => <RegExp>[
+        RegExp(r'^\s*(?:async\s+)?function\s+main\s*\(', multiLine: true),
+      ],
+      _ => <RegExp>[],
+    };
   }
 
   static String join(String prefix, String continuation) {
@@ -6510,6 +8286,32 @@ chunk_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
     return false;
   }
 
+  static bool _isOpenTableLine(String line) {
+    final clean = line.trim();
+    if (!clean.startsWith('|')) return false;
+    return !clean.endsWith('|') || clean.split('|').length < 3;
+  }
+
+  static bool _hasOpenEquation(String text) {
+    final displayPairs = RegExp(r'\$\$').allMatches(text).length;
+    if (displayPairs.isOdd) return true;
+    final bracketOpen = RegExp(r'\\\[').allMatches(text).length;
+    final bracketClose = RegExp(r'\\\]').allMatches(text).length;
+    return bracketOpen > bracketClose;
+  }
+
+  static bool _isIncompleteListItem(String line) {
+    final clean = line.trim();
+    if (!_bulletLineRegExp.hasMatch(clean) &&
+        !_numberedLineRegExp.hasMatch(clean)) {
+      return false;
+    }
+    if (RegExp(r'''[.!?;:\])}"'’”`]$''').hasMatch(clean)) return false;
+    final content = clean.replaceFirst(RegExp(r'^(?:[-*]|\d+[.)])\s+'), '');
+    return content.split(RegExp(r'\s+')).length <= 4 ||
+        _unfinishedBoundaryRegExp.hasMatch(clean);
+  }
+
   static bool _shouldInlineJoin(String first, String second) {
     if (first.endsWith('\n') || second.startsWith('\n')) return true;
     final secondTrimmedLeft = second.trimLeft();
@@ -6763,6 +8565,19 @@ final class NazaPromptBudget {
       '[/task_memory]',
       maxItems: 4,
     );
+    final activeNode = _lineValue(prompt, 'active_node=');
+    final immutableFacts = _listSection(
+      prompt,
+      'immutable_facts=',
+      'invariants=',
+      maxItems: 4,
+    );
+    final invariants = _listSection(
+      prompt,
+      'invariants=',
+      'mutable_state=',
+      maxItems: 4,
+    );
     String capsule({
       required String exactCursor,
       required String priorityBlock,
@@ -6794,6 +8609,13 @@ cursor_prefix_omitted=${cursorPrefixOmitted ? 'yes' : 'no'}
 [continuation_priority]
 $priorityBlock
 [/continuation_priority]
+[artifact_state]
+active_node=${activeNode.isEmpty ? 'not-provided' : activeNode}
+immutable_facts=
+${immutableFacts.isEmpty ? '- none provided' : immutableFacts}
+invariants=
+${invariants.isEmpty ? '- preserve task, language, and established state' : invariants}
+[/artifact_state]
 compressed_completed_summary=$summary
 $queueBlock
 $guardBlock
@@ -7514,6 +9336,10 @@ final class NazaLocalGemma {
         : NazaGenerationSettings.normalizeMaxContinuations(
             maxContinuationsOverride,
           );
+    final artifactSession = NazaArtifactSession.start(
+      originalUserText: trimmed,
+      actionProfile: actionProfile,
+    );
 
     try {
       await ensureReady();
@@ -7555,9 +9381,18 @@ final class NazaLocalGemma {
       await _replaceChatSessionForBoundedTurn();
 
       generation.value = generation.value.copyWith(stage: 'submitting prompt');
+      final artifactControl = artifactSession.initialPromptBlock();
+      final initialPrompt = artifactControl.isEmpty
+          ? contextFrame.prompt
+          : NazaPromptBudget.fitPrompt(
+              systemInstruction: NazaAppConfig.systemInstruction,
+              prompt: '${contextFrame.prompt}\n$artifactControl',
+              marker: '\n[prompt middle compacted for artifact plan]\n',
+              headFraction: 0.38,
+            );
       await _addQueryChunkWithTimeout(
         _chat,
-        Message.text(text: contextFrame.prompt, isUser: true),
+        Message.text(text: initialPrompt, isUser: true),
         label: 'local prompt',
       );
 
@@ -7573,11 +9408,17 @@ final class NazaLocalGemma {
           stage: 'retrying with emergency task capsule',
         );
         await _replaceChatSessionForBoundedTurn();
-        final emergencyPrompt = NazaContextManager.emergencyTaskPrompt(
+        final emergencyBase = NazaContextManager.emergencyTaskPrompt(
           userText: trimmed,
           route: route,
           actionProfile: actionProfile,
         );
+        final emergencyPrompt = artifactControl.isEmpty
+            ? emergencyBase
+            : NazaPromptBudget.fitPrompt(
+                systemInstruction: NazaAppConfig.systemInstruction,
+                prompt: '$emergencyBase\n$artifactControl',
+              );
         await _addQueryChunkWithTimeout(
           _chat,
           Message.text(text: emergencyPrompt, isUser: true),
@@ -7606,6 +9447,7 @@ final class NazaLocalGemma {
           createdAt: DateTime.now(),
         );
       }
+      artifactSession.acceptInitial(clean);
 
       var continuationCount = 0;
       while (continuationCount < maxContinuations) {
@@ -7616,6 +9458,13 @@ final class NazaLocalGemma {
           pass: continuationCount + 1,
           originalUserText: trimmed,
         );
+        final passContext = artifactSession.preparePass(
+          accumulatedReply: clean,
+          decision: continuationDecision,
+          pass: continuationCount + 1,
+          maxPasses: maxContinuations,
+        );
+        continuationDecision = passContext.completion.toLegacyDecision();
         final agentNeedsContinuation =
             await _continuationAgentNeedsChunk(
               generationId: generationId,
@@ -7629,9 +9478,11 @@ final class NazaLocalGemma {
               ),
               onTimeout: () => null,
             );
-        final hardSignal = NazaContinuationEngine.hasHardContinuationSignal(
-          continuationDecision,
-        );
+        final hardSignal =
+            passContext.completion.hardSignal ||
+            NazaContinuationEngine.hasHardContinuationSignal(
+              continuationDecision,
+            );
         if (agentNeedsContinuation == false && !hardSignal) break;
         if (agentNeedsContinuation != true &&
             !continuationDecision.shouldContinue) {
@@ -7663,6 +9514,7 @@ final class NazaLocalGemma {
           actionProfile: actionProfile,
           decision: continuationDecision,
           accumulatedReply: prefix,
+          passContext: passContext,
         );
         final continuationPrompt = NazaContinuationEngine.buildPrompt(
           originalUserText: trimmed,
@@ -7671,13 +9523,14 @@ final class NazaLocalGemma {
           pass: continuationCount,
           maxPasses: maxContinuations,
           accumulatedReply: prefix,
+          passContext: passContext,
         );
         var continuation = await _streamContinuationWindow(
           generationId: generationId,
           prompt: continuationPrompt,
           partialPrefix: prefix,
           onPartial: onPartial,
-          maxTokens: chunkPlan.maxOutputTokens,
+          maxTokens: chunkPlan.effectiveHardOutputTokens,
         );
 
         if (_cancelledGeneration == generationId) {
@@ -7713,13 +9566,23 @@ final class NazaLocalGemma {
           );
           continue;
         }
-        var assembly = NazaContinuationEngine.assembleCandidate(
+        var evaluation = NazaContinuationEngine.evaluateCandidate(
           prefix: prefix,
           continuation: continuation.text,
+          originalUserText: trimmed,
+          passContext: passContext,
         );
-        if (!assembly.accepted) {
+        var assembly = evaluation.assembly;
+        final shouldTryAlternative =
+            !evaluation.accepted ||
+            passContext.graph.enforced &&
+                evaluation.total < 0.52 &&
+                passContext.completion.primary != NazaCompletionKind.midToken;
+        if (shouldTryAlternative) {
           generation.value = generation.value.copyWith(
-            stage: 'repairing rejected continuation seam',
+            stage: evaluation.accepted
+                ? 'evaluating alternate continuation candidate'
+                : 'repairing rejected continuation seam',
           );
           final repairPrompt = NazaContinuationEngine.buildRepairPrompt(
             originalUserText: trimmed,
@@ -7728,29 +9591,47 @@ final class NazaLocalGemma {
             pass: continuationCount,
             maxPasses: maxContinuations,
             accumulatedReply: prefix,
-            failureReason: assembly.reason,
+            failureReason: evaluation.rejectionSummary,
+            passContext: passContext,
           );
-          continuation = await _streamContinuationWindow(
+          final alternative = await _streamContinuationWindow(
             generationId: generationId,
             prompt: repairPrompt,
             partialPrefix: prefix,
-            onPartial: onPartial,
-            maxTokens: NazaAppConfig.continuationRepairOutputTokens,
+            onPartial: null,
+            maxTokens: evaluation.accepted
+                ? math.min(
+                    NazaAppConfig.continuationOutputTokens,
+                    chunkPlan.effectiveHardOutputTokens,
+                  )
+                : NazaAppConfig.continuationRepairOutputTokens,
           );
-          if (continuation.text.trim().isEmpty) break;
-          assembly = NazaContinuationEngine.assembleCandidate(
+          final candidates = <String>[
+            continuation.text,
+            if (alternative.text.trim().isNotEmpty) alternative.text,
+          ];
+          final ranked = NazaContinuationEngine.rankCandidates(
+            candidates: candidates,
             prefix: prefix,
-            continuation: continuation.text,
+            originalUserText: trimmed,
+            passContext: passContext,
           );
-          if (!assembly.accepted) {
+          evaluation = ranked.first;
+          assembly = evaluation.assembly;
+          if (!evaluation.accepted) {
             generation.value = generation.value.copyWith(
               stage: 'continuation seam rejected safely',
             );
             break;
           }
+          if (evaluation.index == 1) {
+            continuation = alternative;
+            onPartial?.call(assembly.text);
+          }
         }
         if (assembly.text.trim() == prefix.trim()) break;
         clean = assembly.text;
+        artifactSession.accept(clean);
         stream = continuation;
       }
       if (continuationCount > 0) {
