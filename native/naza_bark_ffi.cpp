@@ -1251,36 +1251,51 @@ NAZA_BARK_EXPORT int32_t naza_bark_probe(
     const char* pack_dir,
     char* out_json,
     int32_t out_json_len) {
-  const PackProfile pack = load_pack_profile(safe_string(pack_dir));
-  std::ostringstream json;
-  json << "{"
-       << "\"native\":\"naza_bark_ffi_v2_source_filter\","
-       << "\"sourceFilterSpeech\":true,"
-       << "\"fastOscillator\":false,"
-       << "\"traceJson\":true,"
-       << "\"pronunciationRules\":true,"
-       << "\"profileCached\":" << (pack.cached ? "true" : "false") << ","
-       << "\"manifestOk\":" << (pack.manifest_ok ? "true" : "false") << ","
-       << "\"tensorCount\":" << pack.tensor_count << ","
-       << "\"semantic\":" << (pack.semantic ? "true" : "false") << ","
-       << "\"coarse\":" << (pack.coarse ? "true" : "false") << ","
-       << "\"fine\":" << (pack.fine ? "true" : "false") << ","
-       << "\"codec\":" << (pack.codec ? "true" : "false") << ","
-       << "\"speaker\":" << (pack.speaker ? "true" : "false") << ","
-       << "\"seed\":\"" << std::hex << pack.seed << std::dec << "\","
-       << "\"warmth\":" << pack.warmth << ","
-       << "\"clarity\":" << pack.clarity << ","
-       << "\"density\":" << pack.density << ","
-       << "\"pitchBias\":" << pack.pitch_bias << ","
-       << "\"tractLength\":" << pack.tract_length << ","
-       << "\"breathiness\":" << pack.breathiness << ","
-       << "\"brightness\":" << pack.brightness << ","
-       << "\"consonantGain\":" << pack.consonant_gain << ","
-       << "\"articulation\":" << pack.articulation_bias << ","
-       << "\"paceBias\":" << pack.pace_bias
-       << "}";
-  copy_c_string(json.str(), out_json, out_json_len);
-  return pack.manifest_ok ? 1 : 0;
+  try {
+    const PackProfile pack = load_pack_profile(safe_string(pack_dir));
+    std::ostringstream json;
+    json << "{"
+         << "\"native\":\"naza_bark_ffi_v2_source_filter\","
+         << "\"sourceFilterSpeech\":true,"
+         << "\"fastOscillator\":false,"
+         << "\"traceJson\":true,"
+         << "\"pronunciationRules\":true,"
+         << "\"profileCached\":" << (pack.cached ? "true" : "false") << ","
+         << "\"manifestOk\":" << (pack.manifest_ok ? "true" : "false") << ","
+         << "\"tensorCount\":" << pack.tensor_count << ","
+         << "\"semantic\":" << (pack.semantic ? "true" : "false") << ","
+         << "\"coarse\":" << (pack.coarse ? "true" : "false") << ","
+         << "\"fine\":" << (pack.fine ? "true" : "false") << ","
+         << "\"codec\":" << (pack.codec ? "true" : "false") << ","
+         << "\"speaker\":" << (pack.speaker ? "true" : "false") << ","
+         << "\"seed\":\"" << std::hex << pack.seed << std::dec << "\","
+         << "\"warmth\":" << pack.warmth << ","
+         << "\"clarity\":" << pack.clarity << ","
+         << "\"density\":" << pack.density << ","
+         << "\"pitchBias\":" << pack.pitch_bias << ","
+         << "\"tractLength\":" << pack.tract_length << ","
+         << "\"breathiness\":" << pack.breathiness << ","
+         << "\"brightness\":" << pack.brightness << ","
+         << "\"consonantGain\":" << pack.consonant_gain << ","
+         << "\"articulation\":" << pack.articulation_bias << ","
+         << "\"paceBias\":" << pack.pace_bias
+         << "}";
+    copy_c_string(json.str(), out_json, out_json_len);
+    return pack.manifest_ok ? 1 : 0;
+  } catch (const std::exception& ex) {
+    (void)ex;
+    copy_c_string(
+        "{\"native\":\"naza_bark_ffi_v2_source_filter\",\"error\":\"probe failed\"}",
+        out_json,
+        out_json_len);
+    return -1;
+  } catch (...) {
+    copy_c_string(
+        "{\"native\":\"naza_bark_ffi_v2_source_filter\",\"error\":\"unknown probe error\"}",
+        out_json,
+        out_json_len);
+    return -1;
+  }
 }
 
 NAZA_BARK_EXPORT int32_t naza_bark_render_wav(

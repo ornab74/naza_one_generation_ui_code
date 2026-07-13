@@ -1,7 +1,78 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/main.dart';
 
 void main() {
+  group('Gemma vision bounds', () {
+    test('accepts a normalized Android image payload', () {
+      final image = NazaVisionImage.fromMap({
+        'bytes': Uint8List.fromList([0xFF, 0xD8, 0xFF, 0xD9]),
+        'name': 'road.jpg',
+        'width': 1024,
+        'height': 768,
+      });
+
+      expect(image.name, 'road.jpg');
+      expect(image.dimensions, '1024 × 768');
+      expect(image.bytes, hasLength(4));
+    });
+
+    test('rejects empty image payloads and invalid dimensions', () {
+      expect(
+        () => NazaVisionImage.fromMap({
+          'bytes': Uint8List(0),
+          'name': 'empty.jpg',
+          'width': 1,
+          'height': 1,
+        }),
+        throwsFormatException,
+      );
+      expect(
+        () => NazaVisionImage.fromMap({
+          'bytes': Uint8List.fromList([1, 2, 3]),
+          'name': 'bad.jpg',
+          'width': 0,
+          'height': 200,
+        }),
+        throwsFormatException,
+      );
+    });
+
+    test('reserves image tokens while fitting the text prompt', () {
+      final prompt = List.filled(5000, 'vision-detail').join(' ');
+      final fitted = NazaPromptBudget.fitPrompt(
+        systemInstruction: NazaAppConfig.systemInstruction,
+        prompt: prompt,
+        reservedTokens: NazaAppConfig.visionInputTokenReserve,
+      );
+
+      expect(
+        NazaPromptBudget.fits(
+          systemInstruction: NazaAppConfig.systemInstruction,
+          prompt: fitted,
+          reservedTokens: NazaAppConfig.visionInputTokenReserve,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('local Gemma source resolution', () {
+    test('checks the project models folder before network fallback', () {
+      final expected =
+          '${Directory.current.path}/models/${NazaAppConfig.modelFileName}';
+
+      expect(NazaSecureModelStore.localCandidatePaths, contains(expected));
+      expect(NazaAppConfig.modelFileName, 'gemma-4-E2B-it.litertlm');
+      expect(
+        NazaAppConfig.modelSha256,
+        'ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42',
+      );
+    });
+  });
+
   group('NazaQuantumRouter', () {
     test('returns the empty route for whitespace', () {
       final route = NazaQuantumRouter.route('   ');
@@ -94,6 +165,95 @@ void main() {
         lessThan(NazaAppConfig.outputTokens),
       );
     });
+  });
+
+  group('scanner result integrity', () {
+    NazaResponse response(
+      String text, {
+      bool cancelled = false,
+      String route = 'scanner-test',
+    }) {
+      return NazaResponse(
+        text: text,
+        score: .82,
+        route: route,
+        cancelled: cancelled,
+        createdAt: DateTime(2026),
+      );
+    }
+
+    NazaScannerResult parse(NazaResponse value) {
+      return NazaScannerResult.fromResponses(
+        title: 'Road Safety Matrix',
+        kind: 'Road',
+        visibleSummary: 'wet road with standing water',
+        riskResponse: value,
+        safetyResponse: value,
+        trace: NazaScannerPrompts.roadTrace({
+          'road_surface': 'wet road with standing water',
+        }),
+      );
+    }
+
+    test('accepts a complete combined classifier response', () {
+      final result = parse(
+        response('''
+Risk: High
+Confidence: High
+Primary cues:
+- standing water
+Recommended action:
+- reduce speed
+Safety Score: 21
+Safety Band: Low
+'''),
+      );
+
+      expect(result.outcome, NazaScannerOutcome.classified);
+      expect(result.riskLabel, 'High');
+      expect(result.confidenceLabel, 'High');
+      expect(result.safetyScore, 21);
+    });
+
+    test('cancelled generation never becomes Medium or score 62', () {
+      final result = parse(response('Generation cancelled.', cancelled: true));
+
+      expect(result.outcome, NazaScannerOutcome.cancelled);
+      expect(result.classified, isFalse);
+      expect(result.riskLabel, 'Unavailable');
+      expect(result.confidenceLabel, 'Unavailable');
+      expect(result.safetyScore, isNull);
+      expect(result.riskText, isNot(contains('Medium')));
+      expect(result.safetyText, isNot(contains('62')));
+    });
+
+    test('malformed output stays unavailable instead of inventing metrics', () {
+      final result = parse(response('Inspect the scene directly.'));
+
+      expect(result.outcome, NazaScannerOutcome.invalid);
+      expect(result.classified, isFalse);
+      expect(result.riskLabel, 'Unavailable');
+      expect(result.confidenceLabel, 'Not reported');
+      expect(result.safetyScore, isNull);
+      expect(result.route, 'scanner-invalid-output');
+    });
+
+    test(
+      'operational errors do not masquerade as high risk or zero safety',
+      () {
+        final result = NazaScannerResult.failed(
+          title: 'Food / Water Safety Matrix',
+          kind: 'Food / Water',
+          visibleSummary: 'sealed bottle',
+          error: 'model unavailable',
+          trace: NazaScannerPrompts.foodWaterTrace({}),
+        );
+
+        expect(result.outcome, NazaScannerOutcome.error);
+        expect(result.riskLabel, 'Unavailable');
+        expect(result.safetyScore, isNull);
+      },
+    );
   });
 
   group('NazaContinuationEngine', () {
@@ -244,6 +404,208 @@ class ReportBuilder:
       expect(joinedProse, contains('Tomas dropped the lantern.'));
     });
 
+    test('deduplicates short Python cursor tokens before concatenation', () {
+      const prefix = '''
+```python
+class SimulationRunner:
+    def run(self, initial_state, operators, duration''';
+      const continuation = '''duration: float = 1000.0):
+        return initial_state
+''';
+
+      final joined = NazaContinuationEngine.join(prefix, continuation);
+
+      expect(joined, contains('duration: float = 1000.0):'));
+      expect(joined, isNot(contains('durationduration')));
+    });
+
+    test('starts a new Python statement after a complete return', () {
+      const prefix = '''
+```python
+def update(current_state):
+    return current_state''';
+      const continuation = '''    return self
+''';
+
+      final joined = NazaContinuationEngine.join(prefix, continuation);
+
+      expect(joined, contains('return current_state\n    return self'));
+      expect(joined, isNot(contains('current_statereturn')));
+    });
+
+    test('stages progress through a long Python signature transactionally', () {
+      const prefix = '''
+```python
+def simulate(
+    initial_state,
+''';
+      const continuation = '''    operators,
+''';
+
+      final assembly = NazaContinuationEngine.assembleCandidate(
+        prefix: prefix,
+        continuation: continuation,
+      );
+
+      expect(assembly.accepted, isTrue);
+      expect(assembly.boundarySatisfied, isFalse);
+      expect(assembly.text, contains('    operators,'));
+      expect(assembly.reason, 'accepted-intermediate-code-boundary');
+    });
+
+    test('does not label a complete Python return as a partial token', () {
+      const userText = 'write a complete Python simulation script';
+      const reply = '''
+```python
+def run(initial_state):
+    return initial_state''';
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+
+      final decision = NazaContinuationEngine.analyze(
+        text: reply,
+        stream: const NazaStreamResult(
+          text: reply,
+          estimatedTokens: NazaAppConfig.outputTokens,
+          maxTokens: NazaAppConfig.outputTokens,
+          nearTokenCeiling: true,
+        ),
+        actionProfile: profile,
+        pass: 1,
+        originalUserText: userText,
+      );
+
+      expect(decision.reason, isNot(contains('partial-token')));
+      expect(decision.reason, contains('open-code-fence'));
+    });
+
+    test('rolls a malformed Python tail back to its last valid unit', () {
+      const broken = '''
+### Implementation Example
+```python
+class ParticleSystem:
+    def __init__(self, mass):
+        self.mass = mass
+
+    def update(self, dt):
+        return self
+
+class SimulationRunner:
+    def run(self, initial_state, operators, durationduration: 1000.0
+        self.mass = mass
+        return selfreturn current_state
+''';
+
+      final finalization = NazaContinuationEngine.finalizeForDelivery(broken);
+
+      expect(finalization.rolledBack, isTrue);
+      expect(finalization.closedFence, isTrue);
+      expect(finalization.text, contains('class ParticleSystem:'));
+      expect(finalization.text, isNot(contains('durationduration')));
+      expect(finalization.text, isNot(contains('selfreturn')));
+      expect(finalization.text.trimRight(), endsWith('```'));
+    });
+
+    test('closes a valid final Python fence without rolling code back', () {
+      const valid = '''
+```python
+def run_simulation():
+    return "complete"
+''';
+
+      final finalization = NazaContinuationEngine.finalizeForDelivery(valid);
+
+      expect(finalization.rolledBack, isFalse);
+      expect(finalization.closedFence, isTrue);
+      expect(finalization.text, contains('return "complete"'));
+      expect(finalization.text.trimRight(), endsWith('```'));
+    });
+
+    test('keeps valid advanced Python structures intact at delivery', () {
+      const valid = '''
+```python
+from package import (
+    Alpha,
+    Beta,
+)
+
+def identity(return_value):  # a trailing header comment is valid
+    """Document the helper.
+
+    Text such as class Fake: and return return_value is not executable here.
+    """
+    return return_value
+
+class Marker: pass
+
+async def fetch(): return await load()
+
+if __name__ == "__main__":
+    print(identity(Alpha))
+```
+''';
+
+      final finalization = NazaContinuationEngine.finalizeForDelivery(valid);
+
+      expect(finalization.rolledBack, isFalse);
+      expect(finalization.text, valid.trimRight());
+      expect(finalization.text, contains('return return_value'));
+      expect(finalization.text, contains('print(identity(Alpha))'));
+    });
+
+    test('scopes Python integrity to the latest independent code fence', () {
+      const mixedExamples = '''
+First example:
+
+```python
+def main():
+    return "first"
+```
+
+Second independent example:
+
+```python
+def main():
+    return "second"
+```
+''';
+
+      final finalization = NazaContinuationEngine.finalizeForDelivery(
+        mixedExamples,
+      );
+
+      expect(finalization.rolledBack, isFalse);
+      expect('def main()'.allMatches(finalization.text).length, 2);
+      expect(finalization.text, contains('return "second"'));
+    });
+
+    test(
+      'rolls back only a broken Python region and preserves later prose',
+      () {
+        const mixed = '''
+The experiment initially appeared stable.
+
+```python
+def simulate(durationduration: 10.0
+    return resultreturn current_state
+```
+
+Mara recognized that the malformed sample was an instrumentation artifact and continued her investigation.
+''';
+
+        final finalization = NazaContinuationEngine.finalizeForDelivery(mixed);
+
+        expect(finalization.rolledBack, isTrue);
+        expect(finalization.text, startsWith('The experiment initially'));
+        expect(
+          finalization.text,
+          contains('Mara recognized that the malformed sample'),
+        );
+        expect(finalization.text, isNot(contains('durationduration')));
+        expect(finalization.text, isNot(contains('resultreturn')));
+      },
+    );
+
     test('rejects a continuation that introduces a mismatched closer', () {
       const prefix = '''
 function collectValues() {
@@ -262,12 +624,6 @@ function collectValues() {
       expect(assembled.accepted, isFalse);
       expect(assembled.text, prefix);
       expect(assembled.reason.toLowerCase(), contains('mismatch'));
-    });
-
-    test('parses the one-word continuation critic verdict', () {
-      expect(NazaContinuationEngine.parseJudgeReply('Yes'), isTrue);
-      expect(NazaContinuationEngine.parseJudgeReply('No.'), isFalse);
-      expect(NazaContinuationEngine.parseJudgeReply('continue'), isTrue);
     });
 
     test('continuation prompt preserves task type and target language', () {
@@ -985,6 +1341,154 @@ The smallest reflection lifted one finger to its lips.
       expect(prompt, contains('causally follow the latest beat'));
       expect(prompt, contains('replace them'));
       expect(prompt, contains('For story/book tasks'));
+    });
+
+    test(
+      'keeps a story outer task while an open Python block owns the cursor',
+      () {
+        const userText =
+            'write scicen paper story about an advanced python engineer science framework using simulations';
+        const partial = '''
+Dr. Mara Voss designed the simulation framework to expose errors that ordinary experiments concealed. Her latest orbital run produced a deviation no published model could explain.
+
+```python
+class OrbitSimulation:
+    def __init__(self):
+        self.time = 0.0
+
+    def step(self, dt):
+        self.time += dt
+''';
+        const decision = NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'token-ceiling+open-code-fence+open-code-scope',
+          confidence: 0.96,
+          completedSummary:
+              'The story is currently inside its Python simulation example.',
+          tail: partial,
+        );
+        final route = NazaQuantumRouter.route(userText);
+        final profile = NazaActionSelector.select(userText, route);
+        final session = NazaArtifactSession.start(
+          originalUserText: userText,
+          actionProfile: profile,
+        );
+        session.acceptInitial(partial);
+        final context = session.preparePass(
+          accumulatedReply: partial,
+          decision: decision,
+          pass: 1,
+          maxPasses: 6,
+        );
+        final graphIds = context.graph.nodes
+            .map((node) => node.id)
+            .toList(growable: false);
+        final plan = NazaContinuationEngine.planChunk(
+          originalUserText: userText,
+          actionProfile: profile,
+          decision: decision,
+          accumulatedReply: partial,
+          passContext: context,
+        );
+        final prompt = NazaContinuationEngine.buildPrompt(
+          originalUserText: userText,
+          actionProfile: profile,
+          decision: decision,
+          pass: 1,
+          maxPasses: 6,
+          accumulatedReply: partial,
+          passContext: context,
+        );
+
+        expect(context.memory.taskType, 'long-form-writing');
+        expect(context.memory.activeFacet, 'coding');
+        expect(context.memory.targetLanguage, 'Python');
+        expect(context.memory.artifactKind, 'narrative-prose');
+        expect(graphIds, contains('story-continuity'));
+        expect(graphIds, isNot(contains('code-foundation')));
+        expect(context.contract.unitType, 'active-construct');
+        expect(plan.phase, 'complete-active-construct');
+        expect(prompt, contains('task_type=long-form-writing'));
+        expect(prompt, contains('active_facet=coding'));
+        expect(prompt, contains('target_language=Python'));
+      },
+    );
+
+    test('returns to the outer story after its Python block closes', () {
+      const userText =
+          'write scicen paper story about an advanced python engineer science framework using simulations';
+      const completedBlock = '''
+Dr. Mara Voss designed the simulation framework to expose errors that ordinary experiments concealed.
+
+```python
+class OrbitSimulation:
+    def __init__(self):
+        self.time = 0.0
+
+    def step(self, dt):
+        self.time += dt
+        return self.time
+```
+
+Mara compared the simulated orbit with the failing instrument and realized the discrepancy was a warning, not noise.
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'underfilled-requested-artifact',
+        confidence: 0.9,
+        completedSummary:
+            'The embedded simulation is complete and the story has resumed.',
+        tail: completedBlock,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      session.acceptInitial(completedBlock);
+      final context = session.preparePass(
+        accumulatedReply: completedBlock,
+        decision: decision,
+        pass: 2,
+        maxPasses: 6,
+      );
+      final graphIds = context.graph.nodes
+          .map((node) => node.id)
+          .toList(growable: false);
+      final plan = NazaContinuationEngine.planChunk(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        accumulatedReply: completedBlock,
+        passContext: context,
+      );
+      final proseAssembly = NazaContinuationEngine.assembleCandidate(
+        prefix: completedBlock,
+        continuation:
+            'The warning forced Mara to choose between publishing early and rerunning the experiment.',
+        passContext: context,
+      );
+      final prompt = NazaContinuationEngine.buildPrompt(
+        originalUserText: userText,
+        actionProfile: profile,
+        decision: decision,
+        pass: 2,
+        maxPasses: 6,
+        accumulatedReply: completedBlock,
+        passContext: context,
+      );
+
+      expect(context.memory.taskType, 'long-form-writing');
+      expect(context.memory.activeFacet, 'long-form-writing');
+      expect(context.contract.unitType, 'narrative-event');
+      expect(context.memory.continuityState, contains('Mara compared'));
+      expect(graphIds, contains('story-continuity'));
+      expect(graphIds, isNot(contains('code-foundation')));
+      expect(plan.phase, 'advance-story-beat');
+      expect(prompt, contains('active_facet=long-form-writing'));
+      expect(proseAssembly.accepted, isTrue);
+      expect(proseAssembly.reason, 'accepted-prose-boundary');
     });
 
     test('finishes an open dialogue line before changing story beats', () {
@@ -1800,6 +2304,149 @@ def main():
       expect(assembly.text, prefix);
       expect(session.acceptedChunks, 0);
     });
+
+    test('rejects the malformed Python seam from the field transcript', () {
+      const userText =
+          'write a complete Python simulation framework with connected classes';
+      const prefix = '''
+```python
+class ParticleSystem:
+    def __init__(self, mass, initial_velocity):
+        self.mass = mass
+        self.velocity = initial_velocity
+
+    def update(self, dt, environment_data):
+        acceleration = environment_data.get("force", 0.0) / self.mass
+        self.velocity += acceleration * dt
+        return self
+
+class SimulationRunner:
+    def run(self, initial_state, operators, duration''';
+      const brokenContinuation = '''duration: 1000.0
+        self.mass = mass
+        self.velocity = initial_velocity
+
+    def update(self, dt, environment_data):
+        return self
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-fence+open-code-scope',
+        confidence: 0.98,
+        completedSummary: 'The SimulationRunner signature is incomplete.',
+        tail: prefix,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final context = session.preparePass(
+        accumulatedReply: prefix,
+        decision: decision,
+        pass: 1,
+        maxPasses: 6,
+      );
+
+      final assembly = NazaContinuationEngine.assembleCandidate(
+        prefix: prefix,
+        continuation: brokenContinuation,
+        passContext: context,
+      );
+
+      expect(assembly.accepted, isFalse);
+      expect(assembly.text, prefix);
+      expect(assembly.reason, contains('python'));
+    });
+
+    test('hard-rejects replayed Python definitions after a repair preface', () {
+      const userText = 'write a complete Python particle simulation';
+      const prefix = '''
+```python
+class ParticleSystem:
+    def update(self, dt):
+        return self
+''';
+      const replay = '''# continuing the implementation
+class ParticleSystem:
+    def update(self, dt):
+        return self
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'ParticleSystem is already defined.',
+        tail: prefix,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final context = session.preparePass(
+        accumulatedReply: prefix,
+        decision: decision,
+        pass: 2,
+        maxPasses: 6,
+      );
+
+      final evaluation = NazaContinuationEngine.evaluateCandidate(
+        prefix: prefix,
+        continuation: replay,
+        originalUserText: userText,
+        passContext: context,
+      );
+
+      expect(evaluation.accepted, isFalse);
+      expect(
+        evaluation.rejectionSummary.toLowerCase(),
+        anyOf(contains('duplicate'), contains('replay')),
+      );
+    });
+
+    test(
+      'rejects glued Python terminal statements with balanced delimiters',
+      () {
+        const userText = 'write a complete Python simulation script';
+        const prefix = '''
+```python
+def update(current_state):
+    return current_state''';
+        const continuation = 'return selfreturn current_state\n';
+        const decision = NazaContinuationDecision(
+          shouldContinue: true,
+          reason: 'token-ceiling+open-code-fence',
+          confidence: 0.9,
+          completedSummary: 'The update function exists.',
+          tail: prefix,
+        );
+        final route = NazaQuantumRouter.route(userText);
+        final profile = NazaActionSelector.select(userText, route);
+        final session = NazaArtifactSession.start(
+          originalUserText: userText,
+          actionProfile: profile,
+        );
+        final context = session.preparePass(
+          accumulatedReply: prefix,
+          decision: decision,
+          pass: 1,
+          maxPasses: 6,
+        );
+
+        final assembly = NazaContinuationEngine.assembleCandidate(
+          prefix: prefix,
+          continuation: continuation,
+          passContext: context,
+        );
+
+        expect(assembly.accepted, isFalse);
+        expect(assembly.text, prefix);
+        expect(assembly.reason, contains('python'));
+      },
+    );
 
     test('allows the first runApp call inside an existing Dart main', () {
       const userText = 'write a complete Dart Flutter application';
