@@ -57,17 +57,6 @@ pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
-add_library(naza_bark_ffi SHARED
-  "${CMAKE_CURRENT_SOURCE_DIR}/../native/naza_bark_ffi.cpp"
-)
-target_compile_features(naza_bark_ffi PRIVATE cxx_std_17)
-target_compile_options(naza_bark_ffi PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
-set_target_properties(naza_bark_ffi PROPERTIES
-  OUTPUT_NAME "naza_bark_ffi"
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native"
-)
-add_dependencies(${BINARY_NAME} naza_bark_ffi)
-
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
 
@@ -111,9 +100,6 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  COMPONENT Runtime)
-
-install(TARGETS naza_bark_ffi LIBRARY DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})

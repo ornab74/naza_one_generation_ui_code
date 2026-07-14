@@ -101,21 +101,7 @@ void main() {
     });
   });
 
-  group('release scanner and BarkPack config', () {
-    test('pins the current BarkPack release-index JSON hash', () {
-      expect(
-        NazaAppConfig.barkPackIndexSha256,
-        'e30d638dc477ec017aacd0ceaf21d97d94f6a83ac35f9037313e3f66f5640eaf',
-      );
-    });
-
-    test('does not use the Actions artifact ZIP hash as the index pin', () {
-      const artifactZipSha256 =
-          '5e89db33478d430111bde5d1b430313a6c031a982acb41e254ae6417c1bbff6b';
-
-      expect(NazaAppConfig.barkPackIndexSha256, isNot(artifactZipSha256));
-    });
-
+  group('scanner config', () {
     test(
       'builds a single-pass scanner prompt with risk and safety outputs',
       () {
@@ -154,16 +140,13 @@ void main() {
       expect(prompt, contains(boundedObservation));
     });
 
-    test('keeps the app prompt conversational for live voice mode', () {
+    test('keeps the app prompt local-first and conversational', () {
       final prompt = NazaAppConfig.systemInstruction.toLowerCase();
 
       expect(prompt, contains('conversational partner'));
+      expect(prompt, contains('local-first'));
       expect(prompt, isNot(contains("can't")));
       expect(prompt, isNot(contains('cannot')));
-      expect(
-        NazaAppConfig.liveVoiceOutputTokens,
-        lessThan(NazaAppConfig.outputTokens),
-      );
     });
   });
 
@@ -433,6 +416,39 @@ def update(current_state):
       expect(joined, isNot(contains('current_statereturn')));
     });
 
+    test('does not overlap a returned identifier with its next assignment', () {
+      const prefix = '''
+```python
+def current_result():
+    return result''';
+      const continuation = '''result = next_value
+''';
+
+      final joined = NazaContinuationEngine.join(prefix, continuation);
+
+      expect(joined, contains('return result\nresult = next_value'));
+      expect(joined, isNot(contains('return result = next_value')));
+    });
+
+    test('keeps the same method name when a new class owns it', () {
+      const prefix = '''
+```python
+class FirstWorker:
+    def __init__(self):
+        self.name = "first"
+
+class SecondWorker:
+''';
+      const continuation = '''    def __init__(self):
+        self.name = "second"
+''';
+
+      final joined = NazaContinuationEngine.join(prefix, continuation);
+
+      expect('def __init__(self):'.allMatches(joined).length, 2);
+      expect(joined, contains('self.name = "second"'));
+    });
+
     test('stages progress through a long Python signature transactionally', () {
       const prefix = '''
 ```python
@@ -451,6 +467,150 @@ def simulate(
       expect(assembly.boundarySatisfied, isFalse);
       expect(assembly.text, contains('    operators,'));
       expect(assembly.reason, 'accepted-intermediate-code-boundary');
+
+      final checkpoint = NazaContinuationEngine.checkpointForContinuation(
+        assembly.text,
+      );
+      expect(checkpoint.recoveredCorruption, isFalse);
+      expect(checkpoint.hasPendingUnit, isTrue);
+      expect(checkpoint.workingText, assembly.text);
+      expect(checkpoint.stableText, isNot(contains('operators,')));
+    });
+
+    test('recovers malformed initial Python before accepting task memory', () {
+      const broken = '''
+### Implementation Example
+```python
+class ParticleSystem:
+    def __init__(self, mass):
+        self.mass = mass
+
+    def update(self, dt):
+        return self
+
+class SimulationRunner:
+    def run(self, initial_state, operators, durationduration: 1000.0
+        self.mass = mass
+        return selfreturn current_state
+''';
+
+      final checkpoint = NazaContinuationEngine.checkpointForContinuation(
+        broken,
+      );
+
+      expect(checkpoint.recoveredCorruption, isTrue);
+      expect(checkpoint.hasPendingUnit, isFalse);
+      expect(checkpoint.stableText, contains('class ParticleSystem:'));
+      expect(checkpoint.stableText, isNot(contains('class SimulationRunner:')));
+      expect(checkpoint.stableText, isNot(contains('durationduration')));
+      expect(checkpoint.stableText, isNot(contains('selfreturn')));
+      expect(
+        NazaContinuationEngine.hasOpenCodeFence(checkpoint.stableText),
+        isTrue,
+      );
+      expect(checkpoint.workingText, checkpoint.stableText);
+    });
+
+    test(
+      'regenerates a complete unit from the recovered Python checkpoint',
+      () {
+        const userText =
+            'write a science paper story about a Python simulation framework';
+        const broken = '''
+The paper introduces a local particle simulation.
+
+```python
+class ParticleSystem:
+    def update(self, dt):
+        return self
+
+class SimulationRunner:
+    def run(self, initial_state, operators, durationduration: 1000.0
+        return selfreturn current_state
+''';
+        const repairedUnit = '''
+class SimulationRunner:
+    def run(self, initial_state, operators, duration):
+        current_state = initial_state
+        for operator in operators:
+            current_state = operator.apply(current_state, duration)
+        return current_state
+''';
+        const brokenRepair = '''
+class ParticleSystem:
+    def update(self, dt):
+        return self
+
+class SimulationRunner:
+    def run(self, initial_state, operators, durationduration: 1000.0
+        return selfreturn current_state
+''';
+        final checkpoint = NazaContinuationEngine.checkpointForContinuation(
+          broken,
+        );
+        final route = NazaQuantumRouter.route(userText);
+        final profile = NazaActionSelector.select(userText, route);
+        final session = NazaArtifactSession.start(
+          originalUserText: userText,
+          actionProfile: profile,
+        );
+        session.acceptInitial(checkpoint.stableText);
+        final decision = NazaContinuationEngine.analyze(
+          text: checkpoint.workingText,
+          stream: NazaStreamResult(
+            text: checkpoint.workingText,
+            estimatedTokens: NazaAppConfig.outputTokens,
+            maxTokens: NazaAppConfig.outputTokens,
+            nearTokenCeiling: true,
+          ),
+          actionProfile: profile,
+          pass: 1,
+          originalUserText: userText,
+        );
+        final context = session.preparePass(
+          accumulatedReply: checkpoint.workingText,
+          decision: decision,
+          pass: 1,
+          maxPasses: 6,
+        );
+        final ranked = NazaContinuationEngine.rankCandidates(
+          candidates: const [brokenRepair, repairedUnit],
+          prefix: checkpoint.workingText,
+          originalUserText: userText,
+          passContext: context,
+        );
+        final assembly = ranked.first.assembly;
+
+        expect(ranked.first.index, 1);
+        expect(assembly.accepted, isTrue);
+        expect(assembly.boundarySatisfied, isTrue);
+        expect('class ParticleSystem:'.allMatches(assembly.text).length, 1);
+        expect('class SimulationRunner:'.allMatches(assembly.text).length, 1);
+        expect(assembly.text, contains('return current_state'));
+        expect(assembly.text, isNot(contains('durationduration')));
+        final finalization = NazaContinuationEngine.finalizeForDelivery(
+          assembly.text,
+        );
+        expect(finalization.rolledBack, isFalse);
+        expect(finalization.closedFence, isTrue);
+        expect(finalization.text, contains('return current_state'));
+      },
+    );
+
+    test('buffers malformed Python while preserving streamed prose', () {
+      const prose =
+          'Mara documented the experiment before publishing the implementation.';
+      const partial =
+          '''
+$prose
+
+```python
+def simulate(durationduration: 10.0
+    return resultreturn current_state
+''';
+
+      expect(NazaContinuationEngine.stableInitialPaint(prose), prose);
+      expect(NazaContinuationEngine.stableInitialPaint(partial), prose);
     });
 
     test('does not label a complete Python return as a partial token', () {
@@ -577,6 +737,56 @@ def main():
       expect(finalization.rolledBack, isFalse);
       expect('def main()'.allMatches(finalization.text).length, 2);
       expect(finalization.text, contains('return "second"'));
+    });
+
+    test(
+      'repairs every Python fence without deleting prose or valid examples',
+      () {
+        const mixedExamples = '''
+Broken example:
+
+```python
+def incomplete():
+    result =
+```
+
+The analysis continues after the intentionally broken draft.
+
+```python
+def complete():
+    return "preserved"
+```
+''';
+
+        final finalization = NazaContinuationEngine.finalizeForDelivery(
+          mixedExamples,
+        );
+
+        expect(finalization.rolledBack, isTrue);
+        expect(finalization.text, isNot(contains('result =')));
+        expect(finalization.text, contains('The analysis continues'));
+        expect(finalization.text, contains('def complete():'));
+        expect(finalization.text, contains('return "preserved"'));
+      },
+    );
+
+    test('rejects an incomplete Python assignment as a chunk boundary', () {
+      const prefix = '''
+```python
+def build_result():
+    value = 1
+''';
+      const continuation = '''    result =
+''';
+
+      final assembly = NazaContinuationEngine.assembleCandidate(
+        prefix: prefix,
+        continuation: continuation,
+      );
+
+      expect(assembly.accepted, isFalse);
+      expect(assembly.text, prefix);
+      expect(assembly.reason, contains('python-integrity'));
     });
 
     test(
@@ -2405,6 +2615,59 @@ class ParticleSystem:
         evaluation.rejectionSummary.toLowerCase(),
         anyOf(contains('duplicate'), contains('replay')),
       );
+    });
+
+    test('hard-rejects a diluted contiguous Python replay', () {
+      const userText = 'write a complete Python record processor';
+      const prefix = '''
+```python
+def transform(record):
+    normalized = normalize(record)
+    validated = validate(normalized)
+    enriched = enrich(validated)
+    return enriched
+''';
+      const replayWithNoise = '''
+    normalized = normalize(record)
+    validated = validate(normalized)
+    enriched = enrich(validated)
+    audit_1 = record.get("audit_1")
+    audit_2 = record.get("audit_2")
+    audit_3 = record.get("audit_3")
+    audit_4 = record.get("audit_4")
+    audit_5 = record.get("audit_5")
+    audit_6 = record.get("audit_6")
+    audit_7 = record.get("audit_7")
+''';
+      const decision = NazaContinuationDecision(
+        shouldContinue: true,
+        reason: 'token-ceiling+open-code-fence',
+        confidence: 0.9,
+        completedSummary: 'The transform function already exists.',
+        tail: prefix,
+      );
+      final route = NazaQuantumRouter.route(userText);
+      final profile = NazaActionSelector.select(userText, route);
+      final session = NazaArtifactSession.start(
+        originalUserText: userText,
+        actionProfile: profile,
+      );
+      final context = session.preparePass(
+        accumulatedReply: prefix,
+        decision: decision,
+        pass: 2,
+        maxPasses: 6,
+      );
+
+      final evaluation = NazaContinuationEngine.evaluateCandidate(
+        prefix: prefix,
+        continuation: replayWithNoise,
+        originalUserText: userText,
+        passContext: context,
+      );
+
+      expect(evaluation.accepted, isFalse);
+      expect(evaluation.rejectionSummary, contains('longest run 3'));
     });
 
     test(

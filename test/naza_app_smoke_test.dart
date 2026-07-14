@@ -18,7 +18,7 @@ void main() {
 
     await tester.pumpWidget(
       NazaOneApp(
-        warmModel: false,
+        requireVaultUnlock: false,
         visionPicker: () async => NazaVisionPickResult.selected(image),
       ),
     );
@@ -53,7 +53,7 @@ void main() {
     var attempts = 0;
     await tester.pumpWidget(
       NazaOneApp(
-        warmModel: false,
+        requireVaultUnlock: false,
         visionPicker: () async {
           attempts++;
           return attempts == 1
@@ -81,7 +81,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       NazaOneApp(
-        warmModel: false,
+        requireVaultUnlock: false,
         visionPicker: () async => const NazaVisionPickResult.unavailable(
           'native picker is not registered',
         ),
@@ -103,7 +103,7 @@ void main() {
     var attempts = 0;
     await tester.pumpWidget(
       NazaOneApp(
-        warmModel: false,
+        requireVaultUnlock: false,
         visionPicker: () {
           attempts++;
           return result.future;
@@ -127,7 +127,7 @@ void main() {
   });
 
   testWidgets('renders the chat surface and composer', (tester) async {
-    await tester.pumpWidget(const NazaOneApp(warmModel: false));
+    await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
     await tester.pump();
 
     expect(find.text('New Chat'), findsOneWidget);
@@ -153,7 +153,7 @@ void main() {
   testWidgets('keeps scanner text visible when switching panels', (
     tester,
   ) async {
-    await tester.pumpWidget(const NazaOneApp(warmModel: false));
+    await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
     await tester.pump();
 
     await tester.tap(find.text('Road'));
@@ -187,71 +187,14 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('renders live audio chat controls on the Convo tab', (
+  testWidgets('has no retired voice, Convo, or BarkPack surfaces', (
     tester,
   ) async {
-    await tester.pumpWidget(const NazaOneApp(warmModel: false));
+    await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
     await tester.pump();
 
-    final convoNav = find.ancestor(
-      of: find.text('Convo'),
-      matching: find.byType(GestureDetector),
-    );
-    await tester.tap(convoNav.first);
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.text('Convo'), findsWidgets);
-    await tester.scrollUntilVisible(
-      find.text('Live audio chat'),
-      420,
-      scrollable: find.byType(Scrollable).last,
-    );
-
-    expect(find.text('Live audio chat'), findsOneWidget);
-    expect(find.text('Start Live Chat'), findsOneWidget);
-    expect(find.text('Stop Audio'), findsOneWidget);
+    expect(find.text('Convo'), findsNothing);
     expect(find.textContaining('BarkPack'), findsNothing);
-    expect(find.text('Render Convo WAV'), findsNothing);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
-  testWidgets('keeps BarkPack installation and tests in Settings', (
-    tester,
-  ) async {
-    await tester.pumpWidget(const NazaOneApp(warmModel: false));
-    await tester.pump();
-
-    final convoNav = find.ancestor(
-      of: find.text('Convo'),
-      matching: find.byType(GestureDetector),
-    );
-    await tester.tap(convoNav.first);
-    await tester.pump(const Duration(milliseconds: 300));
-
-    expect(find.text('Install / Verify Pack'), findsNothing);
-    expect(find.text('Run Self-Test'), findsNothing);
-    expect(find.text('Voice Setup'), findsNothing);
-    expect(find.textContaining('BarkPack'), findsNothing);
-
-    final settingsNav = find.ancestor(
-      of: find.text('Settings'),
-      matching: find.byType(GestureDetector),
-    );
-    await tester.tap(settingsNav.first);
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('Settings'), findsWidgets);
-
-    await tester.scrollUntilVisible(
-      find.text('BarkPack setup and testing'),
-      600,
-      scrollable: find.byType(Scrollable).last,
-    );
-    expect(find.text('Android voice diagnostics'), findsOneWidget);
-    expect(find.text('BarkPack setup and testing'), findsOneWidget);
-    expect(find.text('Install / Verify Pack'), findsOneWidget);
-    expect(find.text('Run Self-Test'), findsOneWidget);
-
-    await tester.pumpWidget(const SizedBox.shrink());
+    expect(find.textContaining('voice diagnostics'), findsNothing);
   });
 }

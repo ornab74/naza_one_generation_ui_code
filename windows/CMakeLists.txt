@@ -52,14 +52,6 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
-add_library(naza_bark_ffi SHARED
-  "${CMAKE_CURRENT_SOURCE_DIR}/../native/naza_bark_ffi.cpp"
-)
-target_compile_features(naza_bark_ffi PRIVATE cxx_std_17)
-target_compile_options(naza_bark_ffi PRIVATE "$<$<CONFIG:Release>:/O2>")
-set_target_properties(naza_bark_ffi PROPERTIES OUTPUT_NAME "naza_bark_ffi")
-add_dependencies(${BINARY_NAME} naza_bark_ffi)
-
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
@@ -86,9 +78,6 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-  COMPONENT Runtime)
-
-install(TARGETS naza_bark_ffi RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 if(PLUGIN_BUNDLED_LIBRARIES)

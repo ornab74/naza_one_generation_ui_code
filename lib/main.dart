@@ -1,22 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi' as ffi;
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart' as crypto;
-import 'package:ffi/ffi.dart' as pkg_ffi;
 import 'package:file_selector/file_selector.dart' as file_selector;
-import 'package:flutter/foundation.dart' show ValueListenable, mapEquals;
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
 import 'package:path_provider/path_provider.dart';
+
+import 'security/post_quantum_export.dart';
+import 'security/secure_database.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,7 +37,7 @@ Future<void> main() async {
     );
   }
 
-  runApp(const NazaOneApp(warmModel: false));
+  runApp(const NazaOneApp());
 }
 
 final class NazaPalette {
@@ -64,7 +63,7 @@ final class NazaFonts {
   const NazaFonts._();
 
   static const String display = 'Inter';
-  static const String accent = 'SpaceGrotesk';
+  static const String accent = 'Inter';
   static const String mono = 'JetBrainsMono';
 }
 
@@ -78,16 +77,6 @@ final class NazaAppConfig {
       'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/7fa1d78473894f7e736a21d920c3aa80f950c0db/gemma-4-E2B-it.litertlm';
   static const String modelSha256 =
       'ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42';
-  static const String barkPackIndexUrl = String.fromEnvironment(
-    'NAZA_BARKPACK_INDEX_URL',
-    defaultValue:
-        'https://github.com/ornab74/naza_one_generation_ui_code/releases/download/barkpack-latest/naza-barkpack-index.json',
-  );
-  static const String barkPackIndexSha256 = String.fromEnvironment(
-    'NAZA_BARKPACK_INDEX_SHA256',
-    defaultValue:
-        'e30d638dc477ec017aacd0ceaf21d97d94f6a83ac35f9037313e3f66f5640eaf',
-  );
   static const String desktopGpuEnvironmentVariable = 'NAZA_DESKTOP_GPU';
   static const String desktopCpuEnvironmentVariable = 'NAZA_DESKTOP_CPU';
   static const int contextTokens = 3072;
@@ -97,14 +86,11 @@ final class NazaAppConfig {
   static const int continuationRepairOutputTokens = 192;
   static const int continuationStructureOutputTokens = 384;
   static const int continuationExpansionOutputTokens = 768;
-  static const int liveVoiceOutputTokens = 160;
   static const int visionMaxImages = 1;
   static const int visionMaxImageDimension = 1280;
   static const int visionMaxSourceImageBytes = 32 * 1024 * 1024;
   static const int visionMaxImageBytes = 8 * 1024 * 1024;
   static const int visionInputTokenReserve = 512;
-  static const int voiceListenTimeoutSeconds = 30;
-  static const int voiceSpeakTimeoutSeconds = 90;
   static const int autoContinuationPasses = 4;
   static const int minAutoContinuationPasses = 0;
   static const int maxAutoContinuationPasses = 12;
@@ -124,7 +110,6 @@ final class NazaAppConfig {
   static const int chatOpenTimeoutSeconds = 20;
   static const int chatAddQueryTimeoutSeconds = 30;
   static const int memoryAllocationTimeoutSeconds = 4;
-  static const String liveVoiceChannel = 'com.nazaone/live_voice';
   static const String vaultAad = 'naza-one-vault-v2-generation-ui';
   static const String keyFileName = 'naza_one_vault.key';
   static const String historyFileName = 'naza_one_history.aesgcm.json';
@@ -132,12 +117,10 @@ final class NazaAppConfig {
       'naza_scanner_drafts.sqlite.aesgcm.json';
   static const String memoryFileName = 'naza_one_vector_memory.aesgcm.json';
   static const String memorySettingsFileName = 'naza_memory_settings.json';
-  static const String runtimeFileName = 'naza_runtime_state.json';
   static const String verificationStateFileName =
       'naza_verification_state.aesgcm.json';
   static const String backendPreferenceFileName =
       'naza_backend_preference.json';
-  static const String barkPerformanceFileName = 'naza_bark_performance.json';
   static const String generationSettingsFileName =
       'naza_generation_settings.sqlite.aesgcm.json';
   static const int memoryEmbeddingDimensions = 128;
@@ -168,7 +151,7 @@ Style:
 - Talk like a capable conversational partner, not a policy document.
 - Accept loose, experimental, playful, shorthand, or unusual prompting styles.
 - Follow the user's lead on tone and format. Be casual when the user is casual.
-- Keep ordinary answers concise, especially in voice chat.
+- Keep ordinary answers concise.
 - Use structure when it helps, but avoid unnecessary technical framing.
 - For long answers, finish the current thought before stopping.
 - Avoid reflexive refusal phrasing. Decline only for a real safety, privacy, legal, or device limitation.
@@ -187,15 +170,6 @@ Safety:
 - Be practical and non-alarmist.
 - When uncertain, say so briefly and give a useful next step.
 - For risky medical, legal, financial, driving, food, or water decisions, give conservative practical guidance and encourage real-world verification.
-''';
-
-  static const String liveVoiceSystemInstruction = '''
-You are Naza One in live voice conversation mode.
-
-Speak naturally and briefly. Reply in one to three short spoken sentences unless the user clearly asks for more.
-Be flexible with wording, interruptions, shorthand, jokes, and half-formed thoughts.
-Avoid markdown, tables, long lists, and technical labels unless asked.
-Do not over-refuse. If a request has a real limit, say the closest helpful thing you can do next.
 ''';
 
   static const String scannerSystemInstruction = '''
@@ -253,131 +227,6 @@ enum NazaModelBackendPreference {
       'gpu-only' || 'gpu' => NazaModelBackendPreference.gpuOnly,
       'cpu-only' || 'cpu' => NazaModelBackendPreference.cpuOnly,
       _ => NazaModelBackendPreference.gpuFirst,
-    };
-  }
-}
-
-enum NazaBarkPerformancePreset {
-  eco8gb,
-  balanced8gb,
-  studio;
-
-  String get label {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 'Eco 8 GB / turbo',
-      NazaBarkPerformancePreset.balanced8gb => 'Balanced 8 GB',
-      NazaBarkPerformancePreset.studio => 'Studio quality',
-    };
-  }
-
-  String get shortLabel {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 'Eco 8GB',
-      NazaBarkPerformancePreset.balanced8gb => 'Balanced',
-      NazaBarkPerformancePreset.studio => 'Studio',
-    };
-  }
-
-  String get description {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb =>
-        'Lowest RAM and fastest CPU path for laptops.',
-      NazaBarkPerformancePreset.balanced8gb =>
-        'Default single-machine profile: fast, clear, bounded.',
-      NazaBarkPerformancePreset.studio =>
-        'More harmonic detail; slower and heavier.',
-    };
-  }
-
-  String get storageValue {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 'eco-8gb',
-      NazaBarkPerformancePreset.balanced8gb => 'balanced-8gb',
-      NazaBarkPerformancePreset.studio => 'studio',
-    };
-  }
-
-  int get sampleRate {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 16000,
-      NazaBarkPerformancePreset.balanced8gb => 22050,
-      NazaBarkPerformancePreset.studio => 32000,
-    };
-  }
-
-  int get nativeFlags {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 1,
-      NazaBarkPerformancePreset.balanced8gb => 2,
-      NazaBarkPerformancePreset.studio => 4,
-    };
-  }
-
-  int get maxNativeSeconds {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 120,
-      NazaBarkPerformancePreset.balanced8gb => 240,
-      NazaBarkPerformancePreset.studio => 420,
-    };
-  }
-
-  int get maxNativeEvents {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 64,
-      NazaBarkPerformancePreset.balanced8gb => 128,
-      NazaBarkPerformancePreset.studio => 192,
-    };
-  }
-
-  int get scriptChunkChars {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 720,
-      NazaBarkPerformancePreset.balanced8gb => 920,
-      NazaBarkPerformancePreset.studio => 1150,
-    };
-  }
-
-  int get maxScriptChunks {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 6,
-      NazaBarkPerformancePreset.balanced8gb => 10,
-      NazaBarkPerformancePreset.studio => 12,
-    };
-  }
-
-  int get maxDisplaySegments {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 8,
-      NazaBarkPerformancePreset.balanced8gb => 12,
-      NazaBarkPerformancePreset.studio => 16,
-    };
-  }
-
-  double get previewSecondsCap {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => 14.0,
-      NazaBarkPerformancePreset.balanced8gb => 22.0,
-      NazaBarkPerformancePreset.studio => 34.0,
-    };
-  }
-
-  Color get color {
-    return switch (this) {
-      NazaBarkPerformancePreset.eco8gb => const Color(0xFFFFCE78),
-      NazaBarkPerformancePreset.balanced8gb => NazaPalette.mintSoft,
-      NazaBarkPerformancePreset.studio => const Color(0xFF9AC8FF),
-    };
-  }
-
-  static NazaBarkPerformancePreset fromStorage(Object? raw) {
-    final value = raw?.toString().trim().toLowerCase();
-    return switch (value) {
-      'eco' ||
-      'eco-8gb' ||
-      'turbo' ||
-      'fast' => NazaBarkPerformancePreset.eco8gb,
-      'studio' || 'quality' || 'hq' => NazaBarkPerformancePreset.studio,
-      _ => NazaBarkPerformancePreset.balanced8gb,
     };
   }
 }
@@ -539,7 +388,7 @@ final class NazaStreamResult {
   });
 }
 
-enum NazaGenerationOrigin { chat, scanner, voice }
+enum NazaGenerationOrigin { chat, scanner }
 
 final class NazaContinuationDecision {
   final bool shouldContinue;
@@ -664,6 +513,22 @@ final class NazaContinuationFinalization {
     required this.text,
     required this.rolledBack,
     required this.closedFence,
+    required this.reason,
+  });
+}
+
+final class NazaContinuationPrefixCheckpoint {
+  final String workingText;
+  final String stableText;
+  final bool recoveredCorruption;
+  final bool hasPendingUnit;
+  final String reason;
+
+  const NazaContinuationPrefixCheckpoint({
+    required this.workingText,
+    required this.stableText,
+    required this.recoveredCorruption,
+    required this.hasPendingUnit,
     required this.reason,
   });
 }
@@ -2116,6 +1981,8 @@ final class _NazaPythonIntegritySnapshot {
     var delimiterDepth = 0;
     var continuedByBackslash = false;
     String? openQuote;
+    var lastLexicalStatement = '';
+    var lastLexicalLine = 0;
 
     for (var index = 0; index < lines.length; index++) {
       final rawLine = lines[index];
@@ -2138,6 +2005,8 @@ final class _NazaPythonIntegritySnapshot {
       }
       codeLines++;
       final lineNumber = index + 1;
+      lastLexicalStatement = clean;
+      lastLexicalLine = lineNumber;
       final indent = _NazaPythonScriptSnapshot._indentOf(rawLine);
       final continuingLogicalLine = delimiterDepth > 0 || continuedByBackslash;
       delimiterDepth += _delimiterDelta(lexical);
@@ -2281,6 +2150,11 @@ final class _NazaPythonIntegritySnapshot {
     if (expectedSuite != null) {
       diagnostics.add('missing-suite:${expectedSuite.qualifiedName}@eof');
     }
+    if (continuedByBackslash ||
+        delimiterDepth <= 0 &&
+            _looksLikeIncompletePythonStatement(lastLexicalStatement)) {
+      diagnostics.add('incomplete-statement@line$lastLexicalLine');
+    }
     return _NazaPythonIntegritySnapshot(
       definitionCounts: Map.unmodifiable(definitions),
       diagnostics: List.unmodifiable(diagnostics.toSet()),
@@ -2323,6 +2197,14 @@ final class _NazaPythonIntegritySnapshot {
     return RegExp(
       r'[A-Za-z0-9)](?:return|raise|yield|break|continue)\s+[A-Za-z_(]',
     ).hasMatch(line);
+  }
+
+  static bool _looksLikeIncompletePythonStatement(String line) {
+    if (line.isEmpty) return false;
+    return RegExp(
+          r'(?:=|:=|\+=|-=|\*=|/=|//=|%=|\*\*=|\+|-|\*|/|//|%|\*\*|\.|\band|\bor|\bnot|\bawait)\s*$',
+        ).hasMatch(line) ||
+        RegExp(r'^(?:from\s+\S+\s+import|import|@\S+)\s*$').hasMatch(line);
   }
 
   static int _suiteColonIndex(String line) {
@@ -2970,7 +2852,6 @@ final class NazaContinuationTaskAgent {
       NazaActionMode.summarize => 'summarization',
       NazaActionMode.explain => 'teaching',
       NazaActionMode.scan => 'scanner-analysis',
-      NazaActionMode.voice => 'voice-script',
       _ => 'direct-answer',
     };
   }
@@ -3883,6 +3764,154 @@ final class _DigestSink implements Sink<crypto.Digest> {
   void close() {}
 }
 
+/// Persists trust decisions inside the unlocked encrypted SQLite vault.
+///
+/// SHA-256 is computed only when an artifact has no matching attestation. A
+/// trusted artifact is subsequently recognized from its path and file-system
+/// metadata, so boot and message send never rescan an unchanged model.
+final class NazaModelAttestationResult {
+  final bool verified;
+  final bool hashComputed;
+
+  const NazaModelAttestationResult({
+    required this.verified,
+    required this.hashComputed,
+  });
+}
+
+final class NazaModelAttestationStore {
+  NazaModelAttestationStore._(this._database);
+
+  static final NazaModelAttestationStore instance = NazaModelAttestationStore._(
+    NazaSecureDatabase.instance,
+  );
+
+  factory NazaModelAttestationStore.forTesting(NazaSecureDatabase database) {
+    return NazaModelAttestationStore._(database);
+  }
+
+  static const String _namespace = 'model-attestations';
+  static const String _runtimeKey = 'active-runtime-model';
+  final NazaSecureDatabase _database;
+
+  Future<NazaModelAttestationResult> verifyOnce({
+    required File file,
+    required String sha256,
+    required String marker,
+    required Future<String> Function() computeSha256,
+    void Function()? onHashRequired,
+  }) async {
+    if (await isTrustedFile(file: file, sha256: sha256, marker: marker)) {
+      return const NazaModelAttestationResult(
+        verified: true,
+        hashComputed: false,
+      );
+    }
+    onHashRequired?.call();
+    final actual = (await computeSha256()).trim().toLowerCase();
+    final expected = sha256.trim().toLowerCase();
+    if (actual != expected) {
+      return const NazaModelAttestationResult(
+        verified: false,
+        hashComputed: true,
+      );
+    }
+    await trustFile(file: file, sha256: expected, marker: marker);
+    return const NazaModelAttestationResult(verified: true, hashComputed: true);
+  }
+
+  Future<bool> isTrustedFile({
+    required File file,
+    required String sha256,
+    required String marker,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) return false;
+    final raw = await _database.readJson(_namespace, _artifactKey(file.path));
+    return raw is Map &&
+        raw['path'] == fingerprint['path'] &&
+        raw['size'] == fingerprint['size'] &&
+        raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
+        raw['changedMillis'] == fingerprint['changedMillis'] &&
+        raw['sha256'] == sha256.trim().toLowerCase() &&
+        raw['marker'] == marker;
+  }
+
+  Future<void> trustFile({
+    required File file,
+    required String sha256,
+    required String marker,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) {
+      throw FileSystemException(
+        'Cannot attest a missing or empty model artifact.',
+        file.path,
+      );
+    }
+    await _database
+        .writeJson(_namespace, _artifactKey(file.path), <String, Object?>{
+          ...fingerprint,
+          'sha256': sha256.trim().toLowerCase(),
+          'marker': marker,
+          'trustedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+  }
+
+  Future<bool> isRuntimeModelTrusted({
+    required File file,
+    required String sha256,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) return false;
+    final raw = await _database.readJson(_namespace, _runtimeKey);
+    return raw is Map &&
+        raw['path'] == fingerprint['path'] &&
+        raw['size'] == fingerprint['size'] &&
+        raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
+        raw['changedMillis'] == fingerprint['changedMillis'] &&
+        raw['sha256'] == sha256.trim().toLowerCase() &&
+        raw['modelFileName'] == NazaAppConfig.modelFileName;
+  }
+
+  Future<void> trustRuntimeModel({
+    required File file,
+    required String sha256,
+  }) async {
+    final fingerprint = await _fingerprint(file);
+    if (fingerprint == null) {
+      throw FileSystemException('The installed model is missing.', file.path);
+    }
+    await _database.writeJson(_namespace, _runtimeKey, <String, Object?>{
+      ...fingerprint,
+      'sha256': sha256.trim().toLowerCase(),
+      'modelFileName': NazaAppConfig.modelFileName,
+      'trustedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  Future<void> clearRuntimeModelTrust() {
+    return _database.delete(_namespace, _runtimeKey);
+  }
+
+  Future<Map<String, Object?>?> _fingerprint(File file) async {
+    if (!await file.exists()) return null;
+    final stat = await file.stat();
+    if (stat.type != FileSystemEntityType.file || stat.size <= 0) return null;
+    return <String, Object?>{
+      'path': file.absolute.path,
+      'size': stat.size,
+      'modifiedMillis': stat.modified.toUtc().millisecondsSinceEpoch,
+      'changedMillis': stat.changed.toUtc().millisecondsSinceEpoch,
+    };
+  }
+
+  String _artifactKey(String path) {
+    final digest = crypto.sha256.convert(utf8.encode(File(path).absolute.path));
+    return base64UrlEncode(digest.bytes).replaceAll('=', '');
+  }
+}
+
 final class NazaModelStoreStatus {
   final bool installed;
   final bool busy;
@@ -3940,12 +3969,12 @@ final class NazaSecureModelStore {
   const NazaSecureModelStore._();
 
   static const int _maxModelBytes = 8 * 1024 * 1024 * 1024;
-  static const String _modelTrustKind = 'gemma-litertlm-model';
   static final Uri _downloadUri = Uri.parse(NazaAppConfig.modelDownloadUrl);
   static final ValueNotifier<NazaModelStoreStatus> status =
       ValueNotifier<NazaModelStoreStatus>(NazaModelStoreStatus.idle());
   static Future<NazaModelStoreStatus>? _refreshFuture;
   static Future<NazaVerifiedModelFile>? _ensureFuture;
+  static NazaVerifiedModelFile? _resolved;
 
   static List<String> get localCandidatePaths =>
       List<String>.unmodifiable(_localCandidates());
@@ -3956,15 +3985,54 @@ final class NazaSecureModelStore {
   }
 
   static Future<NazaModelStoreStatus> _refreshInner() async {
+    final target = await _targetFile();
     try {
-      final target = await _targetFile();
       status.value = status.value.copyWith(
         busy: true,
-        progress: 0,
-        phase: 'checking local models folder',
+        progress: 1,
+        phase: 'checking encrypted model attestation',
         cachePath: target.path,
         clearError: true,
       );
+
+      if (await target.exists()) {
+        final verification = await _attestOrVerify(
+          target,
+          onHashRequired: () {
+            status.value = status.value.copyWith(
+              busy: true,
+              progress: 5,
+              phase: 'verifying new model SHA-256',
+              cachePath: target.path,
+              clearError: true,
+            );
+          },
+          onProgress: (progress, phase) {
+            status.value = status.value.copyWith(
+              busy: true,
+              progress: progress,
+              phase: phase,
+              cachePath: target.path,
+              clearError: true,
+            );
+          },
+          progressStart: 5,
+          progressEnd: 70,
+        );
+        if (verification.verified) {
+          _resolved = NazaVerifiedModelFile(
+            file: target,
+            sha256: NazaAppConfig.modelSha256,
+            downloaded: false,
+          );
+          return _publishReady(
+            target: target,
+            phase: verification.hashComputed
+                ? 'model verified and attested'
+                : 'trusted cached model ready',
+          );
+        }
+      }
 
       final local = await _verifiedLocalCandidate(
         onProgress: (progress, phase, path) {
@@ -3977,63 +4045,20 @@ final class NazaSecureModelStore {
             clearError: true,
           );
         },
-        progressStart: 1,
-        progressEnd: 45,
+        progressStart: 5,
+        progressEnd: 90,
       );
       if (local != null) {
-        final current = NazaModelStoreStatus(
-          installed: true,
-          busy: false,
-          progress: 100,
-          phase: 'verified local /models source ready',
-          cachePath: target.path,
-          localPath: local.path,
-          error: null,
+        _resolved = NazaVerifiedModelFile(
+          file: local,
+          sha256: NazaAppConfig.modelSha256,
+          downloaded: false,
         );
-        status.value = current;
-        return current;
-      }
-
-      if (await _isTrustedModelFile(target)) {
-        final current = NazaModelStoreStatus(
-          installed: true,
-          busy: false,
-          progress: 100,
-          phase: 'trusted cached model ready',
-          cachePath: target.path,
-          localPath: null,
-          error: null,
+        return _publishReady(
+          target: target,
+          local: local,
+          phase: 'trusted local model ready',
         );
-        status.value = current;
-        return current;
-      }
-
-      if (await _isVerified(
-        target,
-        onProgress: (progress, phase) {
-          status.value = status.value.copyWith(
-            busy: true,
-            progress: progress,
-            phase: phase,
-            cachePath: target.path,
-            clearError: true,
-          );
-        },
-        progressStart: 46,
-        progressEnd: 95,
-      )) {
-        final current = NazaModelStoreStatus(
-          installed: true,
-          busy: false,
-          progress: 100,
-          phase: 'verified cached model ready',
-          cachePath: target.path,
-          localPath: null,
-          error: null,
-        );
-        await _trustModelFile(target);
-        status.value = current;
-        return current;
       }
 
       final current = NazaModelStoreStatus(
@@ -4049,7 +4074,7 @@ final class NazaSecureModelStore {
       status.value = current;
       return current;
     } catch (error) {
-      final target = await _targetFile();
+      _resolved = null;
       final current = NazaModelStoreStatus(
         installed: false,
         busy: false,
@@ -4066,9 +4091,30 @@ final class NazaSecureModelStore {
     }
   }
 
+  static NazaModelStoreStatus _publishReady({
+    required File target,
+    required String phase,
+    File? local,
+  }) {
+    final current = NazaModelStoreStatus(
+      installed: true,
+      busy: false,
+      progress: 100,
+      phase: phase,
+      cachePath: target.path,
+      localPath: local?.path,
+      error: null,
+    );
+    status.value = current;
+    return current;
+  }
+
   static Future<NazaVerifiedModelFile> ensureVerifiedModel({
     void Function(int progress, String phase)? onProgress,
   }) async {
+    final ready = _resolved;
+    if (ready != null && await ready.file.exists()) return ready;
+    _resolved = null;
     _ensureFuture ??= _ensureVerifiedModelAfterRefresh(onProgress: onProgress);
     return _ensureFuture!;
   }
@@ -4076,16 +4122,22 @@ final class NazaSecureModelStore {
   static Future<NazaVerifiedModelFile> _ensureVerifiedModelAfterRefresh({
     void Function(int progress, String phase)? onProgress,
   }) async {
-    final activeRefresh = _refreshFuture;
-    if (activeRefresh != null) {
-      onProgress?.call(0, 'finishing local model source check');
-      try {
-        await activeRefresh;
-      } catch (_) {
-        // The authoritative ensure pass below reports any real source error.
+    try {
+      final activeRefresh = _refreshFuture;
+      if (activeRefresh != null) {
+        onProgress?.call(0, 'finishing encrypted model attestation check');
+        try {
+          await activeRefresh;
+        } catch (_) {
+          // The authoritative ensure pass below reports any real source error.
+        }
       }
+      final ready = _resolved;
+      if (ready != null && await ready.file.exists()) return ready;
+      return _ensureVerifiedModelInner(onProgress: onProgress);
+    } finally {
+      _ensureFuture = null;
     }
-    return _ensureVerifiedModelInner(onProgress: onProgress);
   }
 
   static Future<NazaVerifiedModelFile> _ensureVerifiedModelInner({
@@ -4116,7 +4168,34 @@ final class NazaSecureModelStore {
     );
 
     try {
-      publish(1, 'checking local models folder');
+      publish(1, 'checking encrypted model attestation');
+      if (await target.exists()) {
+        final verification = await _attestOrVerify(
+          target,
+          onHashRequired: () => publish(5, 'verifying new model SHA-256'),
+          onProgress: publish,
+          progressStart: 5,
+          progressEnd: 45,
+        );
+        if (verification.verified) {
+          final phase = verification.hashComputed
+              ? 'verified cached model ready'
+              : 'trusted cached model ready';
+          publish(100, phase);
+          status.value = status.value.copyWith(
+            installed: true,
+            busy: false,
+            progress: 100,
+            phase: phase,
+            cachePath: target.path,
+            localPath: null,
+            clearError: true,
+          );
+          return _remember(target, downloaded: false);
+        }
+      }
+
+      publish(2, 'checking local models folder');
       final local = await _verifiedLocalCandidate(
         onProgress: (progress, phase, path) {
           status.value = status.value.copyWith(localPath: path);
@@ -4135,53 +4214,7 @@ final class NazaSecureModelStore {
           localPath: local.path,
           clearError: true,
         );
-        return NazaVerifiedModelFile(
-          file: local,
-          sha256: NazaAppConfig.modelSha256,
-          downloaded: false,
-        );
-      }
-
-      if (await _isTrustedModelFile(target)) {
-        publish(100, 'trusted cached model');
-        status.value = status.value.copyWith(
-          installed: true,
-          busy: false,
-          progress: 100,
-          phase: 'trusted cached model ready',
-          cachePath: target.path,
-          localPath: null,
-          clearError: true,
-        );
-        return NazaVerifiedModelFile(
-          file: target,
-          sha256: NazaAppConfig.modelSha256,
-          downloaded: false,
-        );
-      }
-
-      if (await _isVerified(
-        target,
-        onProgress: publish,
-        progressStart: 46,
-        progressEnd: 62,
-      )) {
-        publish(100, 'verified cached model');
-        status.value = status.value.copyWith(
-          installed: true,
-          busy: false,
-          progress: 100,
-          phase: 'verified cached model ready',
-          cachePath: target.path,
-          localPath: null,
-          clearError: true,
-        );
-        await _trustModelFile(target);
-        return NazaVerifiedModelFile(
-          file: target,
-          sha256: NazaAppConfig.modelSha256,
-          downloaded: false,
-        );
+        return _remember(local, downloaded: false);
       }
 
       if (await target.exists()) {
@@ -4198,11 +4231,7 @@ final class NazaSecureModelStore {
         localPath: null,
         clearError: true,
       );
-      return NazaVerifiedModelFile(
-        file: target,
-        sha256: NazaAppConfig.modelSha256,
-        downloaded: true,
-      );
+      return _remember(target, downloaded: true);
     } catch (error) {
       status.value = status.value.copyWith(
         installed: false,
@@ -4211,9 +4240,20 @@ final class NazaSecureModelStore {
         error: error.toString(),
       );
       rethrow;
-    } finally {
-      _ensureFuture = null;
     }
+  }
+
+  static NazaVerifiedModelFile _remember(
+    File file, {
+    required bool downloaded,
+  }) {
+    final verified = NazaVerifiedModelFile(
+      file: file,
+      sha256: NazaAppConfig.modelSha256,
+      downloaded: downloaded,
+    );
+    _resolved = verified;
+    return verified;
   }
 
   static Future<File> _targetFile() async {
@@ -4238,11 +4278,6 @@ final class NazaSecureModelStore {
       final base =
           progressStart + ((checked / candidates.length) * span).floor();
       checked++;
-      onProgress?.call(
-        base.clamp(progressStart, progressEnd).toInt(),
-        'verifying local model SHA-256',
-        file.path,
-      );
       try {
         _validateModelPath(file.path);
       } catch (_) {
@@ -4253,17 +4288,26 @@ final class NazaSecureModelStore {
         );
         continue;
       }
-      if (await _isTrustedModelFile(file)) {
-        return file;
-      }
-      if (await _isVerified(
+      final verification = await _attestOrVerify(
         file,
+        onHashRequired: () => onProgress?.call(
+          base.clamp(progressStart, progressEnd).toInt(),
+          'verifying new local model SHA-256',
+          file.path,
+        ),
         onProgress: (progress, phase) =>
             onProgress?.call(progress, phase, file.path),
         progressStart: base.clamp(progressStart, progressEnd).toInt(),
         progressEnd: progressEnd,
-      )) {
-        await _trustModelFile(file);
+      );
+      if (verification.verified) {
+        if (!verification.hashComputed) {
+          onProgress?.call(
+            base.clamp(progressStart, progressEnd).toInt(),
+            'trusted local model attestation found',
+            file.path,
+          );
+        }
         return file;
       }
     }
@@ -4330,9 +4374,11 @@ final class NazaSecureModelStore {
       }
 
       sink = part.openWrite(mode: FileMode.writeOnly);
+      final digestSink = _DigestSink();
+      final digestInput = crypto.sha256.startChunkedConversion(digestSink);
       var received = 0;
       var lastProgress = 0;
-      onProgress?.call(2, 'downloading verified model');
+      onProgress?.call(2, 'downloading and hashing verified model');
 
       await for (final chunk in response) {
         received += chunk.length;
@@ -4343,28 +4389,32 @@ final class NazaSecureModelStore {
           );
         }
         sink.add(chunk);
+        digestInput.add(chunk);
 
         if (length > 0) {
           final progress = (received / length * 92).floor().clamp(2, 94);
           if (progress > lastProgress) {
             lastProgress = progress;
-            onProgress?.call(progress, 'downloading verified model');
+            onProgress?.call(
+              progress,
+              'downloading and hashing verified model',
+            );
           }
         }
       }
 
       await sink.close();
       sink = null;
+      digestInput.close();
 
-      onProgress?.call(95, 'verifying downloaded model SHA-256');
-      final actual = await _sha256WithProgress(
-        part,
-        onProgress: onProgress,
-        progressStart: 95,
-        progressEnd: 99,
-        phase: 'verifying downloaded model SHA-256',
-        validateExtension: false,
-      );
+      if (received <= 0 || (length >= 0 && received != length)) {
+        throw HttpException(
+          'Model download ended at $received of $length bytes.',
+          uri: _downloadUri,
+        );
+      }
+      onProgress?.call(96, 'validating streamed SHA-256');
+      final actual = digestSink.value?.toString().toLowerCase() ?? '';
       if (actual != NazaAppConfig.modelSha256) {
         throw FormatException(
           'Downloaded model SHA-256 mismatch. Expected '
@@ -4374,7 +4424,7 @@ final class NazaSecureModelStore {
 
       await part.rename(target.path);
       await _trustModelFile(target);
-      onProgress?.call(100, 'verified model cached');
+      onProgress?.call(100, 'verified model cached and attested');
     } catch (_) {
       try {
         await sink?.close();
@@ -4471,38 +4521,36 @@ final class NazaSecureModelStore {
     }
   }
 
-  static Future<bool> _isVerified(
+  static Future<NazaModelAttestationResult> _attestOrVerify(
     File file, {
+    void Function()? onHashRequired,
     void Function(int progress, String phase)? onProgress,
     int progressStart = 0,
     int progressEnd = 100,
-  }) async {
-    if (!await file.exists()) return false;
-    _validateModelPath(file.path);
-    final stat = await file.stat();
-    if (stat.size <= 0 || stat.size > _maxModelBytes) return false;
-    final actual = await _sha256WithProgress(
-      file,
-      onProgress: onProgress,
-      progressStart: progressStart,
-      progressEnd: progressEnd,
-      phase: 'verifying model SHA-256',
-    );
-    return actual == NazaAppConfig.modelSha256;
-  }
-
-  static Future<bool> _isTrustedModelFile(File file) {
-    return NazaVerificationStateStore.instance.isTrustedFile(
-      kind: _modelTrustKind,
+  }) {
+    return NazaModelAttestationStore.instance.verifyOnce(
       file: file,
       sha256: NazaAppConfig.modelSha256,
       marker: _modelTrustMarker,
+      onHashRequired: onHashRequired,
+      computeSha256: () async {
+        if (!await file.exists()) return '';
+        _validateModelPath(file.path);
+        final stat = await file.stat();
+        if (stat.size <= 0 || stat.size > _maxModelBytes) return '';
+        return _sha256WithProgress(
+          file,
+          onProgress: onProgress,
+          progressStart: progressStart,
+          progressEnd: progressEnd,
+          phase: 'verifying model SHA-256',
+        );
+      },
     );
   }
 
   static Future<void> _trustModelFile(File file) {
-    return NazaVerificationStateStore.instance.trustFile(
-      kind: _modelTrustKind,
+    return NazaModelAttestationStore.instance.trustFile(
       file: file,
       sha256: NazaAppConfig.modelSha256,
       marker: _modelTrustMarker,
@@ -4553,1334 +4601,6 @@ final class NazaSecureModelStore {
   }
 }
 
-final class NazaBarkPackAsset {
-  final String name;
-  final String asset;
-  final String sha256;
-  final int size;
-  final String? url;
-
-  const NazaBarkPackAsset({
-    required this.name,
-    required this.asset,
-    required this.sha256,
-    required this.size,
-    this.url,
-  });
-
-  factory NazaBarkPackAsset.fromJson(Map<String, dynamic> json) {
-    return NazaBarkPackAsset(
-      name: json['name'] as String,
-      asset: json['asset'] as String,
-      sha256: (json['sha256'] as String).toLowerCase(),
-      size: ((json['size'] as num?) ?? 0).toInt(),
-      url: json['url'] as String?,
-    );
-  }
-}
-
-final class NazaBarkPackIndex {
-  final String format;
-  final String packFormat;
-  final String quant;
-  final int tensorCount;
-  final NazaBarkPackAsset manifest;
-  final List<NazaBarkPackAsset> shards;
-  final DateTime createdAt;
-
-  const NazaBarkPackIndex({
-    required this.format,
-    required this.packFormat,
-    required this.quant,
-    required this.tensorCount,
-    required this.manifest,
-    required this.shards,
-    required this.createdAt,
-  });
-
-  factory NazaBarkPackIndex.fromJson(Map<String, dynamic> json) {
-    return NazaBarkPackIndex(
-      format: json['format'] as String,
-      packFormat: json['packFormat'] as String,
-      quant: (json['quant'] as String?) ?? 'unknown',
-      tensorCount: ((json['tensorCount'] as num?) ?? 0).toInt(),
-      manifest: NazaBarkPackAsset.fromJson(
-        Map<String, dynamic>.from(json['manifest'] as Map),
-      ),
-      shards: ((json['shards'] as List?) ?? const [])
-          .whereType<Map>()
-          .map((m) => NazaBarkPackAsset.fromJson(Map<String, dynamic>.from(m)))
-          .toList(growable: false),
-      createdAt:
-          DateTime.tryParse((json['createdAt'] as String?) ?? '') ??
-          DateTime.fromMillisecondsSinceEpoch(0),
-    );
-  }
-}
-
-final class NazaBarkPackStatus {
-  final bool installed;
-  final bool downloading;
-  final int progress;
-  final String phase;
-  final String packPath;
-  final int tensorCount;
-  final List<String> missingFamilies;
-  final String qualityTier;
-  final String familySummary;
-  final String stageSummary;
-  final String capabilitySummary;
-  final String sidecarSummary;
-  final String? error;
-
-  const NazaBarkPackStatus({
-    required this.installed,
-    required this.downloading,
-    required this.progress,
-    required this.phase,
-    required this.packPath,
-    required this.tensorCount,
-    required this.missingFamilies,
-    required this.qualityTier,
-    required this.familySummary,
-    required this.stageSummary,
-    required this.capabilitySummary,
-    required this.sidecarSummary,
-    this.error,
-  });
-
-  factory NazaBarkPackStatus.idle() {
-    return const NazaBarkPackStatus(
-      installed: false,
-      downloading: false,
-      progress: 0,
-      phase: 'barkpack idle',
-      packPath: '',
-      tensorCount: 0,
-      missingFamilies: ['semantic', 'coarse', 'fine', 'codec', 'speaker'],
-      qualityTier: 'not installed',
-      familySummary: 'none',
-      stageSummary: 'none',
-      capabilitySummary: 'none',
-      sidecarSummary: 'none',
-    );
-  }
-
-  String get shortLine {
-    final ready = installed ? 'ready' : 'not-ready';
-    final missing = missingFamilies.isEmpty
-        ? 'none'
-        : missingFamilies.join(', ');
-    return 'BarkPack $ready | $qualityTier | $progress% | tensors=$tensorCount | missing=$missing';
-  }
-}
-
-final class NazaVerificationStateStore {
-  NazaVerificationStateStore._();
-
-  static final NazaVerificationStateStore instance =
-      NazaVerificationStateStore._();
-
-  final AesGcm _aes = AesGcm.with256bits();
-  Future<void> _tail = Future<void>.value();
-
-  Future<bool> isTrustedFile({
-    required String kind,
-    required File file,
-    required String sha256,
-    String marker = '',
-  }) {
-    return _enqueue(
-      () => _isTrustedFileNow(
-        kind: kind,
-        file: file,
-        sha256: sha256,
-        marker: marker,
-      ),
-    );
-  }
-
-  Future<void> trustFile({
-    required String kind,
-    required File file,
-    required String sha256,
-    String marker = '',
-  }) {
-    return _enqueue(
-      () =>
-          _trustFileNow(kind: kind, file: file, sha256: sha256, marker: marker),
-    );
-  }
-
-  Future<bool> isRuntimeModelTrusted({
-    required File file,
-    required String sha256,
-  }) {
-    return _enqueue(
-      () => _isRuntimeModelTrustedNow(file: file, sha256: sha256),
-    );
-  }
-
-  Future<void> trustRuntimeModel({required File file, required String sha256}) {
-    return _enqueue(() => _trustRuntimeModelNow(file: file, sha256: sha256));
-  }
-
-  Future<void> clearRuntimeModelTrust() {
-    return _enqueue(_clearRuntimeModelTrustNow);
-  }
-
-  Future<NazaBarkPackStatus?> trustedBarkPackStatus({
-    required Directory dir,
-    required String indexMarker,
-  }) {
-    return _enqueue(
-      () => _trustedBarkPackStatusNow(dir: dir, indexMarker: indexMarker),
-    );
-  }
-
-  Future<void> trustBarkPack({
-    required Directory dir,
-    required String indexMarker,
-    required NazaBarkPackStatus status,
-  }) {
-    return _enqueue(
-      () =>
-          _trustBarkPackNow(dir: dir, indexMarker: indexMarker, status: status),
-    );
-  }
-
-  Future<T> _enqueue<T>(Future<T> Function() operation) {
-    final queued = _tail.then((_) => operation());
-    _tail = queued.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    return queued;
-  }
-
-  Future<bool> _isTrustedFileNow({
-    required String kind,
-    required File file,
-    required String sha256,
-    required String marker,
-  }) async {
-    final expected = sha256.trim().toLowerCase();
-    final fingerprint = await _fingerprint(file);
-    if (fingerprint == null) return false;
-
-    final state = await _readStateNow();
-    final files = state['files'];
-    if (files is! Map) return false;
-    final raw = files[kind];
-    if (raw is! Map) return false;
-
-    final metadataMatches =
-        raw['path'] == fingerprint['path'] &&
-        raw['size'] == fingerprint['size'] &&
-        raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
-        raw['sha256'] == expected &&
-        (raw['marker'] ?? '') == marker;
-    return metadataMatches;
-  }
-
-  Future<void> _trustFileNow({
-    required String kind,
-    required File file,
-    required String sha256,
-    required String marker,
-  }) async {
-    final fingerprint = await _fingerprint(file);
-    if (fingerprint == null) return;
-
-    final state = await _readStateNow();
-    final files = Map<String, Object?>.from(
-      (state['files'] as Map?) ?? const <String, Object?>{},
-    );
-    files[kind] = {
-      ...fingerprint,
-      'sha256': sha256.trim().toLowerCase(),
-      'marker': marker,
-      'trustedAt': DateTime.now().toUtc().toIso8601String(),
-    };
-    state['files'] = files;
-    await _writeStateNow(state);
-  }
-
-  Future<bool> _isRuntimeModelTrustedNow({
-    required File file,
-    required String sha256,
-  }) async {
-    final expected = sha256.trim().toLowerCase();
-    final fingerprint = await _fingerprint(file);
-    if (fingerprint == null) return false;
-
-    final state = await _readStateNow();
-    final raw = state['runtimeModel'];
-    if (raw is! Map) return false;
-
-    final metadataMatches =
-        raw['path'] == fingerprint['path'] &&
-        raw['size'] == fingerprint['size'] &&
-        raw['modifiedMillis'] == fingerprint['modifiedMillis'] &&
-        raw['sha256'] == expected &&
-        raw['modelFileName'] == NazaAppConfig.modelFileName;
-    return metadataMatches;
-  }
-
-  Future<void> _trustRuntimeModelNow({
-    required File file,
-    required String sha256,
-  }) async {
-    final fingerprint = await _fingerprint(file);
-    if (fingerprint == null) return;
-
-    final state = await _readStateNow();
-    state['runtimeModel'] = {
-      ...fingerprint,
-      'sha256': sha256.trim().toLowerCase(),
-      'modelFileName': NazaAppConfig.modelFileName,
-      'trustedAt': DateTime.now().toUtc().toIso8601String(),
-    };
-    await _writeStateNow(state);
-  }
-
-  Future<void> _clearRuntimeModelTrustNow() async {
-    final state = await _readStateNow();
-    state.remove('runtimeModel');
-    await _writeStateNow(state);
-  }
-
-  Future<NazaBarkPackStatus?> _trustedBarkPackStatusNow({
-    required Directory dir,
-    required String indexMarker,
-  }) async {
-    final manifest = await _fingerprint(
-      File('${dir.path}/manifest.json'),
-      includeSha256: true,
-    );
-    final installIndex = await _fingerprint(
-      File('${dir.path}/install_index_v2.json'),
-      includeSha256: true,
-    );
-    if (manifest == null || installIndex == null) return null;
-    final shards = await _barkPackShardFingerprints(dir);
-    if (shards.isEmpty) return null;
-
-    final state = await _readStateNow();
-    final raw = state['barkPack'];
-    if (raw is! Map) return null;
-
-    final storedMarker = (raw['indexMarker'] ?? '').toString();
-    if (indexMarker.isNotEmpty && storedMarker != indexMarker) return null;
-    if (raw['packPath'] != dir.path) return null;
-    if (!_sameFingerprint(raw['manifest'], manifest)) return null;
-    if (!_sameFingerprint(raw['installIndex'], installIndex)) return null;
-    if (!_sameFingerprintList(raw['shards'], shards)) return null;
-
-    final status = raw['status'];
-    if (status is! Map) return null;
-    return _statusFromJson(Map<String, Object?>.from(status));
-  }
-
-  Future<void> _trustBarkPackNow({
-    required Directory dir,
-    required String indexMarker,
-    required NazaBarkPackStatus status,
-  }) async {
-    final manifest = await _fingerprint(
-      File('${dir.path}/manifest.json'),
-      includeSha256: true,
-    );
-    final installIndex = await _fingerprint(
-      File('${dir.path}/install_index_v2.json'),
-      includeSha256: true,
-    );
-    if (manifest == null || installIndex == null) return;
-    final shards = await _barkPackShardFingerprints(dir);
-    if (shards.isEmpty) return;
-
-    final state = await _readStateNow();
-    state['barkPack'] = {
-      'packPath': dir.path,
-      'indexMarker': indexMarker,
-      'manifest': manifest,
-      'installIndex': installIndex,
-      'shards': shards,
-      'status': _statusToJson(status),
-      'trustedAt': DateTime.now().toUtc().toIso8601String(),
-    };
-    await _writeStateNow(state);
-  }
-
-  Future<Map<String, Object?>?> _fingerprint(
-    File file, {
-    bool includeSha256 = false,
-  }) async {
-    if (!await file.exists()) return null;
-    final stat = await file.stat();
-    if (stat.type != FileSystemEntityType.file || stat.size <= 0) return null;
-    final fingerprint = <String, Object?>{
-      'path': file.path,
-      'size': stat.size,
-      'modifiedMillis': stat.modified.toUtc().millisecondsSinceEpoch,
-    };
-    if (includeSha256) {
-      fingerprint['sha256'] = await _sha256(file);
-    }
-    return fingerprint;
-  }
-
-  bool _sameFingerprint(Object? raw, Map<String, Object?> fingerprint) {
-    if (raw is! Map) return false;
-    final metadataMatches =
-        raw['path'] == fingerprint['path'] &&
-        raw['size'] == fingerprint['size'] &&
-        raw['modifiedMillis'] == fingerprint['modifiedMillis'];
-    if (!metadataMatches) return false;
-    final expectedSha = fingerprint['sha256'];
-    if (expectedSha == null) return true;
-    return raw['sha256'] == expectedSha;
-  }
-
-  bool _sameFingerprintList(Object? raw, List<Map<String, Object?>> current) {
-    if (raw is! List || raw.length != current.length) return false;
-    for (var i = 0; i < current.length; i++) {
-      if (!_sameFingerprint(raw[i], current[i])) return false;
-    }
-    return true;
-  }
-
-  Future<List<Map<String, Object?>>> _barkPackShardFingerprints(
-    Directory dir,
-  ) async {
-    final installIndex = File('${dir.path}/install_index_v2.json');
-    final shardNames = <String>{};
-    if (await installIndex.exists()) {
-      try {
-        final decoded = jsonDecode(await installIndex.readAsString());
-        if (decoded is Map && decoded['shards'] is List) {
-          for (final item in decoded['shards'] as List) {
-            final name = item.toString();
-            if (RegExp(r'^tensors_[0-9]{3}\.bin$').hasMatch(name)) {
-              shardNames.add(name);
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    if (shardNames.isEmpty && await dir.exists()) {
-      await for (final entity in dir.list(followLinks: false)) {
-        if (entity is! File) continue;
-        final name = entity.uri.pathSegments.isEmpty
-            ? ''
-            : entity.uri.pathSegments.last;
-        if (RegExp(r'^tensors_[0-9]{3}\.bin$').hasMatch(name)) {
-          shardNames.add(name);
-        }
-      }
-    }
-
-    final sorted = shardNames.toList()..sort();
-    final fingerprints = <Map<String, Object?>>[];
-    for (final name in sorted) {
-      final fingerprint = await _fingerprint(
-        File('${dir.path}/$name'),
-        includeSha256: true,
-      );
-      if (fingerprint == null) return const [];
-      fingerprints.add(fingerprint);
-    }
-    return fingerprints;
-  }
-
-  Future<String> _sha256(File file) async {
-    final digest = await crypto.sha256.bind(file.openRead()).first;
-    return digest.toString().toLowerCase();
-  }
-
-  Map<String, Object?> _baseState() {
-    return {
-      'format': 'naza-verification-state-v1',
-      'updatedAt': DateTime.now().toUtc().toIso8601String(),
-    };
-  }
-
-  Future<Map<String, Object?>> _readStateNow() async {
-    final file = await _stateFile();
-    if (!await file.exists()) return _baseState();
-
-    try {
-      final wrapper = jsonDecode(await file.readAsString());
-      if (wrapper is! Map) return _baseState();
-
-      final clear = await _aes.decrypt(
-        SecretBox(
-          base64Decode(wrapper['cipherText'] as String),
-          nonce: base64Decode(wrapper['nonce'] as String),
-          mac: Mac(base64Decode(wrapper['mac'] as String)),
-        ),
-        secretKey: await NazaVault.instance._getOrCreateKey(),
-        aad: utf8.encode('${NazaAppConfig.vaultAad}:verification-state'),
-      );
-
-      final decoded = jsonDecode(utf8.decode(clear));
-      if (decoded is Map) return Map<String, Object?>.from(decoded);
-    } catch (_) {
-      // Corrupt or stale state should only cost a fresh verification pass.
-    }
-    return _baseState();
-  }
-
-  Future<void> _writeStateNow(Map<String, Object?> state) async {
-    state['format'] = 'naza-verification-state-v1';
-    state['updatedAt'] = DateTime.now().toUtc().toIso8601String();
-
-    final box = await _aes.encrypt(
-      utf8.encode(jsonEncode(state)),
-      secretKey: await NazaVault.instance._getOrCreateKey(),
-      aad: utf8.encode('${NazaAppConfig.vaultAad}:verification-state'),
-    );
-
-    final file = await _stateFile();
-    await NazaPrivateFileStore.writeString(
-      file,
-      jsonEncode({
-        'version': 1,
-        'cipher': 'AES-256-GCM',
-        'nonce': base64Encode(box.nonce),
-        'cipherText': base64Encode(box.cipherText),
-        'mac': base64Encode(box.mac.bytes),
-        'updatedAt': DateTime.now().toUtc().toIso8601String(),
-      }),
-    );
-  }
-
-  Future<File> _stateFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.verificationStateFileName}');
-  }
-
-  Map<String, Object?> _statusToJson(NazaBarkPackStatus status) {
-    return {
-      'installed': status.installed,
-      'downloading': status.downloading,
-      'progress': status.progress,
-      'phase': status.phase,
-      'packPath': status.packPath,
-      'tensorCount': status.tensorCount,
-      'missingFamilies': status.missingFamilies,
-      'qualityTier': status.qualityTier,
-      'familySummary': status.familySummary,
-      'stageSummary': status.stageSummary,
-      'capabilitySummary': status.capabilitySummary,
-      'sidecarSummary': status.sidecarSummary,
-      'error': status.error,
-    };
-  }
-
-  NazaBarkPackStatus _statusFromJson(Map<String, Object?> json) {
-    return NazaBarkPackStatus(
-      installed: json['installed'] == true,
-      downloading: false,
-      progress: ((json['progress'] as num?) ?? 0).toInt(),
-      phase: (json['phase'] ?? 'BarkPack status cached').toString(),
-      packPath: (json['packPath'] ?? '').toString(),
-      tensorCount: ((json['tensorCount'] as num?) ?? 0).toInt(),
-      missingFamilies: ((json['missingFamilies'] as List?) ?? const [])
-          .map((item) => item.toString())
-          .toList(growable: false),
-      qualityTier: (json['qualityTier'] ?? 'unknown').toString(),
-      familySummary: (json['familySummary'] ?? 'unknown').toString(),
-      stageSummary: (json['stageSummary'] ?? 'unknown').toString(),
-      capabilitySummary: (json['capabilitySummary'] ?? 'unknown').toString(),
-      sidecarSummary: (json['sidecarSummary'] ?? 'none').toString(),
-      error: json['error']?.toString(),
-    );
-  }
-}
-
-final class NazaBarkTensorInfo {
-  final String name;
-  final String family;
-  final String file;
-  final List<int> shape;
-  final String dtype;
-  final double scale;
-  final int zeroPoint;
-  final int offset;
-  final int length;
-
-  const NazaBarkTensorInfo({
-    required this.name,
-    required this.family,
-    required this.file,
-    required this.shape,
-    required this.dtype,
-    required this.scale,
-    required this.zeroPoint,
-    required this.offset,
-    required this.length,
-  });
-
-  factory NazaBarkTensorInfo.fromJson(Map<String, dynamic> json) {
-    return NazaBarkTensorInfo(
-      name: json['name'] as String,
-      family: (json['family'] as String?) ?? '',
-      file: json['file'] as String,
-      shape: (json['shape'] as List).map((v) => (v as num).toInt()).toList(),
-      dtype: (json['dtype'] as String?) ?? 'int8',
-      scale: ((json['scale'] as num?) ?? 1.0).toDouble(),
-      zeroPoint: ((json['zeroPoint'] as num?) ?? 0).toInt(),
-      offset: ((json['offset'] as num?) ?? 0).toInt(),
-      length: ((json['length'] as num?) ?? 0).toInt(),
-    );
-  }
-}
-
-final class NazaSecureBarkPackStore {
-  NazaSecureBarkPackStore._();
-
-  static final NazaSecureBarkPackStore instance = NazaSecureBarkPackStore._();
-  static const int _maxIndexBytes = 4 * 1024 * 1024;
-  static const int _maxAssetBytes = 3 * 1024 * 1024 * 1024;
-  static const int _maxPackBytes = 6 * 1024 * 1024 * 1024;
-  static const int _maxShardCount = 512;
-
-  static const List<String> _requiredFamilies = [
-    'semantic',
-    'coarse',
-    'fine',
-    'codec',
-    'speaker',
-  ];
-
-  final ValueNotifier<NazaBarkPackStatus> status =
-      ValueNotifier<NazaBarkPackStatus>(NazaBarkPackStatus.idle());
-  Future<NazaBarkPackStatus>? _installFuture;
-
-  Future<NazaBarkPackStatus> refresh() async {
-    final dir = await _packDir();
-    final trusted = await NazaVerificationStateStore.instance
-        .trustedBarkPackStatus(dir: dir, indexMarker: _configuredIndexMarker);
-    if (trusted != null && trusted.installed) {
-      status.value = trusted;
-      return trusted;
-    }
-
-    final current = await _describeLocal();
-    if (current.installed) {
-      unawaited(
-        NazaVerificationStateStore.instance.trustBarkPack(
-          dir: dir,
-          indexMarker: _configuredIndexMarker,
-          status: current,
-        ),
-      );
-    }
-    status.value = current;
-    return current;
-  }
-
-  Future<NazaBarkPackStatus> ensureInstalled() {
-    _installFuture ??= _ensureInstalledInner();
-    return _installFuture!;
-  }
-
-  Future<NazaBarkPackStatus> _ensureInstalledInner() async {
-    try {
-      final trusted = await NazaVerificationStateStore.instance
-          .trustedBarkPackStatus(
-            dir: await _packDir(),
-            indexMarker: _configuredIndexMarker,
-          );
-      if (trusted != null && trusted.installed) {
-        status.value = trusted;
-        return trusted;
-      }
-
-      final local = await _describeLocal();
-      if (local.installed) {
-        unawaited(
-          NazaVerificationStateStore.instance.trustBarkPack(
-            dir: await _packDir(),
-            indexMarker: _configuredIndexMarker,
-            status: local,
-          ),
-        );
-        status.value = local;
-        return local;
-      }
-
-      final indexUri = Uri.parse(NazaAppConfig.barkPackIndexUrl);
-      _validateRemoteUri(indexUri);
-      _setProgress(1, 'downloading BarkPack index');
-      final indexBytes = await _downloadBytes(
-        indexUri,
-        maxBytes: _maxIndexBytes,
-      );
-      final indexHash = crypto.sha256.convert(indexBytes).toString();
-      final expectedIndexHash = _normalizeSha256Pin(
-        NazaAppConfig.barkPackIndexSha256,
-      );
-      if (expectedIndexHash.isNotEmpty && !_isSha256Hex(expectedIndexHash)) {
-        throw FormatException(
-          'BarkPack index SHA-256 pin is not a 64-character hex digest. '
-          'Use the hash of naza-barkpack-index.json, not the GitHub Actions artifact ZIP hash.',
-        );
-      }
-      if (expectedIndexHash.isNotEmpty && indexHash != expectedIndexHash) {
-        throw FormatException(
-          'BarkPack index SHA-256 mismatch. Expected $expectedIndexHash, got $indexHash. '
-          'This pin must be for naza-barkpack-index.json, not the GitHub Actions artifact ZIP.',
-        );
-      }
-
-      final index = NazaBarkPackIndex.fromJson(
-        jsonDecode(utf8.decode(indexBytes)) as Map<String, dynamic>,
-      );
-      if (index.format != 'naza-barkpack-release-v1') {
-        throw FormatException(
-          'Unsupported BarkPack release format: ${index.format}',
-        );
-      }
-      if (index.packFormat != 'naza-barkpack-v1') {
-        throw FormatException(
-          'Unsupported BarkPack format: ${index.packFormat}',
-        );
-      }
-      final assets = <NazaBarkPackAsset>[index.manifest, ...index.shards];
-      if (index.shards.length > _maxShardCount) {
-        throw FormatException(
-          'BarkPack index declares too many shards (${index.shards.length}).',
-        );
-      }
-      var declaredBytes = 0;
-      for (final asset in assets) {
-        if (asset.size <= 0 || asset.size > _maxAssetBytes) {
-          throw FormatException(
-            'BarkPack asset ${asset.name} has an unsafe declared size: ${asset.size}.',
-          );
-        }
-        if (!_isSha256Hex(asset.sha256.toLowerCase())) {
-          throw FormatException(
-            'BarkPack asset ${asset.name} has an invalid SHA-256 digest.',
-          );
-        }
-        declaredBytes += asset.size;
-        if (declaredBytes > _maxPackBytes) {
-          throw const FormatException(
-            'BarkPack exceeds the 6 GB installed-size safety limit.',
-          );
-        }
-      }
-
-      final dir = await _packDir();
-      await dir.create(recursive: true);
-      await _removeStalePartFiles(dir);
-
-      await _downloadAsset(
-        index.manifest,
-        target: File('${dir.path}/manifest.json'),
-        indexUri: indexUri,
-        progressBase: 5,
-        progressSpan: 10,
-      );
-
-      final shards = index.shards;
-      for (var i = 0; i < shards.length; i++) {
-        final shard = shards[i];
-        final base = 15 + ((i / math.max(1, shards.length)) * 80).floor();
-        final span = math.max(1, (80 / math.max(1, shards.length)).floor());
-        await _downloadAsset(
-          shard,
-          target: File('${dir.path}/${_sanitizePackFileName(shard.name)}'),
-          indexUri: indexUri,
-          progressBase: base,
-          progressSpan: span,
-        );
-      }
-
-      await File('${dir.path}/install.json').writeAsString(
-        const JsonEncoder.withIndent('  ').convert({
-          'format': 'naza-barkpack-install-v1',
-          'indexUrl': indexUri.toString(),
-          'indexSha256': indexHash,
-          'installedAt': DateTime.now().toIso8601String(),
-          'tensorCount': index.tensorCount,
-          'quant': index.quant,
-        }),
-        flush: true,
-      );
-      await Isolate.run(
-        () => _writeInstallIndexSync(
-          dir.path,
-          sourceIndexUrl: indexUri.toString(),
-          sourceIndexSha256: indexHash,
-        ),
-      );
-
-      final done = await _describeLocal();
-      await NazaVerificationStateStore.instance.trustBarkPack(
-        dir: dir,
-        indexMarker: indexHash,
-        status: done,
-      );
-      status.value = done;
-      return done;
-    } catch (error) {
-      final dir = await _packDir();
-      final failed = NazaBarkPackStatus(
-        installed: false,
-        downloading: false,
-        progress: status.value.progress,
-        phase: 'BarkPack install failed',
-        packPath: dir.path,
-        tensorCount: 0,
-        missingFamilies: _requiredFamilies,
-        qualityTier: status.value.qualityTier,
-        familySummary: status.value.familySummary,
-        stageSummary: status.value.stageSummary,
-        capabilitySummary: status.value.capabilitySummary,
-        sidecarSummary: status.value.sidecarSummary,
-        error: error.toString(),
-      );
-      status.value = failed;
-      return failed;
-    } finally {
-      _installFuture = null;
-    }
-  }
-
-  Future<NazaBarkPackStatus> _describeLocal() async {
-    final dir = await _packDir();
-    final manifest = File('${dir.path}/manifest.json');
-    if (!await manifest.exists()) {
-      return NazaBarkPackStatus(
-        installed: false,
-        downloading: false,
-        progress: 0,
-        phase: 'No BarkPack installed',
-        packPath: dir.path,
-        tensorCount: 0,
-        missingFamilies: _requiredFamilies,
-        qualityTier: 'not installed',
-        familySummary: 'none',
-        stageSummary: 'none',
-        capabilitySummary: 'none',
-        sidecarSummary: 'none',
-      );
-    }
-
-    final payload = await Isolate.run(() => _describeLocalSync(dir.path));
-    return NazaBarkPackStatus(
-      installed: payload['installed'] == true,
-      downloading: false,
-      progress: ((payload['progress'] as num?) ?? 0).toInt(),
-      phase: (payload['phase'] ?? 'BarkPack status checked').toString(),
-      packPath: dir.path,
-      tensorCount: ((payload['tensorCount'] as num?) ?? 0).toInt(),
-      missingFamilies: ((payload['missingFamilies'] as List?) ?? const [])
-          .map((item) => item.toString())
-          .toList(growable: false),
-      qualityTier: (payload['qualityTier'] ?? 'unknown').toString(),
-      familySummary: (payload['familySummary'] ?? 'unknown').toString(),
-      stageSummary: (payload['stageSummary'] ?? 'unknown').toString(),
-      capabilitySummary: (payload['capabilitySummary'] ?? 'unknown').toString(),
-      sidecarSummary: (payload['sidecarSummary'] ?? 'none').toString(),
-      error: payload['error']?.toString(),
-    );
-  }
-
-  static String _compactMapSummary(Object? value, {int maxEntries = 6}) {
-    if (value is! Map) return 'unknown';
-    final entries = value.entries
-        .where((entry) => entry.key.toString().trim().isNotEmpty)
-        .take(maxEntries)
-        .map((entry) => '${entry.key}: ${entry.value}')
-        .toList(growable: false);
-    return entries.isEmpty ? 'none' : entries.join(', ');
-  }
-
-  static String _compactCapabilitySummary(Object? value) {
-    if (value is! Map) return 'unknown';
-    final enabled = value.entries
-        .where((entry) => entry.value == true)
-        .map((entry) => entry.key.toString())
-        .where((key) => key.trim().isNotEmpty)
-        .take(6)
-        .toList(growable: false);
-    return enabled.isEmpty ? 'none' : enabled.join(', ');
-  }
-
-  static String _compactListSummary(Object? value) {
-    if (value is! List || value.isEmpty) return 'none';
-    return value.map((item) => item.toString()).take(6).join(', ');
-  }
-
-  static Map<String, int> _familyCountsFromTensors(
-    List<NazaBarkTensorInfo> tensors,
-  ) {
-    final counts = <String, int>{};
-    for (final tensor in tensors) {
-      final family = tensor.family.trim().isNotEmpty
-          ? tensor.family.trim().toLowerCase()
-          : _familyFromName(tensor.name);
-      if (family.isEmpty) continue;
-      counts[family] = (counts[family] ?? 0) + 1;
-    }
-    return counts;
-  }
-
-  static String _familyFromName(String name) {
-    final lower = name.toLowerCase();
-    if (lower.contains('semantic') || lower.contains('text')) {
-      return 'semantic';
-    }
-    if (lower.contains('coarse')) return 'coarse';
-    if (lower.contains('fine')) return 'fine';
-    if (lower.contains('encodec') ||
-        lower.contains('codec') ||
-        lower.contains('quantizer')) {
-      return 'codec';
-    }
-    if (lower.contains('speaker') ||
-        lower.contains('history') ||
-        lower.contains('prompt')) {
-      return 'speaker';
-    }
-    return 'unknown';
-  }
-
-  static Map<String, Object?> _writeInstallIndexSync(
-    String dirPath, {
-    String? sourceIndexUrl,
-    String? sourceIndexSha256,
-  }) {
-    final manifest = File('$dirPath/manifest.json');
-    final json =
-        jsonDecode(manifest.readAsStringSync()) as Map<String, dynamic>;
-    final tensors = ((json['tensors'] as List?) ?? const [])
-        .whereType<Map>()
-        .map((m) => NazaBarkTensorInfo.fromJson(Map<String, dynamic>.from(m)))
-        .toList(growable: false);
-    final familyCounts = {
-      ..._familyCountsFromTensors(tensors),
-      if (json['families'] is Map)
-        for (final entry in (json['families'] as Map).entries)
-          entry.key.toString(): ((entry.value as num?) ?? 0).toInt(),
-    };
-    final missing = _requiredFamilies
-        .where((family) => (familyCounts[family] ?? 0) <= 0)
-        .toList(growable: false);
-    final shardNames =
-        tensors
-            .map((t) => _sanitizePackFileName(t.file))
-            .toSet()
-            .toList(growable: false)
-          ..sort();
-    final missingShard = <String>[];
-    for (final shard in shardNames) {
-      if (!File('$dirPath/$shard').existsSync()) {
-        missingShard.add(shard);
-      }
-    }
-    final installed = missing.isEmpty && missingShard.isEmpty;
-    final installIndex = <String, Object?>{
-      'format': 'naza-barkpack-install-index-v2',
-      'packFormat': json['format'] ?? 'unknown',
-      'refreshedAt': DateTime.now().toIso8601String(),
-      'sourceIndexUrl': sourceIndexUrl ?? '',
-      'sourceIndexSha256': sourceIndexSha256 ?? '',
-      'installed': installed,
-      'tensorCount': tensors.length,
-      'families': familyCounts,
-      'missingFamilies': missing,
-      'shards': shardNames,
-      'missingShards': missingShard,
-      'qualityTier': (json['qualityTier'] ?? 'legacy-barkpack').toString(),
-      'stages': json['stages'] ?? const <String, Object?>{},
-      'capabilities': json['capabilities'] ?? const <String, Object?>{},
-      'synthesizedSidecars': json['synthesizedSidecars'] ?? const <Object>[],
-      'speakerProfile': json['speakerProfile'] ?? const <String, Object?>{},
-      'semanticProfile': json['semanticProfile'] ?? const <String, Object?>{},
-      'pronunciationProfile':
-          json['pronunciationProfile'] ?? const <String, Object?>{},
-    };
-    File('$dirPath/install_index_v2.json').writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert(installIndex),
-      flush: true,
-    );
-    return installIndex;
-  }
-
-  static Map<String, Object?> _describeLocalSync(String dirPath) {
-    try {
-      final installIndex = _writeInstallIndexSync(dirPath);
-      final missing = ((installIndex['missingFamilies'] as List?) ?? const [])
-          .map((item) => item.toString())
-          .toList(growable: false);
-      final missingShard =
-          ((installIndex['missingShards'] as List?) ?? const [])
-              .map((item) => item.toString())
-              .toList(growable: false);
-      final installed = installIndex['installed'] == true;
-      return {
-        'installed': installed,
-        'progress': installed ? 100 : 65,
-        'phase': missingShard.isEmpty
-            ? 'BarkPack manifest ready'
-            : 'BarkPack missing shards: ${missingShard.take(3).join(', ')}',
-        'tensorCount': ((installIndex['tensorCount'] as num?) ?? 0).toInt(),
-        'missingFamilies': missing,
-        'qualityTier': (installIndex['qualityTier'] ?? 'unknown').toString(),
-        'familySummary': _compactMapSummary(installIndex['families']),
-        'stageSummary': _compactMapSummary(
-          installIndex['stages'],
-          maxEntries: 5,
-        ),
-        'capabilitySummary': _compactCapabilitySummary(
-          installIndex['capabilities'],
-        ),
-        'sidecarSummary': _compactListSummary(
-          installIndex['synthesizedSidecars'],
-        ),
-      };
-    } catch (error) {
-      return {
-        'installed': false,
-        'progress': 0,
-        'phase': 'BarkPack manifest parse failed',
-        'tensorCount': 0,
-        'missingFamilies': _requiredFamilies,
-        'qualityTier': 'invalid',
-        'familySummary': 'unknown',
-        'stageSummary': 'unknown',
-        'capabilitySummary': 'unknown',
-        'sidecarSummary': 'unknown',
-        'error': error.toString(),
-      };
-    }
-  }
-
-  Future<void> _downloadAsset(
-    NazaBarkPackAsset asset, {
-    required File target,
-    required Uri indexUri,
-    required int progressBase,
-    required int progressSpan,
-  }) async {
-    if (asset.size <= 0 || asset.size > _maxAssetBytes) {
-      throw FormatException(
-        'BarkPack asset ${asset.name} has an unsafe declared size: ${asset.size}.',
-      );
-    }
-    final name = _sanitizePackFileName(asset.name);
-    final assetName = _sanitizeRemotePackFileName(asset.asset);
-    final uri = asset.url == null || asset.url!.trim().isEmpty
-        ? indexUri.resolve(assetName)
-        : Uri.parse(asset.url!);
-    _validateRemoteUri(uri);
-
-    if (await target.exists() &&
-        await _sha256(target) == asset.sha256 &&
-        (asset.size <= 0 || (await target.stat()).size == asset.size)) {
-      _setProgress(progressBase + progressSpan, 'verified BarkPack $name');
-      return;
-    }
-
-    final part = File(
-      '${target.path}.${DateTime.now().microsecondsSinceEpoch}.part',
-    );
-    try {
-      _setProgress(progressBase, 'downloading BarkPack $name');
-      await _downloadToFile(
-        uri,
-        part,
-        maxBytes: math.min(_maxAssetBytes, asset.size + 1024),
-        onProgress: (received, total) {
-          if (total > 0) {
-            final p =
-                progressBase + ((received / total) * progressSpan).floor();
-            _setProgress(
-              p.clamp(progressBase, progressBase + progressSpan).toInt(),
-              'downloading BarkPack $name',
-            );
-          }
-        },
-      );
-      final actual = await _sha256(part);
-      if (actual != asset.sha256) {
-        throw FormatException(
-          'BarkPack asset $name SHA-256 mismatch. Expected ${asset.sha256}, got $actual.',
-        );
-      }
-      final partSize = (await part.stat()).size;
-      if (asset.size > 0 && partSize != asset.size) {
-        throw FormatException(
-          'BarkPack asset $name size mismatch. Expected ${asset.size}, got $partSize.',
-        );
-      }
-      await target.parent.create(recursive: true);
-      await part.rename(target.path);
-      _setProgress(progressBase + progressSpan, 'verified BarkPack $name');
-    } catch (_) {
-      if (await part.exists()) await part.delete();
-      rethrow;
-    }
-  }
-
-  Future<void> _removeStalePartFiles(Directory dir) async {
-    if (!await dir.exists()) return;
-    await for (final entity in dir.list(followLinks: false)) {
-      if (entity is File && entity.path.endsWith('.part')) {
-        try {
-          await entity.delete();
-        } catch (_) {
-          // A stale partial file should not block a new explicit install.
-        }
-      }
-    }
-  }
-
-  void _setProgress(int progress, String phase) {
-    final current = status.value;
-    status.value = NazaBarkPackStatus(
-      installed: false,
-      downloading: true,
-      progress: progress.clamp(0, 100).toInt(),
-      phase: phase,
-      packPath: current.packPath,
-      tensorCount: current.tensorCount,
-      missingFamilies: current.missingFamilies,
-      qualityTier: current.qualityTier,
-      familySummary: current.familySummary,
-      stageSummary: current.stageSummary,
-      capabilitySummary: current.capabilitySummary,
-      sidecarSummary: current.sidecarSummary,
-    );
-  }
-
-  String _normalizeSha256Pin(String value) {
-    final clean = value.trim().toLowerCase();
-    if (clean.startsWith('sha256:')) {
-      return clean.substring('sha256:'.length).trim();
-    }
-    return clean;
-  }
-
-  bool _isSha256Hex(String value) {
-    return RegExp(r'^[0-9a-f]{64}$').hasMatch(value);
-  }
-
-  String get _configuredIndexMarker {
-    return _normalizeSha256Pin(NazaAppConfig.barkPackIndexSha256);
-  }
-
-  Future<Directory> _packDir() async {
-    final support = await getApplicationSupportDirectory();
-    return Directory('${support.path}/bark_pack');
-  }
-
-  Future<Uint8List> _downloadBytes(
-    Uri uri, {
-    required int maxBytes,
-    void Function(int received, int total)? onProgress,
-  }) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 30);
-    try {
-      final response = await _openSecureGet(client, uri);
-      final length = response.contentLength;
-      if (length > maxBytes) {
-        throw HttpException('BarkPack response exceeds safety cap.', uri: uri);
-      }
-      final builder = BytesBuilder(copy: false);
-      var received = 0;
-      await for (final chunk in response) {
-        received += chunk.length;
-        if (received > maxBytes) {
-          throw HttpException(
-            'BarkPack download exceeded safety cap.',
-            uri: uri,
-          );
-        }
-        builder.add(chunk);
-        onProgress?.call(received, length);
-      }
-      return builder.toBytes();
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  Future<void> _downloadToFile(
-    Uri uri,
-    File target, {
-    required int maxBytes,
-    void Function(int received, int total)? onProgress,
-  }) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 30);
-    IOSink? sink;
-    try {
-      await target.parent.create(recursive: true);
-      final response = await _openSecureGet(client, uri);
-      final length = response.contentLength;
-      if (length > maxBytes) {
-        throw HttpException('BarkPack response exceeds safety cap.', uri: uri);
-      }
-      sink = target.openWrite(mode: FileMode.writeOnly);
-      var received = 0;
-      await for (final chunk in response) {
-        received += chunk.length;
-        if (received > maxBytes) {
-          throw HttpException(
-            'BarkPack download exceeded safety cap.',
-            uri: uri,
-          );
-        }
-        sink.add(chunk);
-        onProgress?.call(received, length);
-      }
-      await sink.close();
-      sink = null;
-    } catch (_) {
-      try {
-        await sink?.close();
-      } catch (_) {}
-      rethrow;
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  Future<HttpClientResponse> _openSecureGet(
-    HttpClient client,
-    Uri uri, {
-    int redirects = 0,
-  }) async {
-    if (redirects > 5) {
-      throw HttpException('Too many BarkPack redirects.', uri: uri);
-    }
-    _validateRemoteUri(uri);
-    final request = await client.getUrl(uri);
-    request.followRedirects = false;
-    request.headers.set(
-      HttpHeaders.userAgentHeader,
-      '${NazaAppConfig.appName}/1.0 secure-barkpack-downloader',
-    );
-    final response = await request.close();
-    if (_isRedirect(response.statusCode)) {
-      final location = response.headers.value(HttpHeaders.locationHeader);
-      await response.drain<void>();
-      if (location == null || location.trim().isEmpty) {
-        throw HttpException('Redirect without Location header.', uri: uri);
-      }
-      return _openSecureGet(
-        client,
-        uri.resolve(location),
-        redirects: redirects + 1,
-      );
-    }
-    if (response.statusCode != HttpStatus.ok) {
-      await response.drain<void>();
-      throw HttpException(
-        'BarkPack download failed with HTTP ${response.statusCode}.',
-        uri: uri,
-      );
-    }
-    return response;
-  }
-
-  bool _isRedirect(int code) {
-    return code == HttpStatus.movedPermanently ||
-        code == HttpStatus.found ||
-        code == HttpStatus.seeOther ||
-        code == HttpStatus.temporaryRedirect ||
-        code == HttpStatus.permanentRedirect;
-  }
-
-  void _validateRemoteUri(Uri uri) {
-    if (uri.scheme != 'https') {
-      throw ArgumentError.value(
-        uri.toString(),
-        'uri',
-        'Only HTTPS is allowed.',
-      );
-    }
-    if (uri.userInfo.isNotEmpty) {
-      throw ArgumentError.value(
-        uri.toString(),
-        'uri',
-        'User info is not allowed.',
-      );
-    }
-    final host = uri.host.toLowerCase();
-    final allowed =
-        host == 'github.com' ||
-        host.endsWith('.github.com') ||
-        host.endsWith('.githubusercontent.com') ||
-        host == 'objects.githubusercontent.com' ||
-        host == 'release-assets.githubusercontent.com';
-    if (!allowed) {
-      throw ArgumentError.value(
-        uri.toString(),
-        'uri',
-        'Unexpected BarkPack download host.',
-      );
-    }
-  }
-
-  static String _sanitizePackFileName(String name) {
-    final clean = name.trim();
-    if (clean.isEmpty ||
-        clean.contains('/') ||
-        clean.contains('\\') ||
-        clean.contains('\x00') ||
-        clean == '.' ||
-        clean == '..') {
-      throw FormatException('Unsafe BarkPack asset name: $name');
-    }
-    if (clean != 'manifest.json' &&
-        !RegExp(r'^tensors_[0-9]{3}\.bin$').hasMatch(clean) &&
-        !RegExp(
-          r'^naza-barkpack-(manifest|tensors_[0-9]{3})\.(json|bin)$',
-        ).hasMatch(clean)) {
-      throw FormatException('Unexpected BarkPack asset name: $name');
-    }
-    if (clean.startsWith('naza-barkpack-tensors_')) {
-      return clean.substring('naza-barkpack-'.length);
-    }
-    if (clean == 'naza-barkpack-manifest.json') return 'manifest.json';
-    return clean;
-  }
-
-  static String _sanitizeRemotePackFileName(String name) {
-    final clean = name.trim();
-    if (clean.isEmpty ||
-        clean.contains('/') ||
-        clean.contains('\\') ||
-        clean.contains('\x00') ||
-        clean == '.' ||
-        clean == '..') {
-      throw FormatException('Unsafe BarkPack remote asset name: $name');
-    }
-    final allowed =
-        clean == 'manifest.json' ||
-        RegExp(r'^tensors_[0-9]{3}\.bin$').hasMatch(clean) ||
-        RegExp(
-          r'^naza-barkpack-(manifest|tensors_[0-9]{3})\.(json|bin)$',
-        ).hasMatch(clean);
-    if (!allowed) {
-      throw FormatException('Unexpected BarkPack remote asset name: $name');
-    }
-    return clean;
-  }
-
-  Future<String> _sha256(File file) async {
-    final digest = await crypto.sha256.bind(file.openRead()).first;
-    return digest.toString().toLowerCase();
-  }
-}
-
 enum NazaActionMode {
   answer,
   implement,
@@ -5891,7 +4611,6 @@ enum NazaActionMode {
   create,
   compare,
   configure,
-  voice,
   scan;
 
   String get label {
@@ -5905,7 +4624,6 @@ enum NazaActionMode {
       NazaActionMode.create => 'creative-generation',
       NazaActionMode.compare => 'comparison',
       NazaActionMode.configure => 'configuration',
-      NazaActionMode.voice => 'voice-conversation',
       NazaActionMode.scan => 'scanner-analysis',
     };
   }
@@ -5988,16 +4706,6 @@ final class NazaActionSelector {
   }
 
   static NazaActionMode _modeFor(String lower) {
-    if (_hasAny(lower, const [
-      'voice',
-      'convo',
-      'audio',
-      'speech',
-      'tts',
-      'speaker',
-    ])) {
-      return NazaActionMode.voice;
-    }
     if (_hasAny(lower, const [
       'null',
       'hang',
@@ -6125,10 +4833,6 @@ final class NazaActionSelector {
         'Translate the requested behavior into settings or state changes.',
         'Mention side effects of enabling or disabling the feature.',
       ],
-      NazaActionMode.voice => <String>[
-        'Treat speech recognition, local Gemma, and system TTS as the voice conversation path.',
-        'Prefer concrete voice and audio-debug steps over generic disclaimers.',
-      ],
       NazaActionMode.scan => <String>[
         'Apply conservative risk and safety reasoning.',
         'Separate observations, risk label, and next action.',
@@ -6167,10 +4871,6 @@ final class NazaActionSelector {
       NazaActionMode.compare => const [
         'Use a concise comparison table if there are three or more criteria.',
         'End with a recommendation.',
-      ],
-      NazaActionMode.voice => const [
-        'Use sections: Voice Path, Prompt Surface, Verification.',
-        'Keep Settings-only synthesis diagnostics separate from live voice.',
       ],
       NazaActionMode.scan => const [
         'Use labels: Observations, Risk, Safety Score, Next Action.',
@@ -6355,7 +5055,7 @@ final class NazaSummaGemmaSummarizer {
       final sentence = sentences[i];
       final cueBoost =
           RegExp(
-            r'\b(remember|decision|bug|error|fix|implement|preference|todo|action|required|format|setting|voice|memory|context|rag|vector)\b',
+            r'\b(remember|decision|bug|error|fix|implement|preference|todo|action|required|format|setting|memory|context|rag|vector)\b',
             caseSensitive: false,
           ).hasMatch(sentence)
           ? 0.42
@@ -6613,6 +5313,10 @@ final class NazaArtifactSession {
 [artifact_generation_control]
 mode=hierarchical-semantic-units
 Build one coherent artifact in dependency order. Begin with active_node, then proceed only to dependency-ready nodes. Do not print or explain this hidden graph.
+Initial-window boundary contract:
+- End at a complete paragraph, statement, function, type, or section boundary.
+- In mixed prose and code, do not open a new code fence, class, or function near the output boundary. End the prose unit first and let the next host-managed chunk own the complete code unit.
+- Once a Python fence is open, produce at most one top-level class/function responsibility in this window and never restart an existing definition.
 ${_graph.toPromptBlock()}
 ${_coherence.toPromptBlock()}
 [/artifact_generation_control]''';
@@ -6624,10 +5328,9 @@ ${_coherence.toPromptBlock()}
     required int pass,
     required int maxPasses,
   }) {
-    if (_lastAcceptedText.isNotEmpty && accumulatedReply != _lastAcceptedText) {
-      // Only accepted assembly text is allowed to advance persistent state.
-      accumulatedReply = _lastAcceptedText;
-    }
+    final stableReply = _lastAcceptedText.isEmpty
+        ? accumulatedReply
+        : _lastAcceptedText;
     final memory = NazaContinuationTaskAgent.build(
       originalUserText: originalUserText,
       actionProfile: actionProfile,
@@ -6638,7 +5341,9 @@ ${_coherence.toPromptBlock()}
     );
     _graph = _refreshGraph(
       graph: _graph,
-      reply: accumulatedReply,
+      // Pending code is available to the cursor planner but cannot advance the
+      // persistent artifact graph until a complete unit is committed.
+      reply: stableReply,
       memory: memory,
       decision: decision,
     );
@@ -8126,6 +6831,21 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
     if (pythonTarget) {
       final prefixPython = _NazaPythonIntegritySnapshot.analyze(prefix);
       joinedPython = _NazaPythonIntegritySnapshot.analyze(joined);
+      final duplicateDefinition = _pythonDefinitionOwnershipRegression(
+        prefixPython,
+        joinedPython,
+        _NazaCodeSnapshot._codeLines(joined, 'Python').join('\n'),
+      );
+      if (duplicateDefinition != null) {
+        return NazaContinuationAssembly(
+          accepted: false,
+          text: prefix,
+          reason: 'duplicate-owned-python-definition:$duplicateDefinition',
+          violations: [
+            'candidate redefines the owned Python symbol $duplicateDefinition',
+          ],
+        );
+      }
       final priorDiagnostics = prefixPython.diagnostics.toSet();
       final newDiagnostics = joinedPython.diagnostics
           .where((diagnostic) => !priorDiagnostics.contains(diagnostic))
@@ -8171,6 +6891,18 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         reason:
             'structural-regression: syntax debt $prefixSyntaxDebt->$joinedSyntaxDebt',
         violations: const ['candidate increases the active syntactic debt'],
+      );
+    }
+    if (joinedSyntaxDebt > 0 &&
+        joinedSyntaxDebt == prefixSyntaxDebt &&
+        !_hasSubstantiveCodeDelta(delta, effectiveLanguage)) {
+      return NazaContinuationAssembly(
+        accepted: false,
+        text: prefix,
+        reason: 'structural-stagnation:no-code-progress',
+        violations: const [
+          'candidate leaves the active syntax open without substantive code progress',
+        ],
       );
     }
     final targetLanguage = passContext?.memory.targetLanguage;
@@ -8260,12 +6992,13 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         delta,
         passContext.memory.targetLanguage,
       );
-      if (replay.replayed >= 3 && replay.ratio >= 0.60) {
+      if (replay.longestRun >= 3 ||
+          replay.replayed >= 3 && replay.ratio >= 0.60) {
         violations.add(
           NazaCandidateViolation(
             kind: NazaCandidateViolationKind.dominantReplay,
             message:
-                'candidate replays ${replay.replayed}/${replay.total} completed code lines',
+                'candidate replays ${replay.replayed}/${replay.total} completed code lines (longest run ${replay.longestRun})',
             hard: true,
           ),
         );
@@ -8463,12 +7196,11 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
     return paragraphs.skip(paragraphs.length - 8).toList(growable: false);
   }
 
-  static ({int replayed, int total, double ratio}) _codeLineReplay(
-    String prefix,
-    String delta,
-    String language,
-  ) {
-    if (language == 'unspecified') return (replayed: 0, total: 0, ratio: 0);
+  static ({int replayed, int total, int longestRun, double ratio})
+  _codeLineReplay(String prefix, String delta, String language) {
+    if (language == 'unspecified') {
+      return (replayed: 0, total: 0, longestRun: 0, ratio: 0);
+    }
     String normalize(String line) =>
         line.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
     bool meaningful(String line) {
@@ -8482,16 +7214,36 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
     final prefixLines = _NazaCodeSnapshot._codeLines(
       prefix,
       language,
-    ).where(meaningful).map(normalize).toSet();
+    ).where(meaningful).map(normalize).toList(growable: false);
+    final prefixSet = prefixLines.toSet();
     final deltaLines = _NazaCodeSnapshot._codeLines(
       delta,
       language,
     ).where(meaningful).map(normalize).toList(growable: false);
-    if (deltaLines.isEmpty) return (replayed: 0, total: 0, ratio: 0);
-    final replayed = deltaLines.where(prefixLines.contains).length;
+    if (deltaLines.isEmpty) {
+      return (replayed: 0, total: 0, longestRun: 0, ratio: 0);
+    }
+    final replayed = deltaLines.where(prefixSet.contains).length;
+    var longestRun = 0;
+    for (var deltaStart = 0; deltaStart < deltaLines.length; deltaStart++) {
+      for (
+        var prefixStart = 0;
+        prefixStart < prefixLines.length;
+        prefixStart++
+      ) {
+        var run = 0;
+        while (deltaStart + run < deltaLines.length &&
+            prefixStart + run < prefixLines.length &&
+            deltaLines[deltaStart + run] == prefixLines[prefixStart + run]) {
+          run++;
+        }
+        if (run > longestRun) longestRun = run;
+      }
+    }
     return (
       replayed: replayed,
       total: deltaLines.length,
+      longestRun: longestRun,
       ratio: replayed / deltaLines.length,
     );
   }
@@ -8578,6 +7330,55 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         snapshot.delimiters.diagnostics.length;
   }
 
+  static bool _hasSubstantiveCodeDelta(String delta, String language) {
+    for (final line in _NazaCodeSnapshot._codeLines(delta, language)) {
+      final clean = line.trim();
+      if (clean.isEmpty ||
+          clean == '```' ||
+          clean.startsWith('#') ||
+          clean.startsWith('//')) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  static String? _pythonDefinitionOwnershipRegression(
+    _NazaPythonIntegritySnapshot prefix,
+    _NazaPythonIntegritySnapshot joined,
+    String joinedCode,
+  ) {
+    for (final entry in joined.definitionCounts.entries) {
+      final before = prefix.definitionCounts[entry.key] ?? 0;
+      if (entry.value <= math.max(1, before)) continue;
+      if (_allowsIntentionalPythonRedefinition(joinedCode, entry.key)) {
+        continue;
+      }
+      return entry.key;
+    }
+    return null;
+  }
+
+  static bool _allowsIntentionalPythonRedefinition(
+    String code,
+    String qualifiedName,
+  ) {
+    final name = RegExp.escape(qualifiedName.split('.').last);
+    return RegExp(
+          '@(?:typing\\.)?overload\\s*(?:\\r?\\n)+\\s*(?:async\\s+)?def\\s+$name\\b',
+          multiLine: true,
+        ).hasMatch(code) ||
+        RegExp(
+          '@$name\\.(?:setter|getter|deleter)\\s*(?:\\r?\\n)+\\s*def\\s+$name\\b',
+          multiLine: true,
+        ).hasMatch(code) ||
+        RegExp(
+          r'@\S+\.register(?:\([^\n]*\))?\s*(?:\r?\n)+\s*(?:async\s+)?def\s+',
+          multiLine: true,
+        ).hasMatch(code);
+  }
+
   static String join(String prefix, String continuation) {
     return assembleCandidate(prefix: prefix, continuation: continuation).text;
   }
@@ -8594,7 +7395,14 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
     final secondTrimmedLeft = second.trimLeft();
     if (first.endsWith(secondTrimmedLeft)) return first;
 
-    final overlap = _largestOverlap(first, secondTrimmedLeft);
+    var overlap = _largestOverlap(first, secondTrimmedLeft);
+    if (overlap > 0 &&
+        RegExp(
+          r'^[A-Za-z_][A-Za-z0-9_]*$',
+        ).hasMatch(secondTrimmedLeft.substring(0, overlap)) &&
+        !_canMergeLexicalOverlap(first, secondTrimmedLeft, overlap)) {
+      overlap = 0;
+    }
     if (overlap > 0) {
       return first + secondTrimmedLeft.substring(overlap);
     }
@@ -8715,6 +7523,7 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         consumed = nextConsumed;
         continue;
       }
+      if (line.isNotEmpty && RegExp(r'^\s').hasMatch(line)) break;
       final restartLine = RegExp(
         r'^(?:import\b|from\s+\S+\s+import\b|#include\b|using\s+\S+|package\s+\S+|class\s+\w+|(?:async\s+)?def\s+\w+|(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*=)',
         caseSensitive: false,
@@ -8753,16 +7562,19 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
     return clean;
   }
 
-  static NazaContinuationFinalization finalizeForDelivery(String text) {
+  static NazaContinuationPrefixCheckpoint checkpointForContinuation(
+    String text,
+  ) {
     final clean = stripDoneMarker(text).trimRight();
     final pythonRegion = _latestPythonFence(clean);
     final rawPython = pythonRegion == null && _containsRawPythonArtifact(clean);
     if (pythonRegion == null && !rawPython) {
-      return NazaContinuationFinalization(
-        text: clean,
-        rolledBack: false,
-        closedFence: false,
-        reason: 'non-python-artifact',
+      return NazaContinuationPrefixCheckpoint(
+        workingText: clean,
+        stableText: clean,
+        recoveredCorruption: false,
+        hasPendingUnit: false,
+        reason: 'non-python-prefix',
       );
     }
 
@@ -8773,29 +7585,171 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
       original: '',
       reply: pythonCode,
     );
-    if (integrity.isValid && _syntaxDebt(snapshot) == 0) {
-      final closeFence = pythonRegion?.isOpen == true;
-      return NazaContinuationFinalization(
-        text: closeFence ? '$clean\n```' : clean,
-        rolledBack: false,
-        closedFence: closeFence,
-        reason: closeFence
-            ? 'closed-final-python-fence'
-            : 'python-integrity-valid',
+    final hardDiagnostics = _hardPythonDiagnostics(integrity, snapshot);
+    final structurallyPending = !integrity.isValid || _syntaxDebt(snapshot) > 0;
+    if (hardDiagnostics.isEmpty && !structurallyPending) {
+      return NazaContinuationPrefixCheckpoint(
+        workingText: clean,
+        stableText: clean,
+        recoveredCorruption: false,
+        hasPendingUnit: false,
+        reason: 'python-prefix-stable',
       );
     }
 
+    final trailingClosedRegion =
+        pythonRegion != null &&
+        !pythonRegion.isOpen &&
+        clean.substring(pythonRegion.closingEnd).trim().isEmpty;
+    final canContinueInsideRegion =
+        pythonRegion != null && (pythonRegion.isOpen || trailingClosedRegion);
     final checkpoint = _lastStablePythonCheckpoint(pythonCode);
-    final rebuilt = pythonRegion == null
+    final stable = pythonRegion == null
         ? checkpoint
-        : _replacePythonRegionWithCheckpoint(clean, pythonRegion, checkpoint);
+        : _replacePythonRegionWithCheckpoint(
+            clean,
+            pythonRegion,
+            checkpoint,
+            reopenForContinuation: canContinueInsideRegion,
+          );
+    final mustRegenerate = hardDiagnostics.isNotEmpty || trailingClosedRegion;
+    return NazaContinuationPrefixCheckpoint(
+      workingText: mustRegenerate ? stable : clean,
+      stableText: stable,
+      recoveredCorruption: mustRegenerate,
+      hasPendingUnit: !mustRegenerate && stable != clean,
+      reason: hardDiagnostics.isNotEmpty
+          ? 'recovered:${hardDiagnostics.first}'
+          : trailingClosedRegion
+          ? 'reopened-incomplete-python-region'
+          : 'staged-incomplete-python-unit',
+    );
+  }
+
+  static String stableInitialPaint(String text, {bool pythonTask = false}) {
+    final clean = stripDoneMarker(text).trimRight();
+    final pythonRegion = _latestPythonFence(clean);
+    if (pythonRegion == null) {
+      if (pythonTask && _containsRawPythonArtifact(clean)) return '';
+      return clean;
+    }
+
+    final code = pythonRegion.codeFrom(clean);
+    final integrity = _NazaPythonIntegritySnapshot.analyze(code);
+    final snapshot = _NazaCodeSnapshot.analyze(
+      language: 'Python',
+      original: '',
+      reply: code,
+    );
+    if (!integrity.isValid ||
+        _syntaxDebt(snapshot) > 0 ||
+        pythonRegion.isOpen && snapshot.modulePhase == 'active-construct') {
+      return clean.substring(0, pythonRegion.openingStart).trimRight();
+    }
+    return clean;
+  }
+
+  static List<String> _hardPythonDiagnostics(
+    _NazaPythonIntegritySnapshot integrity,
+    _NazaCodeSnapshot snapshot,
+  ) {
+    final hard = integrity.diagnostics
+        .where((diagnostic) {
+          return diagnostic.startsWith('glued-terminal:') ||
+              diagnostic.startsWith('header-bypassed:') ||
+              diagnostic.startsWith('orphan-indentation:') ||
+              diagnostic.startsWith('top-level-terminal:') ||
+              diagnostic.startsWith('incomplete-statement:') ||
+              diagnostic.startsWith('missing-suite:') &&
+                  !diagnostic.endsWith('@eof');
+        })
+        .toList(growable: true);
+    hard.addAll(snapshot.delimiters.diagnostics);
+    return List.unmodifiable(hard);
+  }
+
+  static NazaContinuationFinalization finalizeForDelivery(String text) {
+    final clean = stripDoneMarker(text).trimRight();
+    final pythonRegions = _NazaCodeFenceRegion.parse(clean)
+        .where((region) {
+          return NazaContinuationTaskAgent._languageFromFence(
+                region.label,
+                region.codeFrom(clean).toLowerCase(),
+              ) ==
+              'Python';
+        })
+        .toList(growable: false);
+    final rawPython =
+        pythonRegions.isEmpty && _containsRawPythonArtifact(clean);
+    if (pythonRegions.isEmpty && !rawPython) {
+      return NazaContinuationFinalization(
+        text: clean,
+        rolledBack: false,
+        closedFence: false,
+        reason: 'non-python-artifact',
+      );
+    }
+
+    if (rawPython) {
+      final integrity = _NazaPythonIntegritySnapshot.analyze(clean);
+      final snapshot = _NazaCodeSnapshot.analyze(
+        language: 'Python',
+        original: '',
+        reply: clean,
+      );
+      if (integrity.isValid && _syntaxDebt(snapshot) == 0) {
+        return NazaContinuationFinalization(
+          text: clean,
+          rolledBack: false,
+          closedFence: false,
+          reason: 'python-integrity-valid',
+        );
+      }
+      final checkpoint = _lastStablePythonCheckpoint(clean);
+      return NazaContinuationFinalization(
+        text: checkpoint,
+        rolledBack: true,
+        closedFence: false,
+        reason: integrity.diagnostics.isNotEmpty
+            ? 'rolled-back:${integrity.diagnostics.first}'
+            : 'rolled-back:open-python-syntax',
+      );
+    }
+
+    var rebuilt = clean;
+    var rolledBack = false;
+    var closedFence = false;
+    var reason = 'python-integrity-valid';
+    for (final region in pythonRegions.reversed) {
+      final pythonCode = region.codeFrom(clean);
+      final integrity = _NazaPythonIntegritySnapshot.analyze(pythonCode);
+      final snapshot = _NazaCodeSnapshot.analyze(
+        language: 'Python',
+        original: '',
+        reply: pythonCode,
+      );
+      if (integrity.isValid && _syntaxDebt(snapshot) == 0) {
+        if (region.isOpen) {
+          rebuilt =
+              '${rebuilt.substring(0, region.contentEnd).trimRight()}\n```';
+          closedFence = true;
+          reason = 'closed-final-python-fence';
+        }
+        continue;
+      }
+      final checkpoint = _lastStablePythonCheckpoint(pythonCode);
+      rebuilt = _replacePythonRegionWithCheckpoint(rebuilt, region, checkpoint);
+      rolledBack = true;
+      if (region.isOpen) closedFence = true;
+      reason = integrity.diagnostics.isNotEmpty
+          ? 'rolled-back:${integrity.diagnostics.first}'
+          : 'rolled-back:open-python-syntax';
+    }
     return NazaContinuationFinalization(
       text: rebuilt,
-      rolledBack: true,
-      closedFence: pythonRegion?.isOpen == true,
-      reason: integrity.diagnostics.isNotEmpty
-          ? 'rolled-back:${integrity.diagnostics.first}'
-          : 'rolled-back:open-python-syntax',
+      rolledBack: rolledBack,
+      closedFence: closedFence,
+      reason: reason,
     );
   }
 
@@ -8821,12 +7775,16 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
   static String _replacePythonRegionWithCheckpoint(
     String text,
     _NazaCodeFenceRegion region,
-    String checkpoint,
-  ) {
+    String checkpoint, {
+    bool reopenForContinuation = false,
+  }) {
     final out = StringBuffer(text.substring(0, region.contentStart));
     out.write(checkpoint.trimRight());
     if (checkpoint.trim().isNotEmpty) out.write('\n');
-    if (region.isOpen) {
+    if (reopenForContinuation) {
+      // Keep the original opener and remove the rejected tail. The next model
+      // pass now continues from a structurally stable cursor.
+    } else if (region.isOpen) {
       out.write('```');
     } else {
       out.write(text.substring(region.closingStart));
@@ -8985,7 +7943,6 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
       NazaActionMode.plan,
       NazaActionMode.summarize,
       NazaActionMode.configure,
-      NazaActionMode.voice,
     }.contains(actionProfile.mode)) {
       return true;
     }
@@ -9138,6 +8095,27 @@ hard_output_tokens=${NazaAppConfig.continuationRepairOutputTokens}
         length == second.length ||
         !RegExp(r'[A-Za-z0-9_]').hasMatch(second[length]);
     return leftBoundary && rightBoundary;
+  }
+
+  static bool _canMergeLexicalOverlap(
+    String first,
+    String second,
+    int overlap,
+  ) {
+    final lastLine = _lastNonEmptyLine(first).trimLeft();
+    if (RegExp(
+      r'^(?:return|raise|yield|break|continue)\b',
+    ).hasMatch(lastLine)) {
+      return false;
+    }
+    final remainder = second.substring(overlap);
+    if (RegExp(r'^\s*(?:=|:=|\+=|-=|\*=|/=|//=|%=)').hasMatch(remainder)) {
+      return false;
+    }
+    if (_hasOpenCodeScope(first)) return true;
+    return RegExp(
+      r'^\s*(?:(?:async\s+)?def\s+|class\s+).*[A-Za-z_][A-Za-z0-9_]*$',
+    ).hasMatch(_lastNonEmptyLine(first));
   }
 
   static bool _startsNewCodeStatement(String text) {
@@ -9899,7 +8877,6 @@ final class NazaLocalGemma {
 
   dynamic _model;
   dynamic _chat;
-  dynamic _voiceChat;
   dynamic _continuationChat;
   Future<void>? _loadingFuture;
   Future<void>? _visionUpgradeFuture;
@@ -9973,15 +8950,15 @@ final class NazaLocalGemma {
 
   Future<void> _loadBackendPreference() async {
     try {
-      final file = await _backendPreferenceFile();
-      if (await file.exists()) {
-        final json = jsonDecode(await file.readAsString());
-        if (json is Map<String, dynamic>) {
-          backendPreference.value = NazaModelBackendPreference.fromStorage(
-            json['preference'],
-          );
-          return;
-        }
+      final json = await NazaSecureDatabase.instance.readJson(
+        'settings',
+        'backend',
+      );
+      if (json is Map) {
+        backendPreference.value = NazaModelBackendPreference.fromStorage(
+          json['preference'],
+        );
+        return;
       }
     } catch (_) {
       // A malformed preference file should never prevent the model from
@@ -10019,16 +8996,11 @@ final class NazaLocalGemma {
 
   Future<bool> _persistBackendPreference() async {
     try {
-      final file = await _backendPreferenceFile();
-      await file.parent.create(recursive: true);
-      await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert({
-          'format': 'naza-backend-preference-v1',
-          'preference': backendPreference.value.storageValue,
-          'updatedAt': DateTime.now().toIso8601String(),
-        }),
-        flush: true,
-      );
+      await NazaSecureDatabase.instance.writeJson('settings', 'backend', {
+        'format': 'naza-backend-preference-v1',
+        'preference': backendPreference.value.storageValue,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
       return true;
     } catch (error) {
       snapshot.value = snapshot.value.copyWith(
@@ -10037,11 +9009,6 @@ final class NazaLocalGemma {
       );
       return false;
     }
-  }
-
-  Future<File> _backendPreferenceFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.backendPreferenceFileName}');
   }
 
   Future<void> bootstrapRuntimeOnly() async {
@@ -10171,7 +9138,7 @@ final class NazaLocalGemma {
         _requestVisionOnLoad = false;
         return;
       }
-      if (_model != null && _voiceChat == null) {
+      if (_model != null) {
         _chat = await _createChatWithTimeout(
           systemInstruction: NazaAppConfig.systemInstruction,
           maxOutputTokens: NazaAppConfig.outputTokens,
@@ -10184,10 +9151,6 @@ final class NazaLocalGemma {
         );
         return;
       }
-      if (_voiceChat != null) {
-        throw StateError('Voice generation is still using the local model.');
-      }
-
       snapshot.value = snapshot.value.copyWith(
         busy: true,
         phase: 'preparing local Gemma engine',
@@ -10231,7 +9194,7 @@ final class NazaLocalGemma {
         }
         await _settleFailedNativeModelLoad();
         if (!usedCachedInstall) rethrow;
-        await NazaVerificationStateStore.instance.clearRuntimeModelTrust();
+        await NazaModelAttestationStore.instance.clearRuntimeModelTrust();
         await _installConfiguredModel(force: true);
         await _loadActiveModelForBackend(
           backendPreference.value,
@@ -10245,8 +9208,6 @@ final class NazaLocalGemma {
         systemInstruction: NazaAppConfig.systemInstruction,
         maxOutputTokens: NazaAppConfig.outputTokens,
       );
-      _voiceChat = null;
-
       snapshot.value = snapshot.value.copyWith(
         modelLoaded: true,
         busy: false,
@@ -10415,11 +9376,34 @@ final class NazaLocalGemma {
         label: visionImage == null ? 'local prompt' : 'Gemma vision prompt',
       );
 
+      final pythonArtifactTask = artifactSession.graph.nodes.any(
+        (node) => node.id.startsWith('code-'),
+      );
+      var lastInitialPaint = '';
+      void paintInitialTransaction(String partial) {
+        if (onPartial == null) return;
+        if (scannerMode) {
+          onPartial(partial);
+          return;
+        }
+        final stable = NazaContinuationEngine.stableInitialPaint(
+          partial,
+          pythonTask: pythonArtifactTask,
+        );
+        if (stable.isEmpty || stable == lastInitialPaint) return;
+        if (lastInitialPaint.isNotEmpty &&
+            !stable.startsWith(lastInitialPaint)) {
+          return;
+        }
+        lastInitialPaint = stable;
+        onPartial(stable);
+      }
+
       late NazaStreamResult stream;
       try {
         stream = await _streamResponse(
           generationId: generationId,
-          onPartial: onPartial,
+          onPartial: onPartial == null ? null : paintInitialTransaction,
         );
       } catch (error) {
         if (!_isInputWindowError(error)) rethrow;
@@ -10455,7 +9439,7 @@ final class NazaLocalGemma {
         );
         stream = await _streamResponse(
           generationId: generationId,
-          onPartial: onPartial,
+          onPartial: onPartial == null ? null : paintInitialTransaction,
         );
       }
       var clean = stream.text;
@@ -10476,7 +9460,39 @@ final class NazaLocalGemma {
           createdAt: DateTime.now(),
         );
       }
-      artifactSession.acceptInitial(clean);
+      final initialCheckpoint = !scannerMode && maxContinuations > 0
+          ? NazaContinuationEngine.checkpointForContinuation(clean)
+          : NazaContinuationPrefixCheckpoint(
+              workingText: clean,
+              stableText: clean,
+              recoveredCorruption: false,
+              hasPendingUnit: false,
+              reason: 'continuation-disabled',
+            );
+      clean = initialCheckpoint.workingText;
+      var stableClean = initialCheckpoint.stableText;
+      var pendingCodeUnit = initialCheckpoint.hasPendingUnit;
+      if (initialCheckpoint.recoveredCorruption) {
+        generation.value = generation.value.copyWith(
+          stage: 'regenerating malformed Python unit from stable checkpoint',
+        );
+        onPartial?.call(stableClean);
+        stream = NazaStreamResult(
+          text: clean,
+          estimatedTokens: NazaAppConfig.outputTokens,
+          maxTokens: NazaAppConfig.outputTokens,
+          nearTokenCeiling: true,
+        );
+      }
+      if (!pythonArtifactTask &&
+          initialCheckpoint.reason == 'python-prefix-stable' &&
+          NazaContinuationEngine.hasOpenCodeFence(clean)) {
+        clean = '$clean\n```';
+        stableClean = clean;
+        pendingCodeUnit = false;
+        onPartial?.call(clean);
+      }
+      artifactSession.acceptInitial(stableClean);
 
       var continuationCount = 0;
       var rejectedSeamAttempts = 0;
@@ -10642,12 +9658,25 @@ final class NazaLocalGemma {
         }
         if (assembly.text.trim() == prefix.trim()) break;
         clean = assembly.text;
-        artifactSession.accept(clean);
-        rejectedSeamAttempts = 0;
-        if (transactionalCode && assembly.boundarySatisfied) {
+        if (transactionalCode && !assembly.boundarySatisfied) {
+          pendingCodeUnit = true;
+        } else {
+          if (transactionalCode &&
+              passContext.memory.taskType != 'coding' &&
+              NazaContinuationEngine.hasOpenCodeFence(clean)) {
+            clean = '$clean\n```';
+          }
+          artifactSession.accept(clean);
+          stableClean = clean;
+          pendingCodeUnit = false;
+          rejectedSeamAttempts = 0;
           onPartial?.call(clean);
         }
         stream = continuation;
+      }
+      if (pendingCodeUnit) {
+        clean = stableClean;
+        onPartial?.call(clean);
       }
       if (continuationCount > 0) {
         await _refreshPrimaryChatAfterContinuation();
@@ -10861,143 +9890,6 @@ final class NazaLocalGemma {
     );
   }
 
-  Future<NazaResponse> sendVoiceTurn(
-    String transcript, {
-    void Function(String partialText)? onPartial,
-  }) async {
-    final trimmed = transcript.trim();
-    if (trimmed.isEmpty) {
-      return NazaResponse(
-        text: 'I heard silence.',
-        score: 0,
-        route: 'voice-empty',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
-    }
-
-    final route = NazaQuantumRouter.route(trimmed);
-
-    try {
-      await ensureReady();
-      await _enterVoiceSession();
-      if (_voiceChat == null) {
-        throw StateError('Voice chat session did not open.');
-      }
-    } catch (error) {
-      await _restorePrimaryChatAfterVoice();
-      return NazaResponse(
-        text:
-            'The local voice model path is not ready yet. ${_modelSetupHint()}\n\n'
-            'Details: $error',
-        score: route.score,
-        route: 'voice-model-unavailable',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
-    }
-
-    final generationId = ++_generationSerial;
-    _cancelledGeneration = -1;
-    _activeGenerationOrigin = NazaGenerationOrigin.voice;
-
-    _startGenerationTelemetry(
-      generationId: generationId,
-      route: route,
-      maxTokens: NazaAppConfig.liveVoiceOutputTokens,
-    );
-
-    snapshot.value = snapshot.value.copyWith(
-      busy: true,
-      phase: 'voice chat response',
-      clearError: true,
-    );
-
-    try {
-      final voiceChat = _voiceChat;
-      if (voiceChat == null) {
-        throw StateError('Voice chat session is not open.');
-      }
-
-      generation.value = generation.value.copyWith(
-        stage: 'submitting voice prompt',
-      );
-      final voicePrompt = NazaPromptBudget.fitPrompt(
-        systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
-        prompt: _buildVoicePrompt(trimmed, route),
-      );
-      await _addQueryChunkWithTimeout(
-        voiceChat,
-        Message.text(text: voicePrompt, isUser: true),
-        label: 'voice prompt',
-      );
-
-      final stream = await _streamResponse(
-        generationId: generationId,
-        chat: voiceChat,
-        onPartial: onPartial,
-        maxTokens: NazaAppConfig.liveVoiceOutputTokens,
-      );
-      final clean = stream.text;
-
-      if (_cancelledGeneration == generationId) {
-        _stopGenerationTelemetry(cancelled: true);
-        snapshot.value = snapshot.value.copyWith(
-          busy: false,
-          phase: 'voice generation cancelled',
-          clearError: true,
-        );
-        return NazaResponse(
-          text: 'Voice response cancelled.',
-          score: route.score,
-          route: route.label,
-          cancelled: true,
-          createdAt: DateTime.now(),
-        );
-      }
-
-      _finishGenerationTelemetry(
-        route: route,
-        maxTokens: NazaAppConfig.liveVoiceOutputTokens,
-      );
-
-      final out = NazaResponse(
-        text: clean.isEmpty ? 'I heard you. Say that one more time?' : clean,
-        score: route.score,
-        route: 'voice-${route.label}',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
-
-      snapshot.value = snapshot.value.copyWith(
-        busy: false,
-        phase: 'ready',
-        clearError: true,
-      );
-
-      unawaited(_persistMessagePair(user: 'Voice: $trimmed', response: out));
-
-      return out;
-    } catch (error) {
-      _stopGenerationTelemetry(cancelled: false);
-      snapshot.value = snapshot.value.copyWith(
-        busy: false,
-        phase: 'voice generation failed',
-        error: error.toString(),
-      );
-
-      return NazaResponse(
-        text: 'Local voice chat error: $error',
-        score: route.score,
-        route: 'voice-${route.label}',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
-    } finally {
-      await _restorePrimaryChatAfterVoice();
-    }
-  }
-
   bool cancelActiveGeneration({
     NazaGenerationOrigin? only,
     String reason = 'requested',
@@ -11029,18 +9921,12 @@ final class NazaLocalGemma {
     // mutable fields after each await can otherwise stop a replacement scanner
     // session that started during teardown.
     final primaryChat = _chat;
-    final voiceChat = _voiceChat;
     final continuationChat = _continuationChat;
     try {
       await primaryChat?.stopGeneration();
     } catch (_) {
       // Cancellation is best-effort; the generation id still rejects a late
       // native response.
-    }
-    try {
-      await voiceChat?.stopGeneration();
-    } catch (_) {
-      // Same best-effort cancellation for the live voice session.
     }
     try {
       await continuationChat?.stopGeneration();
@@ -11096,16 +9982,11 @@ final class NazaLocalGemma {
     if (_model == null) return;
 
     final primaryChat = _chat;
-    final voiceChat = _voiceChat;
     final continuationChat = _continuationChat;
     _chat = null;
-    _voiceChat = null;
     _continuationChat = null;
     try {
       await primaryChat?.session?.close();
-    } catch (_) {}
-    try {
-      await voiceChat?.session?.close();
     } catch (_) {}
     try {
       await continuationChat?.session?.close();
@@ -11135,7 +10016,7 @@ final class NazaLocalGemma {
     );
 
     if (!force &&
-        await NazaVerificationStateStore.instance.isRuntimeModelTrusted(
+        await NazaModelAttestationStore.instance.isRuntimeModelTrusted(
           file: verified.file,
           sha256: NazaAppConfig.modelSha256,
         )) {
@@ -11180,7 +10061,7 @@ final class NazaLocalGemma {
             );
           },
         );
-    await NazaVerificationStateStore.instance.trustRuntimeModel(
+    await NazaModelAttestationStore.instance.trustRuntimeModel(
       file: verified.file,
       sha256: NazaAppConfig.modelSha256,
     );
@@ -11437,50 +10318,6 @@ final class NazaLocalGemma {
     return opened;
   }
 
-  Future<void> _enterVoiceSession() async {
-    final primaryChat = _chat;
-    _chat = null;
-    try {
-      await primaryChat?.session?.close().timeout(
-        const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
-      );
-    } catch (_) {
-      // A stale primary handle must not prevent a fresh single voice session.
-    }
-    _voiceChat = await _createChatWithTimeout(
-      systemInstruction: NazaAppConfig.liveVoiceSystemInstruction,
-      maxOutputTokens: NazaAppConfig.liveVoiceOutputTokens,
-      timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
-    );
-  }
-
-  Future<void> _restorePrimaryChatAfterVoice() async {
-    final voiceChat = _voiceChat;
-    _voiceChat = null;
-    try {
-      await voiceChat?.session?.close().timeout(
-        const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
-      );
-    } catch (_) {
-      // The replacement below is the authoritative native session.
-    }
-    if (_model == null || _chat != null) return;
-    try {
-      _chat = await _createChatWithTimeout(
-        systemInstruction: NazaAppConfig.systemInstruction,
-        maxOutputTokens: NazaAppConfig.outputTokens,
-        timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
-      );
-    } catch (error) {
-      _chat = null;
-      snapshot.value = snapshot.value.copyWith(
-        busy: false,
-        phase: 'chat restore deferred',
-        error: error.toString(),
-      );
-    }
-  }
-
   Future<void> _addQueryChunkWithTimeout(
     dynamic chat,
     Message message, {
@@ -11517,10 +10354,6 @@ final class NazaLocalGemma {
     } catch (_) {}
 
     try {
-      await _voiceChat?.session?.close();
-    } catch (_) {}
-
-    try {
       await _continuationChat?.session?.close();
     } catch (_) {}
 
@@ -11529,7 +10362,6 @@ final class NazaLocalGemma {
     } catch (_) {}
 
     _chat = null;
-    _voiceChat = null;
     _continuationChat = null;
     _model = null;
     _modelSupportsVision = false;
@@ -11568,20 +10400,6 @@ final class NazaLocalGemma {
       imageBytes: visionImage.bytes,
       isUser: true,
     );
-  }
-
-  String _buildVoicePrompt(String userText, NazaRoute route) {
-    return '''
-Live voice turn.
-Intent route: ${route.label}
-
-The user said:
-[[USER_INPUT]]
-${NazaContextManager._escapedUserInput(userText)}
-[[/USER_INPUT]]
-
-Answer out loud. Keep it natural, short, and useful.
-''';
   }
 
   Future<NazaStreamResult> _streamResponse({
@@ -11737,11 +10555,10 @@ Answer out loud. Keep it natural, short, and useful.
 
   Future<void> _persistRuntimeSnapshot() async {
     try {
-      final dir = await getApplicationSupportDirectory();
-      final file = File('${dir.path}/${NazaAppConfig.runtimeFileName}');
-      await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(snapshot.value.toJson()),
-        flush: true,
+      await NazaSecureDatabase.instance.writeJson(
+        'runtime',
+        'model-snapshot',
+        snapshot.value.toJson(),
       );
     } catch (_) {}
   }
@@ -11783,21 +10600,6 @@ final class NazaResponse {
     required this.cancelled,
     required this.createdAt,
   });
-}
-
-final class NazaSpeechCapture {
-  final String transcript;
-  final double? confidence;
-
-  const NazaSpeechCapture({required this.transcript, this.confidence});
-
-  factory NazaSpeechCapture.fromMap(Map<Object?, Object?> map) {
-    final rawConfidence = map['confidence'];
-    return NazaSpeechCapture(
-      transcript: map['transcript']?.toString() ?? '',
-      confidence: rawConfidence is num ? rawConfidence.toDouble() : null,
-    );
-  }
 }
 
 final class NazaVisionImage {
@@ -11880,18 +10682,13 @@ final class NazaVisionPicker {
     : _fileOpener = fileOpener ?? _openPortableFile;
 
   static final NazaVisionPicker instance = NazaVisionPicker();
-  static const MethodChannel _androidChannel = MethodChannel(
-    NazaAppConfig.liveVoiceChannel,
-  );
   static const Set<String> _portableExtensions = {'jpg', 'jpeg', 'png', 'webp'};
 
   final Future<file_selector.XFile?> Function() _fileOpener;
 
   Future<NazaVisionPickResult> pick() async {
     try {
-      final image = Platform.isAndroid
-          ? await _pickAndroidImage()
-          : await _pickPortableImage();
+      final image = await _pickPortableImage();
       return image == null
           ? const NazaVisionPickResult.cancelled()
           : NazaVisionPickResult.selected(image);
@@ -11919,13 +10716,6 @@ final class NazaVisionPicker {
             : message.trim(),
       );
     }
-  }
-
-  Future<NazaVisionImage?> _pickAndroidImage() async {
-    final raw = await _androidChannel.invokeMethod<Map<Object?, Object?>>(
-      'pickImage',
-    );
-    return raw == null ? null : NazaVisionImage.fromMap(raw);
   }
 
   Future<NazaVisionImage?> _pickPortableImage() async {
@@ -12040,201 +10830,6 @@ final class NazaVisionPicker {
     final rawStem = dot > 0 ? leaf.substring(0, dot) : leaf;
     final stem = rawStem.replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_').trim();
     return '${stem.isEmpty ? 'image' : stem}.png';
-  }
-}
-
-final class NazaLiveVoiceBridge {
-  NazaLiveVoiceBridge._() {
-    _channel.setMethodCallHandler(_handleNativeCall);
-  }
-
-  static final NazaLiveVoiceBridge instance = NazaLiveVoiceBridge._();
-
-  final MethodChannel _channel = const MethodChannel(
-    NazaAppConfig.liveVoiceChannel,
-  );
-  final ValueNotifier<String> partialTranscript = ValueNotifier<String>('');
-  final ValueNotifier<String> nativePhase = ValueNotifier<String>('idle');
-  final ValueNotifier<int> cancellationSerial = ValueNotifier<int>(0);
-
-  Future<bool> isAvailable() async {
-    try {
-      return await _channel.invokeMethod<bool>('isAvailable') ?? false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<bool> requestRecordPermission() async {
-    try {
-      return await _channel.invokeMethod<bool>('requestRecordPermission') ??
-          false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<NazaSpeechCapture> listenOnce({
-    int completeSilenceMs = 850,
-    int possibleSilenceMs = 450,
-    int minimumSpeechMs = 450,
-    bool preferOffline = true,
-  }) async {
-    partialTranscript.value = '';
-    try {
-      final raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>('listenOnce', {
-            'completeSilenceMs': completeSilenceMs,
-            'possibleSilenceMs': possibleSilenceMs,
-            'minimumSpeechMs': minimumSpeechMs,
-            'preferOffline': preferOffline,
-          })
-          .timeout(
-            const Duration(seconds: NazaAppConfig.voiceListenTimeoutSeconds),
-            onTimeout: () {
-              unawaited(stopListening());
-              throw TimeoutException('Android speech recognition timed out.');
-            },
-          );
-      return NazaSpeechCapture.fromMap(raw ?? const {});
-    } on MissingPluginException {
-      return const NazaSpeechCapture(transcript: '');
-    } on PlatformException catch (error) {
-      if (preferOffline &&
-          const {'speech_1', 'speech_2', 'speech_4'}.contains(error.code)) {
-        return listenOnce(
-          completeSilenceMs: completeSilenceMs,
-          possibleSilenceMs: possibleSilenceMs,
-          minimumSpeechMs: minimumSpeechMs,
-          preferOffline: false,
-        );
-      }
-      throw StateError(_platformMessage(error));
-    }
-  }
-
-  Future<bool> speak(
-    String text, {
-    double rate = .98,
-    double pitch = 1.0,
-  }) async {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) return false;
-    try {
-      return await _channel
-              .invokeMethod<bool>('speak', {
-                'text': trimmed,
-                'rate': rate,
-                'pitch': pitch,
-              })
-              .timeout(
-                const Duration(seconds: NazaAppConfig.voiceSpeakTimeoutSeconds),
-                onTimeout: () {
-                  unawaited(stopAudio());
-                  throw TimeoutException('Android speech playback timed out.');
-                },
-              ) ??
-          false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException catch (error) {
-      throw StateError(_platformMessage(error));
-    }
-  }
-
-  Future<bool> playWav(String path) async {
-    final clean = path.trim();
-    if (clean.isEmpty) return false;
-    try {
-      return await _channel
-              .invokeMethod<bool>('playWav', {'path': clean})
-              .timeout(
-                const Duration(seconds: 12),
-                onTimeout: () {
-                  unawaited(stopAudio());
-                  throw TimeoutException('Android WAV playback did not start.');
-                },
-              ) ??
-          false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException catch (error) {
-      throw StateError(_platformMessage(error));
-    }
-  }
-
-  Future<void> stopListening() async {
-    try {
-      await _channel.invokeMethod<void>('stopListening');
-    } on MissingPluginException {
-      // Desktop/tests have no Android speech bridge.
-    } on PlatformException {
-      // Stop is best-effort; ignore platform-side shutdown races.
-    }
-  }
-
-  Future<void> stopAudio() async {
-    try {
-      await _channel.invokeMethod<void>('stopAudio');
-    } on MissingPluginException {
-      // Desktop/tests have no Android audio bridge.
-    } on PlatformException {
-      // Stop is best-effort; ignore platform-side shutdown races.
-    }
-  }
-
-  Future<void> stop() async {
-    partialTranscript.value = '';
-    cancellationSerial.value++;
-    try {
-      await _channel.invokeMethod<void>('stop');
-    } on MissingPluginException {
-      // Desktop/tests have no Android speech bridge.
-    } on PlatformException {
-      // Stop is best-effort; ignore platform-side shutdown races.
-    }
-  }
-
-  static String _platformMessage(PlatformException error) {
-    final message = error.message?.trim();
-    if (message != null && message.isNotEmpty) return message;
-    final code = error.code.trim();
-    return code.isEmpty ? 'Android voice bridge failed.' : code;
-  }
-
-  Future<dynamic> _handleNativeCall(MethodCall call) async {
-    final args = call.arguments;
-    final map = args is Map ? args : const {};
-    switch (call.method) {
-      case 'voicePartial':
-        partialTranscript.value = map['transcript']?.toString() ?? '';
-        break;
-      case 'voiceListening':
-        nativePhase.value = 'listening';
-        break;
-      case 'voiceSpeechStart':
-        nativePhase.value = 'hearing speech';
-        break;
-      case 'voiceSpeechEnd':
-        nativePhase.value = 'processing speech';
-        break;
-      case 'voiceTtsStart':
-        nativePhase.value = 'speaking';
-        break;
-      case 'voiceTtsDone':
-        nativePhase.value = 'idle';
-        break;
-      case 'voiceAudioStart':
-        nativePhase.value = 'playing Settings test WAV';
-        break;
-      case 'voiceAudioDone':
-        nativePhase.value = 'idle';
-        break;
-    }
   }
 }
 
@@ -13391,55 +11986,195 @@ final class NazaHistoryRow {
   }
 }
 
-final class NazaPrivateFileStore {
-  NazaPrivateFileStore._();
-
-  static Future<void> writeString(File file, String contents) async {
-    await file.parent.create(recursive: true);
-    final part = File(
-      '${file.path}.${DateTime.now().microsecondsSinceEpoch}.tmp',
-    );
-    try {
-      await part.writeAsString(contents, flush: true);
-      await harden(part);
-      if (Platform.isWindows && await file.exists()) {
-        await file.delete();
-      }
-      await part.rename(file.path);
-      await harden(file);
-    } catch (_) {
-      if (await part.exists()) {
-        try {
-          await part.delete();
-        } catch (_) {}
-      }
-      rethrow;
-    }
-  }
-
-  static Future<void> harden(File file) async {
-    if (Platform.isWindows || !await file.exists()) return;
-    try {
-      await Process.run('chmod', ['600', file.path]);
-    } catch (_) {
-      // Best-effort hardening; encryption still protects file contents.
-    }
-  }
-}
-
 final class NazaVault {
   NazaVault._();
 
   static final NazaVault instance = NazaVault._();
 
-  final AesGcm _aes = AesGcm.with256bits();
+  static const String _historyNamespace = 'history';
+  static const String _historyKey = 'rows';
+  static const String _draftNamespace = 'scanner';
+  static const String _draftKey = 'drafts';
+  static const String _migrationNamespace = 'migration';
+  static const String _migrationKey = 'legacy-cleanup-pending';
+
   final ValueNotifier<int> revision = ValueNotifier<int>(0);
-  SecretKey? _secretKey;
-  Future<SecretKey>? _secretKeyFuture;
   Future<void> _storageTail = Future<void>.value();
 
+  NazaSecureDatabase get database => NazaSecureDatabase.instance;
+
+  Future<NazaVaultInspection> inspect() => database.inspect();
+
+  Future<void> create({
+    required String password,
+    bool passwordRequired = true,
+  }) async {
+    final migration = await NazaLegacyVaultMigrator.readAll();
+    final initialRecords = Map<NazaVaultRecordKey, Object?>.from(
+      migration.records,
+    );
+    if (migration.sources.isNotEmpty) {
+      initialRecords[const NazaVaultRecordKey(
+        _migrationNamespace,
+        _migrationKey,
+      )] = <String, Object?>{
+        'pending': true,
+        'createdAt': DateTime.now().toUtc().toIso8601String(),
+      };
+    }
+    await database.create(
+      password: password,
+      passwordRequired: passwordRequired,
+      initialRecords: initialRecords,
+    );
+    await _verifyMigration(migration.records);
+    await migration.commitCleanup();
+    if (migration.sources.isNotEmpty) {
+      await database.delete(_migrationNamespace, _migrationKey);
+    }
+    await _removeRetiredFeatureData();
+    revision.value++;
+  }
+
+  Future<void> restoreHybridRecovery({
+    required String packageJson,
+    required String recoveryPassword,
+    required String startupPassword,
+    required bool passwordRequired,
+  }) async {
+    if (packageJson.length > 384 * 1024 * 1024) {
+      throw const NazaVaultException(
+        'recovery_too_large',
+        'The recovery package exceeds the supported size limit.',
+      );
+    }
+    final inspection = await database.inspect();
+    if (inspection.access != NazaVaultAccess.setupRequired) {
+      throw const NazaVaultException(
+        'recovery_vault_exists',
+        'Recovery can only create a new vault.',
+      );
+    }
+    if (inspection.legacyDataPresent) {
+      throw const NazaVaultException(
+        'recovery_legacy_conflict',
+        'Migrate the existing local vault before restoring a recovery package.',
+      );
+    }
+
+    Uint8List? clear;
+    try {
+      final package = jsonDecode(packageJson);
+      if (package is! Map ||
+          package['format'] != 'naza-hybrid-recovery-package-v1' ||
+          package['encryptedPrivateKey'] is! Map ||
+          package['encryptedBackup'] is! Map) {
+        throw const NazaVaultException(
+          'recovery_format',
+          'This is not a supported Naza One recovery package.',
+        );
+      }
+      clear = await NazaPostQuantumExport.decryptBackup(
+        encryptedBackupJson: jsonEncode(package['encryptedBackup']),
+        encryptedPrivateKeyJson: jsonEncode(package['encryptedPrivateKey']),
+        recoveryPassword: recoveryPassword,
+      );
+      final payload = jsonDecode(utf8.decode(clear));
+      if (payload is! Map ||
+          payload['format'] != 'naza-vault-record-export-v1' ||
+          payload['records'] is! List) {
+        throw const NazaVaultException(
+          'recovery_payload',
+          'The decrypted recovery payload is malformed.',
+        );
+      }
+      final rows = payload['records'] as List;
+      if (rows.length > 100000) {
+        throw const NazaVaultException(
+          'recovery_record_limit',
+          'The recovery package declares too many records.',
+        );
+      }
+      final records = <NazaVaultRecordKey, Object?>{};
+      for (final row in rows) {
+        if (row is! Map) {
+          throw const NazaVaultException(
+            'recovery_record',
+            'A recovery record is malformed.',
+          );
+        }
+        final namespace = row['namespace']?.toString() ?? '';
+        final key = row['key']?.toString() ?? '';
+        if (namespace.isEmpty ||
+            key.isEmpty ||
+            namespace.startsWith('_') ||
+            namespace == _migrationNamespace) {
+          throw const NazaVaultException(
+            'recovery_record_identity',
+            'A recovery record uses a reserved identity.',
+          );
+        }
+        final recordKey = NazaVaultRecordKey(namespace, key);
+        if (records.containsKey(recordKey)) {
+          throw const NazaVaultException(
+            'recovery_duplicate',
+            'The recovery package contains duplicate records.',
+          );
+        }
+        records[recordKey] = row['value'];
+      }
+      await database.create(
+        password: startupPassword,
+        passwordRequired: passwordRequired,
+        initialRecords: records,
+      );
+      await _verifyMigration(records);
+      await _removeRetiredFeatureData();
+      revision.value++;
+    } on FormatException catch (error) {
+      throw NazaVaultException(
+        'recovery_json',
+        'The recovery package is not valid JSON.',
+        error,
+      );
+    } finally {
+      clear?.fillRange(0, clear.length, 0);
+    }
+  }
+
+  Future<void> unlock(String password) async {
+    await database.unlock(password);
+    await _resumeLegacyCleanup();
+    await _removeRetiredFeatureData();
+  }
+
+  Future<void> unlockWithDeviceKey() async {
+    await database.unlockWithDeviceKey();
+    await _resumeLegacyCleanup();
+    await _removeRetiredFeatureData();
+  }
+
+  Future<void> lock() => database.lock();
+
+  Future<void> changeUnlock({
+    required String newPassword,
+    required bool passwordRequired,
+  }) {
+    return database.changeUnlock(
+      newPassword: newPassword,
+      passwordRequired: passwordRequired,
+    );
+  }
+
+  Future<void> rotateDataKey() => database.rotateDataKey();
+
   Future<void> prepare() async {
-    _secretKey = await _getOrCreateKey();
+    if (!database.isUnlocked) {
+      throw const NazaVaultException(
+        'locked',
+        'Unlock the encrypted SQLite vault before starting the app.',
+      );
+    }
   }
 
   Future<void> appendMessagePair({
@@ -13448,249 +12183,377 @@ final class NazaVault {
     required String route,
     required double score,
   }) {
-    final operation = _storageTail.then(
-      (_) => _appendMessagePairNow(
-        user: user,
-        assistant: assistant,
-        route: route,
-        score: score,
-      ),
-    );
-    _storageTail = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
-  }
-
-  Future<void> _appendMessagePairNow({
-    required String user,
-    required String assistant,
-    required String route,
-    required double score,
-  }) async {
-    final rows = await _readHistoryNow();
-
-    rows.add(
-      NazaHistoryRow(
-        id: NazaHistoryRow._id(),
-        timestamp: DateTime.now(),
-        user: user,
-        assistant: assistant,
-        route: route,
-        score: score,
-      ),
-    );
-
-    while (rows.length > 250) {
-      rows.removeAt(0);
-    }
-
-    await _writeHistoryNow(rows);
-    revision.value++;
+    return _enqueue(() async {
+      final rows = await _readHistoryNow();
+      rows.add(
+        NazaHistoryRow(
+          id: NazaHistoryRow._id(),
+          timestamp: DateTime.now(),
+          user: user,
+          assistant: assistant,
+          route: route,
+          score: score,
+        ),
+      );
+      if (rows.length > 250) {
+        rows.removeRange(0, rows.length - 250);
+      }
+      await database.writeJson(
+        _historyNamespace,
+        _historyKey,
+        rows.map((row) => row.toJson()).toList(growable: false),
+      );
+      revision.value++;
+    });
   }
 
   Future<List<NazaHistoryRow>> readHistory() {
-    final operation = _storageTail.then((_) => _readHistoryNow());
-    _storageTail = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
-  }
-
-  Future<Map<String, Map<String, String>>> readScannerDrafts() {
-    final operation = _storageTail.then((_) => _readScannerDraftsNow());
-    _storageTail = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
-  }
-
-  Future<void> writeScannerDrafts(Map<String, Map<String, String>> drafts) {
-    final operation = _storageTail.then((_) => _writeScannerDraftsNow(drafts));
-    _storageTail = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
+    return _enqueue(_readHistoryNow);
   }
 
   Future<List<NazaHistoryRow>> _readHistoryNow() async {
-    final file = await _historyFile();
-    if (!await file.exists()) return [];
-
-    try {
-      final wrapper = jsonDecode(await file.readAsString());
-      final nonce = base64Decode(wrapper['nonce'] as String);
-      final cipherText = base64Decode(wrapper['cipherText'] as String);
-      final mac = base64Decode(wrapper['mac'] as String);
-      final key = await _getOrCreateKey();
-
-      final clear = await _aes.decrypt(
-        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
-        secretKey: key,
-        aad: utf8.encode(NazaAppConfig.vaultAad),
+    final raw = await database.readJson(_historyNamespace, _historyKey);
+    if (raw == null) return <NazaHistoryRow>[];
+    if (raw is! List) {
+      throw const NazaVaultException(
+        'invalid_history',
+        'The encrypted history record is malformed.',
       );
-
-      final payload = jsonDecode(utf8.decode(clear));
-      if (payload is! List) return [];
-
-      return payload
-          .whereType<Map>()
-          .map((e) => NazaHistoryRow.fromJson(Map<String, dynamic>.from(e)))
-          .toList();
-    } catch (_) {
-      return [];
     }
+    return raw
+        .whereType<Map>()
+        .map((item) => NazaHistoryRow.fromJson(Map<String, dynamic>.from(item)))
+        .toList(growable: true);
   }
 
-  Future<void> _writeHistoryNow(List<NazaHistoryRow> rows) async {
-    final file = await _historyFile();
-    final key = await _getOrCreateKey();
-    final clear = utf8.encode(jsonEncode(rows.map((e) => e.toJson()).toList()));
-
-    final box = await _aes.encrypt(
-      clear,
-      secretKey: key,
-      aad: utf8.encode(NazaAppConfig.vaultAad),
-    );
-
-    final wrapper = {
-      'version': 2,
-      'cipher': 'AES-256-GCM',
-      'nonce': base64Encode(box.nonce),
-      'cipherText': base64Encode(box.cipherText),
-      'mac': base64Encode(box.mac.bytes),
-      'updatedAt': DateTime.now().toIso8601String(),
-    };
-
-    await NazaPrivateFileStore.writeString(file, jsonEncode(wrapper));
-  }
-
-  Future<Map<String, Map<String, String>>> _readScannerDraftsNow() async {
-    final file = await _scannerDraftsFile();
-    if (!await file.exists()) return {};
-
-    try {
-      final wrapper = jsonDecode(await file.readAsString());
-      final nonce = base64Decode(wrapper['nonce'] as String);
-      final cipherText = base64Decode(wrapper['cipherText'] as String);
-      final mac = base64Decode(wrapper['mac'] as String);
-      final key = await _getOrCreateKey();
-
-      final clear = await _aes.decrypt(
-        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
-        secretKey: key,
-        aad: utf8.encode('${NazaAppConfig.vaultAad}:scanner-drafts'),
-      );
-
-      final payload = jsonDecode(utf8.decode(clear));
-      if (payload is! Map) return {};
-
-      final drafts = <String, Map<String, String>>{};
-      for (final entry in payload.entries) {
-        final value = entry.value;
-        if (value is! Map) continue;
-        drafts[entry.key.toString()] = {
-          for (final field in value.entries)
-            field.key.toString(): field.value?.toString() ?? '',
-        };
+  Future<Map<String, Map<String, String>>> readScannerDrafts() {
+    return _enqueue(() async {
+      final raw = await database.readJson(_draftNamespace, _draftKey);
+      if (raw == null) return <String, Map<String, String>>{};
+      if (raw is! Map) {
+        throw const NazaVaultException(
+          'invalid_scanner_drafts',
+          'The encrypted scanner draft record is malformed.',
+        );
       }
-      return drafts;
-    } catch (_) {
-      return {};
-    }
+      return <String, Map<String, String>>{
+        for (final entry in raw.entries)
+          if (entry.value is Map)
+            entry.key.toString(): <String, String>{
+              for (final field in (entry.value as Map).entries)
+                field.key.toString(): field.value?.toString() ?? '',
+            },
+      };
+    });
   }
 
-  Future<void> _writeScannerDraftsNow(
-    Map<String, Map<String, String>> drafts,
-  ) async {
-    final file = await _scannerDraftsFile();
-    final key = await _getOrCreateKey();
-    final clear = utf8.encode(jsonEncode(drafts));
-
-    final box = await _aes.encrypt(
-      clear,
-      secretKey: key,
-      aad: utf8.encode('${NazaAppConfig.vaultAad}:scanner-drafts'),
+  Future<void> writeScannerDrafts(Map<String, Map<String, String>> drafts) {
+    return _enqueue(
+      () => database.writeJson(_draftNamespace, _draftKey, drafts),
     );
-
-    final wrapper = {
-      'version': 1,
-      'cipher': 'AES-256-GCM',
-      'storage': 'scanner-drafts-sqlite-compatible-map',
-      'nonce': base64Encode(box.nonce),
-      'cipherText': base64Encode(box.cipherText),
-      'mac': base64Encode(box.mac.bytes),
-      'updatedAt': DateTime.now().toIso8601String(),
-    };
-
-    await NazaPrivateFileStore.writeString(file, jsonEncode(wrapper));
   }
 
   Future<void> clearHistory() {
-    final operation = _storageTail.then((_) => _clearHistoryNow());
-    _storageTail = operation.then<void>(
+    return _enqueue(() async {
+      await database.delete(_historyNamespace, _historyKey);
+      revision.value++;
+    });
+  }
+
+  Future<T> _enqueue<T>(Future<T> Function() operation) {
+    final queued = _storageTail.then((_) => operation());
+    _storageTail = queued.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
     );
-    return operation;
+    return queued;
   }
 
-  Future<void> _clearHistoryNow() async {
-    final file = await _historyFile();
-    if (await file.exists()) {
-      await file.delete();
-    }
-    revision.value++;
-  }
-
-  Future<SecretKey> _getOrCreateKey() async {
-    if (_secretKey != null) return _secretKey!;
-
-    final pending = _secretKeyFuture;
-    if (pending != null) return pending;
-
-    final created = _loadOrCreateKey();
-    _secretKeyFuture = created;
-    try {
-      return await created;
-    } finally {
-      _secretKeyFuture = null;
-    }
-  }
-
-  Future<SecretKey> _loadOrCreateKey() async {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/${NazaAppConfig.keyFileName}');
-
-    if (await file.exists()) {
-      await NazaPrivateFileStore.harden(file);
-      final raw = base64Decode(await file.readAsString());
-      if (raw.length != 32) {
-        throw const FormatException('Vault key must be 32 bytes.');
+  Future<void> _verifyMigration(
+    Map<NazaVaultRecordKey, Object?> records,
+  ) async {
+    if (records.isEmpty) return;
+    final exported = await database.exportRecords();
+    for (final entry in records.entries) {
+      if (!exported.containsKey(entry.key) ||
+          jsonEncode(exported[entry.key]) != jsonEncode(entry.value)) {
+        throw NazaVaultException(
+          'migration_readback',
+          'Legacy record ${entry.key} failed encrypted SQLite readback.',
+        );
       }
-      _secretKey = SecretKey(raw);
-      return _secretKey!;
+    }
+    final integrity = await database.integrityCheck();
+    if (integrity != 'ok') {
+      throw NazaVaultException(
+        'migration_integrity',
+        'The migrated SQLite vault failed integrity check: $integrity',
+      );
+    }
+  }
+
+  Future<void> _resumeLegacyCleanup() async {
+    final pending = await database.readJson(_migrationNamespace, _migrationKey);
+    if (pending == null) return;
+    final migration = await NazaLegacyVaultMigrator.readAll();
+    await _verifyMigration(migration.records);
+    await migration.commitCleanup();
+    await database.delete(_migrationNamespace, _migrationKey);
+  }
+
+  Future<void> _removeRetiredFeatureData() async {
+    final support = await getApplicationSupportDirectory();
+    for (final name in const <String>[
+      'bark_pack',
+      'bark_settings_tests',
+      'bark_convo_renders',
+    ]) {
+      final directory = Directory('${support.path}/$name');
+      if (await directory.exists()) {
+        await directory.delete(recursive: true);
+      }
+    }
+    final retired = File('${support.path}/naza_bark_performance.json');
+    if (await retired.exists()) await retired.delete();
+  }
+}
+
+final class NazaLegacyMigration {
+  final Map<NazaVaultRecordKey, Object?> records;
+  final List<FileSystemEntity> sources;
+
+  const NazaLegacyMigration({required this.records, required this.sources});
+
+  Future<void> commitCleanup() async {
+    for (final source in sources) {
+      if (await source.exists()) await source.delete(recursive: true);
+    }
+  }
+}
+
+/// Strict one-time importer for the former adjacent-key AES-GCM JSON files.
+/// Nothing is deleted until the new database has authenticated every imported
+/// record and passed SQLite's integrity check.
+final class NazaLegacyVaultMigrator {
+  const NazaLegacyVaultMigrator._();
+
+  static Future<NazaLegacyMigration> readAll({Directory? directory}) async {
+    final support = directory ?? await getApplicationSupportDirectory();
+    final keyFile = File('${support.path}/${NazaAppConfig.keyFileName}');
+    final encrypted = <(File, String, NazaVaultRecordKey)>[
+      (
+        File('${support.path}/${NazaAppConfig.historyFileName}'),
+        NazaAppConfig.vaultAad,
+        const NazaVaultRecordKey('history', 'rows'),
+      ),
+      (
+        File('${support.path}/${NazaAppConfig.scannerDraftsFileName}'),
+        '${NazaAppConfig.vaultAad}:scanner-drafts',
+        const NazaVaultRecordKey('scanner', 'drafts'),
+      ),
+      (
+        File('${support.path}/${NazaAppConfig.memoryFileName}'),
+        NazaAppConfig.vaultAad,
+        const NazaVaultRecordKey('memory', 'chunks'),
+      ),
+      (
+        File('${support.path}/${NazaAppConfig.generationSettingsFileName}'),
+        '${NazaAppConfig.vaultAad}:generation-settings',
+        const NazaVaultRecordKey('settings', 'generation'),
+      ),
+    ];
+    final present = <(File, String, NazaVaultRecordKey)>[];
+    for (final item in encrypted) {
+      if (await item.$1.exists()) present.add(item);
     }
 
-    final key = await _aes.newSecretKey();
-    final raw = await key.extractBytes();
-    await NazaPrivateFileStore.writeString(file, base64Encode(raw));
-    _secretKey = key;
-    return key;
+    final records = <NazaVaultRecordKey, Object?>{};
+    final sources = <FileSystemEntity>[];
+    SecretKey? legacyKey;
+    if (present.isNotEmpty) {
+      if (!await keyFile.exists()) {
+        throw const NazaVaultException(
+          'legacy_key_missing',
+          'Legacy encrypted data exists, but its key file is missing.',
+        );
+      }
+      final keyBytes = base64Decode((await keyFile.readAsString()).trim());
+      if (keyBytes.length != 32) {
+        throw const NazaVaultException(
+          'legacy_key_invalid',
+          'The legacy vault key is not 32 bytes.',
+        );
+      }
+      legacyKey = SecretKey(keyBytes);
+      for (final item in present) {
+        final decoded = await _decrypt(item.$1, legacyKey, item.$2);
+        records[item.$3] = _normalize(item.$3, decoded);
+        sources.add(item.$1);
+      }
+    }
+
+    final memorySettings = File(
+      '${support.path}/${NazaAppConfig.memorySettingsFileName}',
+    );
+    if (await memorySettings.exists()) {
+      records[const NazaVaultRecordKey('settings', 'memory')] = await _readJson(
+        memorySettings,
+      );
+      sources.add(memorySettings);
+    }
+    final backend = File(
+      '${support.path}/${NazaAppConfig.backendPreferenceFileName}',
+    );
+    if (await backend.exists()) {
+      records[const NazaVaultRecordKey('settings', 'backend')] =
+          await _readJson(backend);
+      sources.add(backend);
+    }
+
+    final verification = File(
+      '${support.path}/${NazaAppConfig.verificationStateFileName}',
+    );
+    if (await verification.exists()) {
+      if (legacyKey == null) {
+        if (!await keyFile.exists()) {
+          throw const NazaVaultException(
+            'legacy_key_missing',
+            'Legacy model attestations exist, but their key is missing.',
+          );
+        }
+        final bytes = base64Decode((await keyFile.readAsString()).trim());
+        if (bytes.length != 32) {
+          throw const NazaVaultException(
+            'legacy_key_invalid',
+            'The legacy vault key is not 32 bytes.',
+          );
+        }
+        legacyKey = SecretKey(bytes);
+      }
+      final decoded = await _decrypt(
+        verification,
+        legacyKey,
+        '${NazaAppConfig.vaultAad}:verification-state',
+      );
+      await _importAttestations(decoded, records);
+      sources.add(verification);
+    }
+
+    if (await keyFile.exists()) sources.add(keyFile);
+    return NazaLegacyMigration(records: records, sources: sources);
   }
 
-  Future<File> _historyFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.historyFileName}');
+  static Object? _normalize(NazaVaultRecordKey key, Object? decoded) {
+    if (key == const NazaVaultRecordKey('memory', 'chunks')) {
+      if (decoded is! Map || decoded['chunks'] is! List) {
+        throw const NazaVaultException(
+          'legacy_memory_invalid',
+          'The legacy memory payload is malformed.',
+        );
+      }
+    }
+    return decoded;
   }
 
-  Future<File> _scannerDraftsFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.scannerDraftsFileName}');
+  static Future<Object?> _decrypt(File file, SecretKey key, String aad) async {
+    final wrapper = await _readJson(file);
+    if (wrapper is! Map) {
+      throw NazaVaultException(
+        'legacy_wrapper_invalid',
+        'Legacy encrypted file ${file.path} is malformed.',
+      );
+    }
+    try {
+      final clear = await AesGcm.with256bits().decrypt(
+        SecretBox(
+          base64Decode(wrapper['cipherText'] as String),
+          nonce: base64Decode(wrapper['nonce'] as String),
+          mac: Mac(base64Decode(wrapper['mac'] as String)),
+        ),
+        secretKey: key,
+        aad: utf8.encode(aad),
+      );
+      return jsonDecode(utf8.decode(clear));
+    } catch (error) {
+      throw NazaVaultException(
+        'legacy_authentication',
+        'Legacy encrypted file ${file.path} failed authentication.',
+        error,
+      );
+    }
+  }
+
+  static Future<Object?> _readJson(File file) async {
+    try {
+      return jsonDecode(await file.readAsString());
+    } catch (error) {
+      throw NazaVaultException(
+        'legacy_json_invalid',
+        'Legacy file ${file.path} is not valid JSON.',
+        error,
+      );
+    }
+  }
+
+  static Future<void> _importAttestations(
+    Object? decoded,
+    Map<NazaVaultRecordKey, Object?> records,
+  ) async {
+    if (decoded is! Map) {
+      throw const NazaVaultException(
+        'legacy_attestation_invalid',
+        'The legacy model attestation payload is malformed.',
+      );
+    }
+    final files = decoded['files'];
+    if (files is Map) {
+      for (final value in files.values) {
+        if (value is! Map) continue;
+        await _importAttestation(value, records);
+      }
+    }
+    final runtime = decoded['runtimeModel'];
+    if (runtime is Map) {
+      final normalized = await _normalizedAttestation(runtime);
+      if (normalized != null) {
+        records[const NazaVaultRecordKey(
+              'model-attestations',
+              'active-runtime-model',
+            )] =
+            normalized;
+      }
+    }
+  }
+
+  static Future<void> _importAttestation(
+    Map raw,
+    Map<NazaVaultRecordKey, Object?> records,
+  ) async {
+    final normalized = await _normalizedAttestation(raw);
+    if (normalized == null) return;
+    final path = normalized['path'].toString();
+    records[NazaVaultRecordKey(
+          'model-attestations',
+          NazaModelAttestationStore.instance._artifactKey(path),
+        )] =
+        normalized;
+  }
+
+  static Future<Map<String, Object?>?> _normalizedAttestation(Map raw) async {
+    final path = raw['path']?.toString() ?? '';
+    if (path.isEmpty) return null;
+    final file = File(path);
+    if (!await file.exists()) return null;
+    final stat = await file.stat();
+    if (stat.size != raw['size'] ||
+        stat.modified.toUtc().millisecondsSinceEpoch != raw['modifiedMillis']) {
+      return null;
+    }
+    return <String, Object?>{
+      for (final entry in raw.entries) entry.key.toString(): entry.value,
+      'path': file.absolute.path,
+      'changedMillis': stat.changed.toUtc().millisecondsSinceEpoch,
+    };
   }
 }
 
@@ -13767,28 +12630,15 @@ final class NazaGenerationSettingsStore {
 
   Future<void> _load() async {
     try {
-      final file = await _settingsFile();
-      if (!await file.exists()) {
+      final payload = await NazaSecureDatabase.instance.readJson(
+        'settings',
+        'generation',
+      );
+      if (payload == null) {
         settings.value = NazaGenerationSettings.defaults();
         error.value = null;
         return;
       }
-
-      final wrapper = jsonDecode(await file.readAsString());
-      if (wrapper is! Map) {
-        settings.value = NazaGenerationSettings.defaults();
-        return;
-      }
-      final nonce = base64Decode(wrapper['nonce'] as String);
-      final cipherText = base64Decode(wrapper['cipherText'] as String);
-      final mac = base64Decode(wrapper['mac'] as String);
-      final key = await NazaVault.instance._getOrCreateKey();
-      final clear = await NazaVault.instance._aes.decrypt(
-        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
-        secretKey: key,
-        aad: utf8.encode('${NazaAppConfig.vaultAad}:generation-settings'),
-      );
-      final payload = jsonDecode(utf8.decode(clear));
       if (payload is Map<String, dynamic>) {
         settings.value = NazaGenerationSettings.fromJson(payload);
       } else if (payload is Map) {
@@ -13818,35 +12668,15 @@ final class NazaGenerationSettingsStore {
 
   Future<void> _persistNow(NazaGenerationSettings next) async {
     try {
-      final file = await _settingsFile();
-      final key = await NazaVault.instance._getOrCreateKey();
-      final clear = utf8.encode(jsonEncode(next.toJson()));
-      final box = await NazaVault.instance._aes.encrypt(
-        clear,
-        secretKey: key,
-        aad: utf8.encode('${NazaAppConfig.vaultAad}:generation-settings'),
+      await NazaSecureDatabase.instance.writeJson(
+        'settings',
+        'generation',
+        next.toJson(),
       );
-
-      final wrapper = {
-        'version': 1,
-        'cipher': 'AES-256-GCM',
-        'storage': 'generation-settings-sqlite-compatible-map',
-        'nonce': base64Encode(box.nonce),
-        'cipherText': base64Encode(box.cipherText),
-        'mac': base64Encode(box.mac.bytes),
-        'updatedAt': DateTime.now().toIso8601String(),
-      };
-
-      await NazaPrivateFileStore.writeString(file, jsonEncode(wrapper));
       error.value = null;
     } catch (saveError) {
       error.value = saveError.toString();
     }
-  }
-
-  Future<File> _settingsFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.generationSettingsFileName}');
   }
 }
 
@@ -14203,7 +13033,6 @@ final class NazaVectorMemory {
     'one',
   };
 
-  final AesGcm _aes = AesGcm.with256bits();
   final ValueNotifier<NazaMemorySettings> settings =
       ValueNotifier<NazaMemorySettings>(NazaMemorySettings.defaults());
   final ValueNotifier<NazaMemorySnapshot> snapshot =
@@ -14233,8 +13062,7 @@ final class NazaVectorMemory {
 
   Future<void> clear() {
     final operation = _storageTail.then((_) async {
-      final file = await _memoryFile();
-      if (await file.exists()) await file.delete();
+      await NazaSecureDatabase.instance.delete('memory', 'chunks');
       _chunks = <NazaMemoryChunk>[];
       snapshot.value = snapshot.value.copyWith(
         chunks: 0,
@@ -14443,12 +13271,16 @@ final class NazaVectorMemory {
 
   Future<void> _loadSettings() async {
     try {
-      final file = await _settingsFile();
-      if (await file.exists()) {
-        final raw = jsonDecode(await file.readAsString());
-        if (raw is Map<String, dynamic>) {
-          settings.value = NazaMemorySettings.fromJson(raw);
-        }
+      final raw = await NazaSecureDatabase.instance.readJson(
+        'settings',
+        'memory',
+      );
+      if (raw is Map<String, dynamic>) {
+        settings.value = NazaMemorySettings.fromJson(raw);
+      } else if (raw is Map) {
+        settings.value = NazaMemorySettings.fromJson(
+          Map<String, dynamic>.from(raw),
+        );
       }
       snapshot.value = snapshot.value.copyWith(
         enabled: settings.value.enabled,
@@ -14469,11 +13301,10 @@ final class NazaVectorMemory {
 
   Future<void> _persistSettings(NazaMemorySettings value) async {
     try {
-      final file = await _settingsFile();
-      await file.parent.create(recursive: true);
-      await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(value.toJson()),
-        flush: true,
+      await NazaSecureDatabase.instance.writeJson(
+        'settings',
+        'memory',
+        value.toJson(),
       );
     } catch (error) {
       snapshot.value = snapshot.value.copyWith(
@@ -14491,25 +13322,16 @@ final class NazaVectorMemory {
     final cached = _chunks;
     if (cached != null) return cached;
 
-    final file = await _memoryFile();
-    if (!await file.exists()) {
+    final payload = await NazaSecureDatabase.instance.readJson(
+      'memory',
+      'chunks',
+    );
+    if (payload == null) {
       _chunks = <NazaMemoryChunk>[];
       return _chunks!;
     }
 
     try {
-      final wrapper = jsonDecode(await file.readAsString());
-      if (wrapper is! Map) return <NazaMemoryChunk>[];
-      final nonce = base64Decode(wrapper['nonce'] as String);
-      final cipherText = base64Decode(wrapper['cipherText'] as String);
-      final mac = base64Decode(wrapper['mac'] as String);
-      final key = await NazaVault.instance._getOrCreateKey();
-      final clear = await _aes.decrypt(
-        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
-        secretKey: key,
-        aad: utf8.encode(NazaAppConfig.vaultAad),
-      );
-      final payload = jsonDecode(utf8.decode(clear));
       if (payload is! Map) return <NazaMemoryChunk>[];
       final rows = ((payload['chunks'] as List?) ?? const [])
           .whereType<Map>()
@@ -14533,34 +13355,12 @@ final class NazaVectorMemory {
   }
 
   Future<void> _writeChunksNow(List<NazaMemoryChunk> chunks) async {
-    final file = await _memoryFile();
-    await file.parent.create(recursive: true);
-    final key = await NazaVault.instance._getOrCreateKey();
-    final clear = utf8.encode(
-      jsonEncode({
-        'format': 'naza-vector-memory-v1',
-        'dimensions': NazaAppConfig.memoryEmbeddingDimensions,
-        'updatedAt': DateTime.now().toIso8601String(),
-        'chunks': chunks.map((chunk) => chunk.toJson()).toList(),
-      }),
-    );
-
-    final box = await _aes.encrypt(
-      clear,
-      secretKey: key,
-      aad: utf8.encode(NazaAppConfig.vaultAad),
-    );
-
-    final wrapper = {
-      'version': 1,
-      'cipher': 'AES-256-GCM',
-      'nonce': base64Encode(box.nonce),
-      'cipherText': base64Encode(box.cipherText),
-      'mac': base64Encode(box.mac.bytes),
+    await NazaSecureDatabase.instance.writeJson('memory', 'chunks', {
+      'format': 'naza-vector-memory-v1',
+      'dimensions': NazaAppConfig.memoryEmbeddingDimensions,
       'updatedAt': DateTime.now().toIso8601String(),
-    };
-
-    await file.writeAsString(jsonEncode(wrapper), flush: true);
+      'chunks': chunks.map((chunk) => chunk.toJson()).toList(),
+    });
   }
 
   Future<void> _recordAccess(List<_ScoredMemoryChunk> selected) {
@@ -14854,7 +13654,6 @@ final class NazaVectorMemory {
     final tags = <String>{
       role,
       route,
-      if (lower.contains('voice') || lower.contains('bark')) 'voice',
       if (lower.contains('error') ||
           lower.contains('bug') ||
           lower.contains('fix'))
@@ -15114,7 +13913,7 @@ final class NazaVectorMemory {
       _addFeature(vector, 'file:${match.group(0)}', 1.8);
     }
     for (final match in RegExp(
-      r'\b(null|error|fix|build|implement|summary|voice|memory|vector|rag|backend|setting|test)\b',
+      r'\b(null|error|fix|build|implement|summary|memory|vector|rag|backend|setting|test)\b',
     ).allMatches(normalized)) {
       _addFeature(vector, 'intent:${match.group(0)}', 1.35);
     }
@@ -15200,23 +13999,17 @@ final class NazaVectorMemory {
     }
     return hash & 0x7FFFFFFF;
   }
-
-  Future<File> _memoryFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.memoryFileName}');
-  }
-
-  Future<File> _settingsFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.memorySettingsFileName}');
-  }
 }
 
 class NazaOneApp extends StatelessWidget {
-  final bool warmModel;
+  final bool requireVaultUnlock;
   final NazaVisionPickerCallback? visionPicker;
 
-  const NazaOneApp({super.key, this.warmModel = false, this.visionPicker});
+  const NazaOneApp({
+    super.key,
+    this.requireVaultUnlock = true,
+    this.visionPicker,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -15261,7 +14054,385 @@ class NazaOneApp extends StatelessWidget {
           selectionHandleColor: NazaPalette.mintSoft,
         ),
       ),
-      home: NazaStableHome(visionPicker: visionPicker),
+      home: requireVaultUnlock
+          ? NazaVaultGate(visionPicker: visionPicker)
+          : NazaStableHome(
+              visionPicker: visionPicker,
+              initializeServices: false,
+            ),
+    );
+  }
+}
+
+class NazaVaultGate extends StatefulWidget {
+  final NazaVisionPickerCallback? visionPicker;
+
+  const NazaVaultGate({super.key, this.visionPicker});
+
+  @override
+  State<NazaVaultGate> createState() => _NazaVaultGateState();
+}
+
+class _NazaVaultGateState extends State<NazaVaultGate> {
+  final TextEditingController _password = TextEditingController();
+  final TextEditingController _confirmation = TextEditingController();
+  NazaVaultInspection? _inspection;
+  bool _passwordRequired = true;
+  bool _busy = true;
+  bool _unlocked = false;
+  bool _obscure = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_inspectAndMaybeUnlock());
+  }
+
+  @override
+  void dispose() {
+    _password
+      ..clear()
+      ..dispose();
+    _confirmation
+      ..clear()
+      ..dispose();
+    super.dispose();
+  }
+
+  Future<void> _inspectAndMaybeUnlock() async {
+    try {
+      final inspection = await NazaVault.instance.inspect();
+      if (inspection.access == NazaVaultAccess.unlocked) {
+        if (mounted) setState(() => _unlocked = true);
+        return;
+      }
+      if (inspection.access == NazaVaultAccess.locked &&
+          !inspection.passwordRequired) {
+        await NazaVault.instance.unlockWithDeviceKey();
+        if (mounted) setState(() => _unlocked = true);
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _inspection = inspection;
+        _passwordRequired = inspection.passwordRequired;
+        _busy = false;
+        _error = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _friendlyError(error);
+      });
+    }
+  }
+
+  Future<void> _submit() async {
+    if (_busy) return;
+    final inspection = _inspection;
+    if (inspection == null) {
+      await _inspectAndMaybeUnlock();
+      return;
+    }
+    final creating = inspection.access == NazaVaultAccess.setupRequired;
+    if (creating && _passwordRequired && _password.text != _confirmation.text) {
+      setState(() => _error = 'The two startup passwords do not match.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (creating) {
+        await NazaVault.instance.create(
+          password: _password.text,
+          passwordRequired: _passwordRequired,
+        );
+      } else {
+        await NazaVault.instance.unlock(_password.text);
+      }
+      _password.clear();
+      _confirmation.clear();
+      if (mounted) setState(() => _unlocked = true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _friendlyError(error);
+      });
+    }
+  }
+
+  Future<void> _restoreRecovery() async {
+    if (_busy ||
+        _inspection?.access != NazaVaultAccess.setupRequired ||
+        _inspection?.legacyDataPresent == true) {
+      return;
+    }
+    if (_passwordRequired && _password.text != _confirmation.text) {
+      setState(() => _error = 'The two startup passwords do not match.');
+      return;
+    }
+    if (_passwordRequired && _password.text.length < 12) {
+      setState(() => _error = 'Use at least 12 startup-password characters.');
+      return;
+    }
+    try {
+      final file = await file_selector.openFile(
+        acceptedTypeGroups: const [
+          file_selector.XTypeGroup(
+            label: 'Naza One recovery package',
+            extensions: ['json'],
+          ),
+        ],
+        confirmButtonText: 'Open recovery',
+      );
+      if (file == null || !mounted) return;
+      final length = await file.length();
+      if (length <= 0 || length > 384 * 1024 * 1024) {
+        throw const NazaVaultException(
+          'recovery_size',
+          'Choose a non-empty recovery package under 384 MiB.',
+        );
+      }
+      if (!mounted) return;
+      final recoveryPassword = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const _RecoveryPasswordDialog(
+          title: 'Unlock recovery package',
+          description:
+              'Enter the separate recovery password to decapsulate and authenticate this hybrid ML-KEM-768/X25519 backup.',
+          actionLabel: 'Restore',
+          confirmPassword: false,
+        ),
+      );
+      if (recoveryPassword == null || !mounted) return;
+      setState(() {
+        _busy = true;
+        _error = null;
+      });
+      final bytes = await file.readAsBytes();
+      final packageJson = utf8.decode(bytes, allowMalformed: false);
+      await NazaVault.instance.restoreHybridRecovery(
+        packageJson: packageJson,
+        recoveryPassword: recoveryPassword,
+        startupPassword: _passwordRequired ? _password.text : '',
+        passwordRequired: _passwordRequired,
+      );
+      bytes.fillRange(0, bytes.length, 0);
+      _password.clear();
+      _confirmation.clear();
+      if (mounted) setState(() => _unlocked = true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = _friendlyError(error);
+      });
+    }
+  }
+
+  String _friendlyError(Object error) {
+    if (error is NazaVaultException) return error.message;
+    return error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_unlocked) {
+      return NazaStableHome(visionPicker: widget.visionPicker);
+    }
+    final inspection = _inspection;
+    final creating = inspection?.access == NazaVaultAccess.setupRequired;
+    return Scaffold(
+      backgroundColor: NazaPalette.inkDeep,
+      body: Stack(
+        children: [
+          const Positioned.fill(child: _NazaStaticBackdrop()),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: _NazaGlassCard(
+                    padding: const EdgeInsets.all(24),
+                    radius: 24,
+                    active: true,
+                    child: AutofillGroup(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Icon(
+                            Icons.enhanced_encryption_rounded,
+                            color: NazaPalette.mintSoft,
+                            size: 42,
+                          ),
+                          const SizedBox(height: 14),
+                          Text(
+                            creating
+                                ? 'Create encrypted vault'
+                                : 'Unlock Naza One',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.headlineSmall
+                                ?.copyWith(
+                                  color: NazaPalette.text,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            creating
+                                ? 'Your password wraps the vault key. It is never stored and cannot be recovered.'
+                                : 'Enter the startup password to unlock local data for this app process.',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: NazaPalette.subtext,
+                              height: 1.4,
+                            ),
+                          ),
+                          if (inspection?.legacyDataPresent == true) ...[
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Existing encrypted data will be authenticated, migrated, read back, and only then retired.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: NazaPalette.mintSoft,
+                                fontSize: 12,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
+                          if (_busy) ...[
+                            const SizedBox(height: 24),
+                            const LinearProgressIndicator(
+                              color: NazaPalette.mintSoft,
+                              backgroundColor: Color(0x221AD697),
+                            ),
+                          ] else ...[
+                            const SizedBox(height: 20),
+                            if (!creating || _passwordRequired)
+                              TextField(
+                                controller: _password,
+                                obscureText: _obscure,
+                                autofocus: true,
+                                autofillHints: [
+                                  creating
+                                      ? AutofillHints.newPassword
+                                      : AutofillHints.password,
+                                ],
+                                textInputAction: creating
+                                    ? TextInputAction.next
+                                    : TextInputAction.done,
+                                onSubmitted: creating ? null : (_) => _submit(),
+                                decoration: InputDecoration(
+                                  labelText: 'Startup password',
+                                  helperText: creating
+                                      ? 'Use at least 12 characters.'
+                                      : null,
+                                  suffixIcon: IconButton(
+                                    tooltip: _obscure
+                                        ? 'Show password'
+                                        : 'Hide password',
+                                    onPressed: () =>
+                                        setState(() => _obscure = !_obscure),
+                                    icon: Icon(
+                                      _obscure
+                                          ? Icons.visibility_rounded
+                                          : Icons.visibility_off_rounded,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            if (creating && _passwordRequired) ...[
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _confirmation,
+                                obscureText: _obscure,
+                                autofillHints: const [
+                                  AutofillHints.newPassword,
+                                ],
+                                textInputAction: TextInputAction.done,
+                                onSubmitted: (_) => _submit(),
+                                decoration: const InputDecoration(
+                                  labelText: 'Confirm startup password',
+                                ),
+                              ),
+                            ],
+                            if (creating) ...[
+                              const SizedBox(height: 10),
+                              Material(
+                                type: MaterialType.transparency,
+                                child: SwitchListTile.adaptive(
+                                  contentPadding: EdgeInsets.zero,
+                                  value: _passwordRequired,
+                                  activeThumbColor: NazaPalette.mintSoft,
+                                  title: const Text(
+                                    'Require password at each app start',
+                                    style: TextStyle(color: NazaPalette.text),
+                                  ),
+                                  subtitle: const Text(
+                                    'Recommended and enabled by default. Turning it off delegates unlock to the operating-system secure key store.',
+                                    style: TextStyle(
+                                      color: NazaPalette.subtext,
+                                    ),
+                                  ),
+                                  onChanged: (value) => setState(() {
+                                    _passwordRequired = value;
+                                    _error = null;
+                                  }),
+                                ),
+                              ),
+                            ],
+                            if (_error != null) ...[
+                              const SizedBox(height: 10),
+                              Text(
+                                _error!,
+                                key: const ValueKey('vault-error'),
+                                style: const TextStyle(
+                                  color: NazaPalette.danger,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 18),
+                            FilledButton.icon(
+                              key: const ValueKey('vault-submit'),
+                              onPressed: _submit,
+                              icon: Icon(
+                                creating
+                                    ? Icons.lock_rounded
+                                    : Icons.lock_open_rounded,
+                              ),
+                              label: Text(
+                                creating ? 'Create and unlock' : 'Unlock',
+                              ),
+                            ),
+                            if (creating &&
+                                inspection?.legacyDataPresent != true) ...[
+                              const SizedBox(height: 8),
+                              OutlinedButton.icon(
+                                onPressed: _restoreRecovery,
+                                icon: const Icon(Icons.settings_backup_restore),
+                                label: const Text('Restore PQ Recovery'),
+                              ),
+                            ],
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -15558,582 +14729,17 @@ final class NazaScannerResult {
   }
 }
 
-final class NazaNativeBarkRender {
-  final bool success;
-  final bool packBacked;
-  final String outputPath;
-  final String detail;
-  final String? error;
-
-  const NazaNativeBarkRender({
-    required this.success,
-    required this.packBacked,
-    required this.outputPath,
-    required this.detail,
-    this.error,
-  });
-}
-
-typedef _NazaBarkRenderNative =
-    ffi.Int32 Function(
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Pointer<ffi.Char>,
-      ffi.Int32,
-    );
-
-typedef _NazaBarkRenderDart =
-    int Function(
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      int,
-      int,
-      ffi.Pointer<ffi.Char>,
-      int,
-    );
-
-typedef _NazaBarkRenderV2Native =
-    ffi.Int32 Function(
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Int32,
-      ffi.Pointer<ffi.Char>,
-      ffi.Int32,
-    );
-
-typedef _NazaBarkRenderV2Dart =
-    int Function(
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      ffi.Pointer<ffi.Char>,
-      int,
-      int,
-      int,
-      int,
-      ffi.Pointer<ffi.Char>,
-      int,
-    );
-
-typedef _NazaBarkProbeNative =
-    ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>, ffi.Int32);
-
-typedef _NazaBarkProbeDart =
-    int Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>, int);
-
-final class NazaNativeBarkBridge {
-  const NazaNativeBarkBridge._();
-
-  static final ValueNotifier<String> probeStatus = ValueNotifier<String>(
-    'Native Bark runtime not probed',
-  );
-
-  static Future<bool> probe({required String packDir}) async {
-    probeStatus.value = 'Probing the packaged native Bark runtime';
-    final payload = await Isolate.run(
-      () => _probeLibrarySync(packDir: packDir),
-    );
-    final success = payload != null && payload['success'] == 'true';
-    probeStatus.value = payload?['detail'] ?? 'Native Bark runtime unavailable';
-    return success;
-  }
-
-  static Future<NazaNativeBarkRender?> render({
-    required String packDir,
-    required String script,
-    required String voice,
-    required String style,
-    required String outputPath,
-    int sampleRate = 24000,
-    int maxSeconds = 240,
-    int performanceFlags = 2,
-    int maxEvents = 42,
-  }) async {
-    final payload = await Isolate.run(
-      () => _renderSync(
-        packDir: packDir,
-        script: script,
-        voice: voice,
-        style: style,
-        outputPath: outputPath,
-        sampleRate: sampleRate,
-        maxSeconds: maxSeconds,
-        performanceFlags: performanceFlags,
-        maxEvents: maxEvents,
-      ),
-    );
-    if (payload == null) return null;
-    return NazaNativeBarkRender(
-      success: payload['success'] == 'true',
-      packBacked: payload['packBacked'] == 'true',
-      outputPath: payload['outputPath'] ?? outputPath,
-      detail: payload['detail'] ?? 'native bark ffi',
-      error: payload['error']?.isEmpty ?? true ? null : payload['error'],
-    );
-  }
-
-  static Map<String, String>? _probeLibrarySync({required String packDir}) {
-    try {
-      final lib = _openLibrary();
-      final detail = _probeSync(lib, packDir);
-      return {'success': detail.isEmpty ? 'false' : 'true', 'detail': detail};
-    } catch (error) {
-      return {'success': 'false', 'detail': error.toString()};
-    }
-  }
-
-  static Map<String, String>? _renderSync({
-    required String packDir,
-    required String script,
-    required String voice,
-    required String style,
-    required String outputPath,
-    required int sampleRate,
-    required int maxSeconds,
-    required int performanceFlags,
-    required int maxEvents,
-  }) {
-    ffi.DynamicLibrary lib;
-    try {
-      lib = _openLibrary();
-    } catch (error) {
-      return {
-        'success': 'false',
-        'packBacked': 'false',
-        'outputPath': outputPath,
-        'detail': 'native unavailable',
-        'error': error.toString(),
-      };
-    }
-
-    _NazaBarkRenderV2Dart? renderV2Fn;
-    _NazaBarkRenderDart? renderFn;
-    var nativeSymbol = 'naza_bark_render_wav_v1';
-    try {
-      renderV2Fn = lib
-          .lookupFunction<_NazaBarkRenderV2Native, _NazaBarkRenderV2Dart>(
-            'naza_bark_render_wav_v2',
-          );
-      nativeSymbol = 'naza_bark_render_wav_v2';
-    } catch (_) {
-      try {
-        renderFn = lib
-            .lookupFunction<_NazaBarkRenderNative, _NazaBarkRenderDart>(
-              'naza_bark_render_wav',
-            );
-      } catch (error) {
-        return {
-          'success': 'false',
-          'packBacked': 'false',
-          'outputPath': outputPath,
-          'detail': 'native symbol missing',
-          'error': error.toString(),
-        };
-      }
-    }
-
-    final packPtr = packDir.toNativeUtf8();
-    final scriptPtr = script.toNativeUtf8();
-    final voicePtr = voice.toNativeUtf8();
-    final stylePtr = style.toNativeUtf8();
-    final outputPtr = outputPath.toNativeUtf8();
-    final errorPtr = pkg_ffi.calloc<ffi.Char>(4096);
-    String probe = '';
-    try {
-      probe = _probeSync(lib, packDir);
-      final code = renderV2Fn != null
-          ? renderV2Fn(
-              packPtr.cast<ffi.Char>(),
-              scriptPtr.cast<ffi.Char>(),
-              voicePtr.cast<ffi.Char>(),
-              stylePtr.cast<ffi.Char>(),
-              outputPtr.cast<ffi.Char>(),
-              sampleRate,
-              maxSeconds,
-              performanceFlags,
-              maxEvents,
-              errorPtr,
-              4096,
-            )
-          : renderFn!(
-              packPtr.cast<ffi.Char>(),
-              scriptPtr.cast<ffi.Char>(),
-              voicePtr.cast<ffi.Char>(),
-              stylePtr.cast<ffi.Char>(),
-              outputPtr.cast<ffi.Char>(),
-              sampleRate,
-              maxSeconds,
-              errorPtr,
-              4096,
-            );
-      final error = errorPtr.cast<pkg_ffi.Utf8>().toDartString();
-      return {
-        'success': code > 0 ? 'true' : 'false',
-        'packBacked': code == 2 ? 'true' : 'false',
-        'outputPath': outputPath,
-        'detail': probe.isEmpty
-            ? '$nativeSymbol code=$code sr=$sampleRate flags=$performanceFlags events=$maxEvents'
-            : '$nativeSymbol code=$code sr=$sampleRate flags=$performanceFlags events=$maxEvents $probe',
-        'error': error,
-      };
-    } finally {
-      pkg_ffi.malloc.free(packPtr);
-      pkg_ffi.malloc.free(scriptPtr);
-      pkg_ffi.malloc.free(voicePtr);
-      pkg_ffi.malloc.free(stylePtr);
-      pkg_ffi.malloc.free(outputPtr);
-      pkg_ffi.calloc.free(errorPtr);
-    }
-  }
-
-  static String _probeSync(ffi.DynamicLibrary lib, String packDir) {
-    try {
-      final probeFn = lib
-          .lookupFunction<_NazaBarkProbeNative, _NazaBarkProbeDart>(
-            'naza_bark_probe',
-          );
-      final packPtr = packDir.toNativeUtf8();
-      final outPtr = pkg_ffi.calloc<ffi.Char>(2048);
-      try {
-        probeFn(packPtr.cast<ffi.Char>(), outPtr, 2048);
-        return outPtr.cast<pkg_ffi.Utf8>().toDartString();
-      } finally {
-        pkg_ffi.malloc.free(packPtr);
-        pkg_ffi.calloc.free(outPtr);
-      }
-    } catch (_) {
-      return '';
-    }
-  }
-
-  static ffi.DynamicLibrary _openLibrary() {
-    if (Platform.isAndroid) {
-      // Android packages this library through externalNativeBuild, but it is
-      // not linked into the Flutter process. Opening the packaged soname is
-      // required before its exported Bark symbols can be resolved.
-      return ffi.DynamicLibrary.open('libnaza_bark_ffi.so');
-    }
-    if (Platform.isIOS || Platform.isMacOS) {
-      try {
-        return ffi.DynamicLibrary.process();
-      } catch (_) {
-        if (Platform.isIOS) rethrow;
-      }
-    }
-
-    final executableDir = File(Platform.resolvedExecutable).parent.path;
-    final candidates = <String>[
-      if (Platform.isLinux) ...[
-        'libnaza_bark_ffi.so',
-        '$executableDir/lib/libnaza_bark_ffi.so',
-        '$executableDir/libnaza_bark_ffi.so',
-      ],
-      if (Platform.isWindows) ...['$executableDir/naza_bark_ffi.dll'],
-      if (Platform.isMacOS) ...[
-        'libnaza_bark_ffi.dylib',
-        'naza_bark_ffi.framework/naza_bark_ffi',
-        '$executableDir/../Frameworks/libnaza_bark_ffi.dylib',
-        '$executableDir/../Frameworks/naza_bark_ffi.framework/naza_bark_ffi',
-      ],
-    ];
-
-    Object? lastError;
-    for (final candidate in candidates) {
-      try {
-        return ffi.DynamicLibrary.open(candidate);
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw StateError('Could not load native Bark FFI library: $lastError');
-  }
-}
-
-final class NazaBarkSelfTestStatus {
-  final bool running;
-  final int progress;
-  final String phase;
-  final List<String> audioPaths;
-  final List<String> tracePaths;
-  final String detail;
-  final String? error;
-  final DateTime? updatedAt;
-
-  const NazaBarkSelfTestStatus({
-    required this.running,
-    required this.progress,
-    required this.phase,
-    required this.audioPaths,
-    required this.tracePaths,
-    required this.detail,
-    required this.updatedAt,
-    this.error,
-  });
-
-  factory NazaBarkSelfTestStatus.idle() {
-    return const NazaBarkSelfTestStatus(
-      running: false,
-      progress: 0,
-      phase: 'self-test idle',
-      audioPaths: [],
-      tracePaths: [],
-      detail:
-          'Render a deterministic local BarkPack preview to verify speech clarity.',
-      updatedAt: null,
-    );
-  }
-
-  bool get hasOutput => audioPaths.isNotEmpty;
-}
-
-final class NazaBarkSettingsTestEngine {
-  NazaBarkSettingsTestEngine._();
-
-  static final NazaBarkSettingsTestEngine instance =
-      NazaBarkSettingsTestEngine._();
-  final ValueNotifier<NazaBarkPerformancePreset> performancePreset =
-      ValueNotifier<NazaBarkPerformancePreset>(
-        NazaBarkPerformancePreset.balanced8gb,
-      );
-  final ValueNotifier<NazaBarkSelfTestStatus> selfTest =
-      ValueNotifier<NazaBarkSelfTestStatus>(NazaBarkSelfTestStatus.idle());
-  Future<void>? _performanceLoadFuture;
-  Future<void>? _selfTestFuture;
-
-  Future<void> preparePerformancePreset() {
-    _performanceLoadFuture ??= _loadPerformancePreset();
-    return _performanceLoadFuture!;
-  }
-
-  Future<void> setPerformancePreset(NazaBarkPerformancePreset preset) async {
-    await preparePerformancePreset();
-    if (performancePreset.value == preset) return;
-    performancePreset.value = preset;
-    await _persistPerformancePreset();
-  }
-
-  Future<void> _loadPerformancePreset() async {
-    try {
-      final file = await _performancePreferenceFile();
-      if (await file.exists()) {
-        final json = jsonDecode(await file.readAsString());
-        if (json is Map<String, dynamic>) {
-          performancePreset.value = NazaBarkPerformancePreset.fromStorage(
-            json['preset'],
-          );
-          return;
-        }
-      }
-    } catch (_) {
-      // Keep the safe 8 GB default if the preference file is malformed.
-    }
-    performancePreset.value = NazaBarkPerformancePreset.balanced8gb;
-  }
-
-  Future<void> _persistPerformancePreset() async {
-    try {
-      final file = await _performancePreferenceFile();
-      await file.parent.create(recursive: true);
-      await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert({
-          'format': 'naza-bark-performance-v1',
-          'preset': performancePreset.value.storageValue,
-          'updatedAt': DateTime.now().toIso8601String(),
-        }),
-        flush: true,
-      );
-    } catch (_) {
-      // The active in-memory preset still works even if persistence fails.
-    }
-  }
-
-  Future<File> _performancePreferenceFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/${NazaAppConfig.barkPerformanceFileName}');
-  }
-
-  Future<void> runSelfTest() {
-    _selfTestFuture ??= _runSelfTestInner();
-    return _selfTestFuture!;
-  }
-
-  Future<void> _runSelfTestInner() async {
-    final started = DateTime.now();
-    try {
-      await preparePerformancePreset();
-      final preset = performancePreset.value;
-      selfTest.value = NazaBarkSelfTestStatus(
-        running: true,
-        progress: 3,
-        phase: 'checking BarkPack',
-        audioPaths: const [],
-        tracePaths: const [],
-        detail: 'Preparing deterministic native BarkPack self-test.',
-        updatedAt: started,
-      );
-      final packStatus = await NazaSecureBarkPackStore.instance.refresh();
-      if (!packStatus.installed) {
-        throw StateError(
-          'BarkPack is not installed. Install and verify it in Settings before running the self-test.',
-        );
-      }
-      if (Platform.isAndroid &&
-          NazaLocalGemma.instance.snapshot.value.modelLoaded) {
-        selfTest.value = NazaBarkSelfTestStatus(
-          running: true,
-          progress: 7,
-          phase: 'releasing Gemma memory',
-          audioPaths: const [],
-          tracePaths: const [],
-          detail:
-              'Keeping the Android Bark self-test inside a bounded native memory lane.',
-          updatedAt: DateTime.now(),
-        );
-        await NazaLocalGemma.instance.close(
-          phase: 'released for Bark diagnostics',
-        );
-      }
-
-      final cases = <({String name, String script, String voice, String style})>[
-        (
-          name: 'narrator_clarity',
-          script:
-              'Narrator: The quick brown fox jumps over the lazy dog. This checks vowels, fricatives, and plosive timing.',
-          voice: 'warm narrator, clear close mic',
-          style: 'balanced natural speech clarity test',
-        ),
-        (
-          name: 'dialogue_turns',
-          script:
-              'Speaker A: Are you hearing clearer words now?\nSpeaker B: Yes, the voice has sharper consonants and better rhythm.',
-          voice: 'two natural speakers, close mic',
-          style: 'dialogue, calm, human timing',
-        ),
-        (
-          name: 'studio_expression',
-          script:
-              'Narrator: Softly, then brighter! Can the system keep the same voice while changing emotion?',
-          voice: 'expressive narrator, bright but warm',
-          style: 'studio expression, light breath',
-        ),
-      ];
-
-      final outputs = <String>[];
-      final traces = <String>[];
-      final details = <String>[];
-      for (var i = 0; i < cases.length; i++) {
-        final item = cases[i];
-        final progressBase = 10 + (i * 27);
-        selfTest.value = NazaBarkSelfTestStatus(
-          running: true,
-          progress: progressBase,
-          phase: 'rendering ${item.name}',
-          audioPaths: List.unmodifiable(outputs),
-          tracePaths: List.unmodifiable(traces),
-          detail: 'Native self-test ${i + 1}/${cases.length}',
-          updatedAt: DateTime.now(),
-        );
-        final key = _cacheKey([
-          'self-test-v3-source-filter',
-          item.name,
-          packStatus.packPath,
-          NazaAppConfig.barkPackIndexSha256,
-          preset.storageValue,
-          preset.sampleRate.toString(),
-        ]);
-        final target = await _cachedRenderFile(
-          key: key,
-          prefix: 'naza-bark-selftest',
-        );
-        final attempt = await NazaNativeBarkBridge.render(
-          packDir: packStatus.packPath,
-          script: item.script,
-          voice: item.voice,
-          style: item.style,
-          outputPath: target.path,
-          sampleRate: preset.sampleRate,
-          maxSeconds: 32,
-          performanceFlags: preset.nativeFlags,
-          maxEvents: preset.maxNativeEvents,
-        );
-        if (attempt == null ||
-            !attempt.success ||
-            !(await File(attempt.outputPath).exists())) {
-          throw StateError(
-            attempt?.error == null
-                ? 'Native self-test render failed.'
-                : 'Native self-test render failed: ${attempt!.error}',
-          );
-        }
-        outputs.add(attempt.outputPath);
-        final tracePath = '${attempt.outputPath}.trace.json';
-        if (await File(tracePath).exists()) {
-          traces.add(tracePath);
-        }
-        details.add(attempt.detail);
-      }
-
-      selfTest.value = NazaBarkSelfTestStatus(
-        running: false,
-        progress: 100,
-        phase: 'self-test complete',
-        audioPaths: List.unmodifiable(outputs),
-        tracePaths: List.unmodifiable(traces),
-        detail: details.isEmpty ? 'Rendered native previews.' : details.last,
-        updatedAt: DateTime.now(),
-      );
-    } catch (error) {
-      selfTest.value = NazaBarkSelfTestStatus(
-        running: false,
-        progress: 0,
-        phase: 'self-test failed',
-        audioPaths: selfTest.value.audioPaths,
-        tracePaths: selfTest.value.tracePaths,
-        detail: selfTest.value.detail,
-        updatedAt: DateTime.now(),
-        error: error.toString(),
-      );
-    } finally {
-      _selfTestFuture = null;
-    }
-  }
-
-  Future<File> _cachedRenderFile({
-    required String key,
-    required String prefix,
-  }) async {
-    final support = await getApplicationSupportDirectory();
-    final dir = Directory('${support.path}/bark_settings_tests/cache');
-    await dir.create(recursive: true);
-    return File('${dir.path}/$prefix-$key.wav');
-  }
-
-  String _cacheKey(List<String> parts) {
-    return crypto.sha256.convert(utf8.encode(parts.join('\u001F'))).toString();
-  }
-}
-
-enum NazaPanel { chat, roadScanner, foodWater, convo, settings, history }
+enum NazaPanel { chat, roadScanner, foodWater, settings, history }
 
 class NazaStableHome extends StatefulWidget {
   final NazaVisionPickerCallback? visionPicker;
+  final bool initializeServices;
 
-  const NazaStableHome({super.key, this.visionPicker});
+  const NazaStableHome({
+    super.key,
+    this.visionPicker,
+    this.initializeServices = true,
+  });
 
   @override
   State<NazaStableHome> createState() => _NazaStableHomeState();
@@ -16172,20 +14778,21 @@ class _NazaStableHomeState extends State<NazaStableHome>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(NazaLocalGemma.instance.prepareBackendPreference());
-      unawaited(NazaGenerationSettingsStore.instance.prepare());
-      unawaited(NazaSecureModelStore.refresh());
-      unawaited(_loadScannerDrafts());
-    });
+    if (widget.initializeServices) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(NazaLocalGemma.instance.prepareBackendPreference());
+        unawaited(NazaGenerationSettingsStore.instance.prepare());
+        unawaited(NazaSecureModelStore.refresh());
+        unawaited(_loadScannerDrafts());
+      });
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _draftSaveTimer?.cancel();
-    unawaited(NazaLiveVoiceBridge.instance.stop());
-    unawaited(_persistScannerDrafts());
+    if (widget.initializeServices) unawaited(_persistScannerDrafts());
     _inputController.dispose();
     _inputFocus.dispose();
     _scrollController.dispose();
@@ -16194,24 +14801,22 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive) {
-      // Losing focus (including desktop DevTools or an Android permission
-      // sheet) must not cancel an in-flight classifier.
-      unawaited(NazaLiveVoiceBridge.instance.stop());
-    }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached ||
         state == AppLifecycleState.hidden) {
       NazaLocalGemma.instance.cancelActiveGeneration(
         reason: 'app moved to background',
       );
-      unawaited(NazaLiveVoiceBridge.instance.stop());
     }
     if (state == AppLifecycleState.detached) {
-      unawaited(
-        NazaLocalGemma.instance.close(phase: 'closed with Android activity'),
-      );
+      unawaited(_closeDetachedProcess());
     }
+  }
+
+  Future<void> _closeDetachedProcess() async {
+    if (widget.initializeServices) await _persistScannerDrafts();
+    await NazaLocalGemma.instance.close(phase: 'closed with app process');
+    if (widget.initializeServices) await NazaVault.instance.lock();
   }
 
   Future<void> _loadScannerDrafts() async {
@@ -16253,6 +14858,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
   }
 
   Future<void> _persistScannerDrafts() {
+    if (!widget.initializeServices) return Future<void>.value();
     return NazaVault.instance.writeScannerDrafts({
       'road': _roadDraft,
       'food': _foodDraft,
@@ -16505,44 +15111,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
     );
   }
 
-  Future<NazaResponse> _runVoiceTurn(String transcript) async {
-    if (_sending) {
-      return NazaResponse(
-        text: 'Hold on, I am finishing the current local response.',
-        score: 0,
-        route: 'voice-busy',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
-    }
-
-    setState(() {
-      _sending = true;
-      _status = 'voice chat turn';
-    });
-
-    await WidgetsBinding.instance.endOfFrame;
-
-    try {
-      return await NazaLocalGemma.instance.sendVoiceTurn(transcript);
-    } catch (error) {
-      return NazaResponse(
-        text: 'Local voice chat error: $error',
-        score: 0,
-        route: 'voice-error',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _sending = false;
-          _status = _labelForPanel(_panel);
-        });
-      }
-    }
-  }
-
   Future<NazaScannerResult> _submitScannerPrompt({
     required String title,
     required String kind,
@@ -16665,19 +15233,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   }
 
   void _setPanel(NazaPanel panel) {
-    if (_panel == NazaPanel.convo && panel != NazaPanel.convo) {
-      NazaLocalGemma.instance.cancelActiveGeneration(
-        only: NazaGenerationOrigin.voice,
-        reason: 'left Convo',
-      );
-      unawaited(NazaLiveVoiceBridge.instance.stop());
-    } else if (_panel == NazaPanel.settings && panel != NazaPanel.settings) {
-      unawaited(NazaLiveVoiceBridge.instance.stop());
-    }
-    if (_panel != NazaPanel.settings && panel == NazaPanel.settings) {
-      unawaited(NazaSecureBarkPackStore.instance.refresh());
-      unawaited(NazaBarkSettingsTestEngine.instance.preparePerformancePreset());
-    }
     setState(() {
       _panel = panel;
       _status = _labelForPanel(panel);
@@ -16802,11 +15357,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
           onScan: _runFoodWaterScan,
           onPlanner: _runFoodWaterPlanner,
         );
-      case NazaPanel.convo:
-        return _ConvoPanel(
-          actionsEnabled: !_sending,
-          onVoiceTurn: _runVoiceTurn,
-        );
       case NazaPanel.settings:
         return _SettingsPanel(
           actionsEnabled: !_sending,
@@ -16827,7 +15377,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
         _panelForStack(NazaPanel.roadScanner),
       ),
       _tickerPanel(NazaPanel.foodWater, _panelForStack(NazaPanel.foodWater)),
-      _tickerPanel(NazaPanel.convo, _panelForStack(NazaPanel.convo)),
       _tickerPanel(NazaPanel.settings, _panelForStack(NazaPanel.settings)),
       _tickerPanel(NazaPanel.history, _panelForStack(NazaPanel.history)),
     ];
@@ -16852,9 +15401,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
       NazaPanel.chat => 0,
       NazaPanel.roadScanner => 1,
       NazaPanel.foodWater => 2,
-      NazaPanel.convo => 3,
-      NazaPanel.settings => 4,
-      NazaPanel.history => 5,
+      NazaPanel.settings => 3,
+      NazaPanel.history => 4,
     };
   }
 
@@ -16866,8 +15414,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
         return 'road scanner';
       case NazaPanel.foodWater:
         return 'food / water scanner';
-      case NazaPanel.convo:
-        return 'convo';
       case NazaPanel.settings:
         return 'settings';
       case NazaPanel.history:
@@ -16991,9 +15537,7 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
+    return Container(
       height: 68,
       padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: BoxDecoration(
@@ -17035,9 +15579,7 @@ class _TopBar extends StatelessWidget {
           ),
           ConstrainedBox(
             constraints: BoxConstraints(maxWidth: wide ? 260 : 110),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
+            child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: const Color(0x55101E19),
@@ -17080,8 +15622,6 @@ class _TopBar extends StatelessWidget {
         return 'Road Scanner';
       case NazaPanel.foodWater:
         return 'Food / Water Scanner';
-      case NazaPanel.convo:
-        return 'Convo';
       case NazaPanel.settings:
         return 'Settings';
       case NazaPanel.history:
@@ -17124,12 +15664,6 @@ class _SideRail extends StatelessWidget {
             label: 'Food',
             selected: panel == NazaPanel.foodWater,
             onTap: () => onPanel(NazaPanel.foodWater),
-          ),
-          _RailButton(
-            icon: Icons.graphic_eq_rounded,
-            label: 'Convo',
-            selected: panel == NazaPanel.convo,
-            onTap: () => onPanel(NazaPanel.convo),
           ),
           _RailButton(
             icon: Icons.settings_rounded,
@@ -17259,12 +15793,6 @@ class _BottomTabs extends StatelessWidget {
             label: 'Food',
             selected: panel == NazaPanel.foodWater,
             onTap: () => onPanel(NazaPanel.foodWater),
-          ),
-          _BottomTab(
-            icon: Icons.graphic_eq_rounded,
-            label: 'Convo',
-            selected: panel == NazaPanel.convo,
-            onTap: () => onPanel(NazaPanel.convo),
           ),
           _BottomTab(
             icon: Icons.settings_rounded,
@@ -17438,9 +15966,7 @@ class _ComposerBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
+    return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
       decoration: BoxDecoration(
         color: const Color(0xD606110D),
@@ -19490,56 +18016,57 @@ class _ChromographicWheel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (loading) return _wheel(progress);
     return TweenAnimationBuilder<double>(
       tween: Tween<double>(begin: 0, end: progress.clamp(0.0, 1.0).toDouble()),
-      duration: loading
-          ? const Duration(milliseconds: 120)
-          : const Duration(milliseconds: 820),
+      duration: const Duration(milliseconds: 820),
       curve: Curves.easeOutCubic,
-      builder: (context, value, _) {
-        return RepaintBoundary(
-          child: SizedBox(
-            width: 148,
-            height: 148,
-            child: CustomPaint(
-              painter: _ChromographicWheelPainter(
-                progress: loading ? progress : value,
-                tone: tone,
-                loading: loading,
-              ),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      label,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: tone,
-                        fontSize: loading ? 16 : 22,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -0.35,
-                        fontFamily: NazaFonts.display,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: NazaPalette.subtext,
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w900,
-                        fontFamily: NazaFonts.mono,
-                      ),
-                    ),
-                  ],
+      builder: (context, value, _) => _wheel(value),
+    );
+  }
+
+  Widget _wheel(double value) {
+    return RepaintBoundary(
+      child: SizedBox(
+        width: 148,
+        height: 148,
+        child: CustomPaint(
+          painter: _ChromographicWheelPainter(
+            progress: value,
+            tone: tone,
+            loading: loading,
+          ),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: tone,
+                    fontSize: loading ? 16 : 22,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.35,
+                    fontFamily: NazaFonts.display,
+                  ),
                 ),
-              ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: NazaPalette.subtext,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w900,
+                    fontFamily: NazaFonts.mono,
+                  ),
+                ),
+              ],
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
@@ -19758,870 +18285,6 @@ class _SafetyGaugePainter extends CustomPainter {
   }
 }
 
-class _ConvoPanel extends StatefulWidget {
-  final bool actionsEnabled;
-  final Future<NazaResponse> Function(String transcript) onVoiceTurn;
-
-  const _ConvoPanel({required this.actionsEnabled, required this.onVoiceTurn});
-
-  @override
-  State<_ConvoPanel> createState() => _ConvoPanelState();
-}
-
-class _ConvoPanelState extends State<_ConvoPanel> {
-  bool _liveActive = false;
-  bool _liveBusy = false;
-  int _liveTurns = 0;
-  String _liveStatus = 'ready';
-  String _liveTranscript = '';
-  String _liveReply = '';
-  String? _liveError;
-
-  @override
-  void initState() {
-    super.initState();
-    NazaLiveVoiceBridge.instance.cancellationSerial.addListener(
-      _handleExternalVoiceStop,
-    );
-  }
-
-  @override
-  void dispose() {
-    NazaLiveVoiceBridge.instance.cancellationSerial.removeListener(
-      _handleExternalVoiceStop,
-    );
-    unawaited(NazaLiveVoiceBridge.instance.stop());
-    super.dispose();
-  }
-
-  void _handleExternalVoiceStop() {
-    if (!mounted || !_liveActive) return;
-    setState(() {
-      _liveActive = false;
-      _liveBusy = false;
-      _liveStatus = 'stopped';
-    });
-  }
-
-  Future<void> _toggleLiveConversation() async {
-    if (_liveActive) {
-      await _stopLiveConversation();
-      return;
-    }
-    await _startLiveConversation();
-  }
-
-  Future<void> _startLiveConversation() async {
-    if (_liveActive || _liveBusy || !widget.actionsEnabled) return;
-    final bridge = NazaLiveVoiceBridge.instance;
-    setState(() {
-      _liveBusy = true;
-      _liveStatus = 'checking audio';
-      _liveError = null;
-    });
-
-    final available = await bridge.isAvailable();
-    if (!mounted) return;
-    if (!available) {
-      setState(() {
-        _liveBusy = false;
-        _liveStatus = 'speech recognizer unavailable';
-        _liveError =
-            'This Android device does not expose a speech recognizer to the app.';
-      });
-      return;
-    }
-
-    final granted = await bridge.requestRecordPermission();
-    if (!mounted) return;
-    if (!granted) {
-      setState(() {
-        _liveBusy = false;
-        _liveStatus = 'microphone permission needed';
-        _liveError = 'Allow microphone permission to use live audio chat.';
-      });
-      return;
-    }
-
-    setState(() {
-      _liveActive = true;
-      _liveBusy = false;
-      _liveStatus = 'listening';
-      _liveError = null;
-    });
-    unawaited(_liveConversationLoop());
-  }
-
-  Future<void> _stopLiveConversation() async {
-    _liveActive = false;
-    NazaLocalGemma.instance.cancelActiveGeneration(
-      only: NazaGenerationOrigin.voice,
-      reason: 'voice conversation stopped',
-    );
-    await NazaLiveVoiceBridge.instance.stop();
-    if (!mounted) return;
-    setState(() {
-      _liveBusy = false;
-      _liveStatus = 'stopped';
-    });
-  }
-
-  Future<void> _liveConversationLoop() async {
-    final bridge = NazaLiveVoiceBridge.instance;
-    while (mounted && _liveActive) {
-      setState(() {
-        _liveBusy = false;
-        _liveStatus = 'listening';
-        _liveError = null;
-      });
-
-      late final NazaSpeechCapture capture;
-      try {
-        capture = await bridge.listenOnce();
-      } catch (error) {
-        if (!mounted || !_liveActive) return;
-        setState(() {
-          _liveActive = false;
-          _liveBusy = false;
-          _liveStatus = 'listen failed';
-          _liveError = error.toString();
-        });
-        return;
-      }
-
-      if (!mounted || !_liveActive) return;
-      final transcript = capture.transcript.trim();
-      if (transcript.isEmpty) {
-        setState(() => _liveStatus = 'silence');
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        continue;
-      }
-
-      setState(() {
-        _liveBusy = true;
-        _liveStatus = 'thinking';
-        _liveTranscript = transcript;
-        _liveReply = '';
-      });
-
-      final response = await widget.onVoiceTurn(transcript);
-      if (!mounted || !_liveActive) return;
-
-      final spoken = _speechReadyText(response.text);
-      setState(() {
-        _liveTurns++;
-        _liveReply = response.text;
-        _liveStatus = 'speaking';
-      });
-
-      try {
-        final spoke = await bridge.speak(spoken);
-        if (!spoke) {
-          if (!mounted || !_liveActive) return;
-          setState(() {
-            _liveBusy = false;
-            _liveStatus = 'audio stopped';
-          });
-          await Future<void>.delayed(const Duration(milliseconds: 250));
-          continue;
-        }
-      } catch (error) {
-        if (!mounted || !_liveActive) return;
-        setState(() {
-          _liveActive = false;
-          _liveBusy = false;
-          _liveStatus = 'speech failed';
-          _liveError = error.toString();
-        });
-        return;
-      }
-      if (!mounted || !_liveActive) return;
-
-      setState(() {
-        _liveBusy = false;
-        _liveStatus = 'listening';
-      });
-      await Future<void>.delayed(const Duration(milliseconds: 250));
-    }
-  }
-
-  String _speechReadyText(String text) {
-    final withoutBlocks = text
-        .replaceAll(RegExp(r'```[\s\S]*?```'), ' ')
-        .replaceAll(RegExp(r'\$\$[\s\S]*?\$\$'), ' ');
-    final cleaned = withoutBlocks
-        .replaceAll(RegExp(r'[#*_`>$]'), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (cleaned.length <= 1400) return cleaned;
-    return '${cleaned.substring(0, 1400).trim()}...';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return _PanelScaffold(
-      title: 'Convo',
-      children: [
-        const _ScannerNotice(
-          icon: Icons.graphic_eq_rounded,
-          title: 'Local voice conversation',
-          body:
-              'Speak naturally with local Gemma using Android speech recognition and system text-to-speech.',
-        ),
-        _LiveVoiceCard(
-          active: _liveActive,
-          busy: _liveBusy,
-          actionsEnabled: widget.actionsEnabled,
-          status: _liveStatus,
-          transcript: _liveTranscript,
-          reply: _liveReply,
-          error: _liveError,
-          turns: _liveTurns,
-          partialTranscript: NazaLiveVoiceBridge.instance.partialTranscript,
-          nativePhase: NazaLiveVoiceBridge.instance.nativePhase,
-          onToggle: () => unawaited(_toggleLiveConversation()),
-          onStopAudio: () =>
-              unawaited(NazaLiveVoiceBridge.instance.stopAudio()),
-        ),
-        const SizedBox(height: 12),
-        const _InfoRow(label: 'Input', value: 'Android speech recognizer'),
-        const _InfoRow(label: 'Reasoning', value: 'local Gemma'),
-        const _InfoRow(label: 'Output', value: 'Android system TTS'),
-      ],
-    );
-  }
-}
-
-class _LiveVoiceCard extends StatelessWidget {
-  final bool active;
-  final bool busy;
-  final bool actionsEnabled;
-  final String status;
-  final String transcript;
-  final String reply;
-  final String? error;
-  final int turns;
-  final ValueListenable<String> partialTranscript;
-  final ValueListenable<String> nativePhase;
-  final VoidCallback onToggle;
-  final VoidCallback onStopAudio;
-
-  const _LiveVoiceCard({
-    required this.active,
-    required this.busy,
-    required this.actionsEnabled,
-    required this.status,
-    required this.transcript,
-    required this.reply,
-    required this.error,
-    required this.turns,
-    required this.partialTranscript,
-    required this.nativePhase,
-    required this.onToggle,
-    required this.onStopAudio,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = active
-        ? NazaPalette.mintSoft
-        : busy
-        ? const Color(0xFFFFCE78)
-        : NazaPalette.subtext;
-    return _NazaGlassCard(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(15),
-      radius: 20,
-      active: active || busy,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                active ? Icons.record_voice_over_rounded : Icons.mic_rounded,
-                color: color,
-                size: 26,
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  'Live audio chat',
-                  style: TextStyle(
-                    color: NazaPalette.text,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w900,
-                    fontFamily: NazaFonts.display,
-                  ),
-                ),
-              ),
-              _ScannerMetricPill(
-                label: 'turns',
-                value: turns.toString(),
-                icon: Icons.forum_rounded,
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ValueListenableBuilder<String>(
-            valueListenable: nativePhase,
-            builder: (_, nativeState, _) {
-              final visibleState = nativeState == 'idle' ? status : nativeState;
-              return Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _ScannerMetricPill(
-                    label: 'state',
-                    value: visibleState,
-                    icon: Icons.graphic_eq_rounded,
-                  ),
-                  const _ScannerMetricPill(
-                    label: 'input',
-                    value: 'SpeechRecognizer',
-                    icon: Icons.hearing_rounded,
-                  ),
-                  const _ScannerMetricPill(
-                    label: 'voice',
-                    value: 'system TTS',
-                    icon: Icons.volume_up_rounded,
-                  ),
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _NazaActionButton(
-                onPressed: actionsEnabled ? onToggle : null,
-                icon: Icon(
-                  active ? Icons.stop_circle_rounded : Icons.mic_rounded,
-                ),
-                label: Text(active ? 'Stop Live Chat' : 'Start Live Chat'),
-                minimumSize: const Size(188, 46),
-              ),
-              _NazaActionButton(
-                onPressed: active || busy ? onStopAudio : null,
-                icon: const Icon(Icons.volume_off_rounded),
-                label: const Text('Stop Audio'),
-                minimumSize: const Size(150, 46),
-              ),
-            ],
-          ),
-          ValueListenableBuilder<String>(
-            valueListenable: partialTranscript,
-            builder: (context, partial, _) {
-              final visibleTranscript = partial.trim().isNotEmpty
-                  ? partial.trim()
-                  : transcript.trim();
-              if (visibleTranscript.isEmpty && reply.trim().isEmpty) {
-                return const SizedBox(height: 2);
-              }
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (visibleTranscript.isNotEmpty) ...[
-                    const SizedBox(height: 14),
-                    const _HistorySectionLabel('Heard'),
-                    _NazaMarkdownText(text: visibleTranscript, compact: true),
-                  ],
-                  if (reply.trim().isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const Expanded(child: _HistorySectionLabel('Reply')),
-                        _CopyIconButton(
-                          tooltip: 'Copy reply',
-                          text: reply.trim(),
-                        ),
-                      ],
-                    ),
-                    _NazaMarkdownText(text: reply, compact: true),
-                  ],
-                ],
-              );
-            },
-          ),
-          if (error != null && error!.trim().isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text(
-              error!,
-              style: const TextStyle(
-                color: NazaPalette.danger,
-                height: 1.35,
-                fontWeight: FontWeight.w700,
-                fontFamily: NazaFonts.display,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _BarkPerformanceCard extends StatelessWidget {
-  const _BarkPerformanceCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<NazaBarkPerformancePreset>(
-      valueListenable: NazaBarkSettingsTestEngine.instance.performancePreset,
-      builder: (_, preset, _) {
-        return _NazaGlassCard(
-          margin: const EdgeInsets.only(bottom: 14),
-          padding: const EdgeInsets.all(15),
-          radius: 22,
-          active: true,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.speed_rounded, color: preset.color, size: 22),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Text(
-                      'Bark performance profile: ${preset.label}',
-                      style: const TextStyle(
-                        color: NazaPalette.text,
-                        fontWeight: FontWeight.w900,
-                        fontFamily: NazaFonts.display,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                preset.description,
-                style: const TextStyle(
-                  color: NazaPalette.subtext,
-                  height: 1.35,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: NazaFonts.display,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  for (final option in NazaBarkPerformancePreset.values)
-                    _BarkPerformanceChip(
-                      option: option,
-                      selected: option == preset,
-                      onTap: () => unawaited(
-                        NazaBarkSettingsTestEngine.instance
-                            .setPerformancePreset(option),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _InfoRow(
-                label: 'Native sample rate',
-                value: '${preset.sampleRate} Hz',
-              ),
-              _InfoRow(
-                label: 'Max native events',
-                value: '${preset.maxNativeEvents}',
-              ),
-              _InfoRow(
-                label: 'Script chunk budget',
-                value: '${preset.scriptChunkChars} chars',
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _BarkPerformanceChip extends StatefulWidget {
-  final NazaBarkPerformancePreset option;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _BarkPerformanceChip({
-    required this.option,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  State<_BarkPerformanceChip> createState() => _BarkPerformanceChipState();
-}
-
-class _BarkPerformanceChipState extends State<_BarkPerformanceChip> {
-  bool _hovered = false;
-  bool _pressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final accent = widget.option.color;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() {
-        _hovered = false;
-        _pressed = false;
-      }),
-      child: GestureDetector(
-        onTap: widget.selected ? null : widget.onTap,
-        onTapDown: (_) => setState(() => _pressed = true),
-        onTapUp: (_) => setState(() => _pressed = false),
-        onTapCancel: () => setState(() => _pressed = false),
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedScale(
-          scale: _pressed ? 0.98 : (_hovered ? 1.02 : 1),
-          duration: const Duration(milliseconds: 120),
-          curve: Curves.easeOutCubic,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            width: 178,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-            decoration: BoxDecoration(
-              color: widget.selected
-                  ? accent.withAlpha(34)
-                  : const Color(0x66101E19),
-              borderRadius: BorderRadius.circular(widget.selected ? 20 : 17),
-              border: Border.all(
-                color: widget.selected
-                    ? accent.withAlpha(160)
-                    : const Color(0x22FFFFFF),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  switch (widget.option) {
-                    NazaBarkPerformancePreset.eco8gb => Icons.bolt_rounded,
-                    NazaBarkPerformancePreset.balanced8gb => Icons.tune_rounded,
-                    NazaBarkPerformancePreset.studio =>
-                      Icons.graphic_eq_rounded,
-                  },
-                  color: accent,
-                  size: 18,
-                ),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    widget.option.shortLabel,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: widget.selected
-                          ? NazaPalette.text
-                          : NazaPalette.subtext,
-                      fontWeight: FontWeight.w900,
-                      fontFamily: NazaFonts.display,
-                    ),
-                  ),
-                ),
-                if (widget.selected)
-                  Icon(Icons.check_circle_rounded, color: accent, size: 16),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _BarkPackStatusCard extends StatelessWidget {
-  final bool enabled;
-
-  const _BarkPackStatusCard({this.enabled = true});
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<NazaBarkPackStatus>(
-      valueListenable: NazaSecureBarkPackStore.instance.status,
-      builder: (_, status, _) {
-        final color = status.installed
-            ? const Color(0xFF57EFAE)
-            : status.error == null
-            ? const Color(0xFFFFD166)
-            : const Color(0xFFFF7C5C);
-        return _NazaGlassCard(
-          margin: const EdgeInsets.only(bottom: 14),
-          padding: const EdgeInsets.all(15),
-          radius: 24,
-          active: status.installed || status.downloading,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    status.installed
-                        ? Icons.verified_rounded
-                        : status.downloading
-                        ? Icons.downloading_rounded
-                        : Icons.cloud_download_rounded,
-                    color: color,
-                    size: 24,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      status.installed
-                          ? 'Verified BarkPack ready'
-                          : status.downloading
-                          ? 'Installing BarkPack'
-                          : 'BarkPack secure downloader',
-                      style: const TextStyle(
-                        color: NazaPalette.text,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w900,
-                        fontFamily: NazaFonts.display,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '${status.progress}%',
-                    style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.w900,
-                      fontFamily: NazaFonts.mono,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: LinearProgressIndicator(
-                  minHeight: 7,
-                  value: status.downloading || status.installed
-                      ? status.progress.clamp(0, 100).toDouble() / 100
-                      : null,
-                  color: color,
-                  backgroundColor: const Color(0x33101E19),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _InfoRow(label: 'Phase', value: status.phase),
-              _InfoRow(
-                label: 'Tensor count',
-                value: status.tensorCount.toString(),
-              ),
-              _InfoRow(label: 'Quality tier', value: status.qualityTier),
-              _InfoRow(label: 'Families', value: status.familySummary),
-              _InfoRow(label: 'Stages', value: status.stageSummary),
-              _InfoRow(label: 'Capabilities', value: status.capabilitySummary),
-              _InfoRow(label: 'Sidecars', value: status.sidecarSummary),
-              _InfoRow(
-                label: 'Missing families',
-                value: status.missingFamilies.isEmpty
-                    ? 'none'
-                    : status.missingFamilies.join(', '),
-              ),
-              _InfoRow(
-                label: 'Pack path',
-                value: status.packPath.isEmpty ? 'pending' : status.packPath,
-              ),
-              ValueListenableBuilder<String>(
-                valueListenable: NazaNativeBarkBridge.probeStatus,
-                builder: (_, probe, _) =>
-                    _InfoRow(label: 'Native probe', value: probe),
-              ),
-              if (status.error != null) ...[
-                const SizedBox(height: 10),
-                Text(
-                  status.error!,
-                  style: const TextStyle(
-                    color: NazaPalette.danger,
-                    height: 1.35,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: NazaFonts.display,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 10,
-                runSpacing: 8,
-                children: [
-                  _NazaActionButton(
-                    onPressed: !enabled || status.downloading
-                        ? null
-                        : () => unawaited(
-                            NazaSecureBarkPackStore.instance.ensureInstalled(),
-                          ),
-                    icon: const Icon(Icons.security_update_good_rounded),
-                    label: const Text('Install / Verify Pack'),
-                    minimumSize: const Size(190, 42),
-                  ),
-                  _NazaActionButton(
-                    onPressed: enabled
-                        ? () => unawaited(
-                            NazaSecureBarkPackStore.instance.refresh(),
-                          )
-                        : null,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('Refresh'),
-                    filled: false,
-                    minimumSize: const Size(120, 42),
-                  ),
-                  ValueListenableBuilder<NazaBarkSelfTestStatus>(
-                    valueListenable:
-                        NazaBarkSettingsTestEngine.instance.selfTest,
-                    builder: (_, selfTest, _) {
-                      return _NazaActionButton(
-                        onPressed:
-                            enabled &&
-                                status.installed &&
-                                !status.downloading &&
-                                !selfTest.running
-                            ? () => unawaited(
-                                NazaBarkSettingsTestEngine.instance
-                                    .runSelfTest(),
-                              )
-                            : null,
-                        icon: Icon(
-                          selfTest.running
-                              ? Icons.graphic_eq_rounded
-                              : Icons.hearing_rounded,
-                        ),
-                        label: Text(
-                          selfTest.running ? 'Testing Voice' : 'Run Self-Test',
-                        ),
-                        filled: false,
-                        minimumSize: const Size(145, 42),
-                      );
-                    },
-                  ),
-                  _NazaActionButton(
-                    onPressed:
-                        enabled && status.installed && !status.downloading
-                        ? () => unawaited(
-                            NazaNativeBarkBridge.probe(
-                              packDir: status.packPath,
-                            ),
-                          )
-                        : null,
-                    icon: const Icon(Icons.memory_rounded),
-                    label: const Text('Probe Native'),
-                    filled: false,
-                    minimumSize: const Size(145, 42),
-                  ),
-                  ValueListenableBuilder<NazaBarkSelfTestStatus>(
-                    valueListenable:
-                        NazaBarkSettingsTestEngine.instance.selfTest,
-                    builder: (_, selfTest, _) {
-                      return _NazaActionButton(
-                        onPressed: enabled && selfTest.audioPaths.isNotEmpty
-                            ? () => unawaited(
-                                NazaLiveVoiceBridge.instance.playWav(
-                                  selfTest.audioPaths.last,
-                                ),
-                              )
-                            : null,
-                        icon: const Icon(Icons.play_circle_rounded),
-                        label: const Text('Play Latest'),
-                        filled: false,
-                        minimumSize: const Size(138, 42),
-                      );
-                    },
-                  ),
-                  _NazaActionButton(
-                    onPressed: enabled
-                        ? () => unawaited(
-                            NazaLiveVoiceBridge.instance.stopAudio(),
-                          )
-                        : null,
-                    icon: const Icon(Icons.stop_circle_rounded),
-                    label: const Text('Stop Audio'),
-                    filled: false,
-                    minimumSize: const Size(132, 42),
-                  ),
-                ],
-              ),
-              ValueListenableBuilder<NazaBarkSelfTestStatus>(
-                valueListenable: NazaBarkSettingsTestEngine.instance.selfTest,
-                builder: (_, selfTest, _) {
-                  if (!selfTest.running &&
-                      !selfTest.hasOutput &&
-                      selfTest.error == null) {
-                    return const SizedBox.shrink();
-                  }
-                  final selfColor = selfTest.error != null
-                      ? NazaPalette.danger
-                      : selfTest.running
-                      ? const Color(0xFFFFD166)
-                      : const Color(0xFF57EFAE);
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0x66101E19),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: selfColor.withAlpha(90)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(
-                                selfTest.error != null
-                                    ? Icons.warning_rounded
-                                    : selfTest.running
-                                    ? Icons.graphic_eq_rounded
-                                    : Icons.check_circle_rounded,
-                                color: selfColor,
-                                size: 18,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  '${selfTest.phase} • ${selfTest.progress}%',
-                                  style: TextStyle(
-                                    color: selfColor,
-                                    fontWeight: FontWeight.w900,
-                                    fontFamily: NazaFonts.display,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            selfTest.error ??
-                                (selfTest.hasOutput
-                                    ? 'Rendered ${selfTest.audioPaths.length} deterministic preview WAVs. Latest WAV: ${selfTest.audioPaths.last}${selfTest.tracePaths.isEmpty ? '' : '\nLatest trace: ${selfTest.tracePaths.last}'}'
-                                    : selfTest.detail),
-                            style: const TextStyle(
-                              color: NazaPalette.subtext,
-                              height: 1.25,
-                              fontWeight: FontWeight.w700,
-                              fontFamily: NazaFonts.display,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
 class _GenerationSettingsCard extends StatefulWidget {
   const _GenerationSettingsCard();
 
@@ -20836,7 +18499,7 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                   ),
                   const SizedBox(height: 10),
                   const Text(
-                    'Prior turns are summarized with a Summa-style ranker, keyworded, and embedded into a local AES-GCM vector object index. The context manager rotates valid memory, shrinks overflow, and fills the active Gemma window with [action], [format], [context], and [rag] prompt blocks.',
+                    'Prior turns are summarized, keyworded, embedded, and stored as authenticated AES-GCM records in the encrypted SQLite vault. The context manager rotates relevant memory, shrinks overflow, and fills the active Gemma window with [action], [format], [context], and [rag] prompt blocks.',
                     style: TextStyle(
                       color: NazaPalette.subtext,
                       height: 1.35,
@@ -20949,134 +18612,275 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
   }
 }
 
-class _VoiceDiagnosticsCard extends StatefulWidget {
-  final bool enabled;
+final class _UnlockChangeRequest {
+  final bool passwordRequired;
+  final String password;
 
-  const _VoiceDiagnosticsCard({required this.enabled});
-
-  @override
-  State<_VoiceDiagnosticsCard> createState() => _VoiceDiagnosticsCardState();
+  const _UnlockChangeRequest({
+    required this.passwordRequired,
+    required this.password,
+  });
 }
 
-class _VoiceDiagnosticsCardState extends State<_VoiceDiagnosticsCard> {
+class _VaultSecurityCard extends StatefulWidget {
+  final bool enabled;
+
+  const _VaultSecurityCard({required this.enabled});
+
+  @override
+  State<_VaultSecurityCard> createState() => _VaultSecurityCardState();
+}
+
+class _VaultSecurityCardState extends State<_VaultSecurityCard> {
+  NazaVaultInspection? _inspection;
   bool _busy = false;
-  String _status = 'Not tested';
+  String _phase = 'encrypted vault ready';
   String? _error;
 
-  Future<void> _checkRecognizer() async {
-    if (_busy || !widget.enabled) return;
-    setState(() {
-      _busy = true;
-      _status = 'Checking Android speech services';
-      _error = null;
-    });
-    final available = await NazaLiveVoiceBridge.instance.isAvailable();
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _status = available
-          ? 'Android speech recognizer is available'
-          : 'Android speech recognizer is unavailable';
-    });
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refresh());
   }
 
-  Future<void> _testMicrophone() async {
+  Future<void> _refresh() async {
+    try {
+      final inspection = await NazaVault.instance.inspect();
+      if (!mounted) return;
+      setState(() {
+        _inspection = inspection;
+        _error = null;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = _message(error));
+    }
+  }
+
+  Future<void> _rotate() async {
     if (_busy || !widget.enabled) return;
     setState(() {
       _busy = true;
-      _status = 'Waiting for a short microphone test phrase';
+      _phase = 'rotating data-encryption key';
       _error = null;
     });
     try {
-      final bridge = NazaLiveVoiceBridge.instance;
-      final granted = await bridge.requestRecordPermission();
-      if (!granted) {
-        throw StateError('Microphone permission was not granted.');
-      }
-      final capture = await bridge.listenOnce();
+      await NazaVault.instance.rotateDataKey();
       if (!mounted) return;
       setState(() {
+        _phase = 'key rotation complete';
         _busy = false;
-        _status = capture.transcript.trim().isEmpty
-            ? 'Microphone opened, but no speech was recognized'
-            : 'Heard: ${capture.transcript.trim()}';
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _status = 'Microphone test failed';
-        _error = error.toString();
+        _phase = 'key rotation failed';
+        _error = _message(error);
       });
     }
   }
 
-  Future<void> _testSpeaker() async {
+  Future<void> _changeUnlock() async {
     if (_busy || !widget.enabled) return;
+    final currentPasswordRequired = _inspection?.passwordRequired != false;
+    final request = await showDialog<_UnlockChangeRequest>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          _UnlockChangeDialog(passwordRequired: currentPasswordRequired),
+    );
+    if (request == null || !mounted) return;
     setState(() {
       _busy = true;
-      _status = 'Testing Android text-to-speech';
+      _phase = 'rewrapping vault unlock key';
       _error = null;
     });
     try {
-      final spoke = await NazaLiveVoiceBridge.instance.speak(
-        'Naza One voice test. Android speech output is ready.',
+      await NazaVault.instance.changeUnlock(
+        newPassword: request.password,
+        passwordRequired: request.passwordRequired,
       );
-      if (!spoke) {
-        throw StateError('Android text-to-speech did not start.');
-      }
+      await _refresh();
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _status = 'Android text-to-speech completed';
+        _phase = request.passwordRequired
+            ? 'startup password updated'
+            : 'secure device unlock enabled';
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _status = 'Speaker test failed';
-        _error = error.toString();
+        _phase = 'unlock change failed';
+        _error = _message(error);
       });
     }
+  }
+
+  Future<void> _exportRecovery() async {
+    if (_busy || !widget.enabled) return;
+    final password = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _RecoveryPasswordDialog(),
+    );
+    if (password == null || !mounted) return;
+    setState(() {
+      _busy = true;
+      _phase = 'building hybrid post-quantum recovery package';
+      _error = null;
+    });
+    Uint8List? clear;
+    try {
+      final records = await NazaSecureDatabase.instance.exportRecords();
+      clear = Uint8List.fromList(
+        utf8.encode(
+          jsonEncode({
+            'format': 'naza-vault-record-export-v1',
+            'createdAt': DateTime.now().toUtc().toIso8601String(),
+            'records': [
+              for (final entry in records.entries)
+                {
+                  'namespace': entry.key.namespace,
+                  'key': entry.key.key,
+                  'value': entry.value,
+                },
+            ],
+          }),
+        ),
+      );
+      final recovery = await NazaPostQuantumExport.generateRecoveryBundle(
+        password: password,
+      );
+      final encryptedBackup = await NazaPostQuantumExport.encryptBackup(
+        clearBytes: clear,
+        recipientPublicKeyJson: recovery.publicKeyJson,
+      );
+      final package = const JsonEncoder.withIndent('  ').convert({
+        'format': 'naza-hybrid-recovery-package-v1',
+        'warning':
+            'Keep this file and its recovery password separate. ML-KEM protects export/recovery only, not local vault unlock.',
+        'fingerprint': recovery.fingerprint,
+        'publicKey': jsonDecode(recovery.publicKeyJson),
+        'encryptedPrivateKey': jsonDecode(recovery.encryptedPrivateKeyJson),
+        'encryptedBackup': jsonDecode(encryptedBackup),
+      });
+      final location = await file_selector.getSaveLocation(
+        suggestedName:
+            'naza-one-recovery-${DateTime.now().toUtc().toIso8601String().split('T').first}.json',
+        acceptedTypeGroups: const [
+          file_selector.XTypeGroup(
+            label: 'Naza One recovery package',
+            extensions: ['json'],
+          ),
+        ],
+        confirmButtonText: 'Save encrypted recovery',
+      );
+      if (location == null) {
+        if (mounted) {
+          setState(() {
+            _busy = false;
+            _phase = 'recovery export cancelled';
+          });
+        }
+        return;
+      }
+      final file = file_selector.XFile.fromData(
+        Uint8List.fromList(utf8.encode(package)),
+        mimeType: 'application/json',
+        name: 'naza-one-recovery.json',
+      );
+      await file.saveTo(location.path);
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _phase =
+            'hybrid recovery saved • ${recovery.fingerprint.substring(0, 16)}…';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _phase = 'recovery export failed';
+        _error = _message(error);
+      });
+    } finally {
+      clear?.fillRange(0, clear.length, 0);
+    }
+  }
+
+  String _message(Object error) {
+    if (error is NazaVaultException) return error.message;
+    if (error is NazaPostQuantumException) return error.message;
+    return error.toString();
   }
 
   @override
   Widget build(BuildContext context) {
-    final enabled = widget.enabled && !_busy;
+    final keyId = NazaSecureDatabase.instance.activeDataKeyId;
+    final passwordRequired = _inspection?.passwordRequired != false;
     return _NazaGlassCard(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(15),
-      radius: 22,
-      active: _busy,
+      padding: const EdgeInsets.all(13),
+      radius: 18,
+      active: true,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Test Android microphone recognition and system speech separately from BarkPack. This keeps failures easy to isolate.',
+            'Versioned encrypted SQLite vault',
             style: TextStyle(
-              color: NazaPalette.subtext,
-              height: 1.35,
-              fontWeight: FontWeight.w700,
-              fontFamily: NazaFonts.display,
+              color: NazaPalette.text,
+              fontWeight: FontWeight.w900,
+              fontSize: 16,
             ),
           ),
-          const SizedBox(height: 10),
-          _InfoRow(label: 'Diagnostic', value: _status),
-          ValueListenableBuilder<String>(
-            valueListenable: NazaLiveVoiceBridge.instance.nativePhase,
-            builder: (_, phase, _) =>
-                _InfoRow(label: 'Native phase', value: phase),
+          const SizedBox(height: 9),
+          const Text(
+            'Argon2id or the operating-system key store unwraps a stable vault key. That key unwraps versioned data keys; every logical record is independently authenticated with AES-256-GCM.',
+            style: TextStyle(color: NazaPalette.subtext, height: 1.4),
           ),
+          const SizedBox(height: 10),
+          const _InfoRow(label: 'Record cipher', value: 'AES-256-GCM'),
+          const _InfoRow(label: 'Password KDF', value: 'Argon2id (64 MiB × 3)'),
+          _InfoRow(
+            label: 'Startup unlock',
+            value: passwordRequired
+                ? 'password required each process start'
+                : 'operating-system secure key store',
+          ),
+          _InfoRow(
+            label: 'Active data key',
+            value: keyId == null ? 'unavailable' : 'version $keyId',
+          ),
+          const _InfoRow(
+            label: 'Recovery suite',
+            value: 'ML-KEM-768 + X25519 + AES-GCM',
+          ),
+          const _InfoRow(
+            label: 'PQ boundary',
+            value: 'optional export/recovery only',
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _phase,
+            style: const TextStyle(
+              color: NazaPalette.mintSoft,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          if (_busy) ...[
+            const SizedBox(height: 10),
+            const LinearProgressIndicator(
+              color: NazaPalette.mintSoft,
+              backgroundColor: Color(0x221AD697),
+            ),
+          ],
           if (_error != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Text(
               _error!,
-              style: const TextStyle(
-                color: NazaPalette.danger,
-                height: 1.3,
-                fontWeight: FontWeight.w700,
-                fontFamily: NazaFonts.display,
-              ),
+              style: const TextStyle(color: NazaPalette.danger, height: 1.35),
             ),
           ],
           const SizedBox(height: 12),
@@ -21085,38 +18889,239 @@ class _VoiceDiagnosticsCardState extends State<_VoiceDiagnosticsCard> {
             runSpacing: 8,
             children: [
               _NazaActionButton(
-                onPressed: enabled ? () => unawaited(_checkRecognizer()) : null,
-                icon: const Icon(Icons.fact_check_rounded),
-                label: const Text('Check Services'),
-                minimumSize: const Size(150, 42),
+                onPressed: widget.enabled && !_busy ? _rotate : null,
+                icon: const Icon(Icons.sync_lock_rounded),
+                label: const Text('Rotate Data Key'),
+                minimumSize: const Size(158, 42),
               ),
               _NazaActionButton(
-                onPressed: enabled ? () => unawaited(_testMicrophone()) : null,
-                icon: const Icon(Icons.mic_rounded),
-                label: const Text('Test Microphone'),
+                onPressed: widget.enabled && !_busy ? _changeUnlock : null,
+                icon: const Icon(Icons.password_rounded),
+                label: const Text('Change Boot Unlock'),
                 filled: false,
-                minimumSize: const Size(160, 42),
+                minimumSize: const Size(178, 42),
               ),
               _NazaActionButton(
-                onPressed: enabled ? () => unawaited(_testSpeaker()) : null,
-                icon: const Icon(Icons.volume_up_rounded),
-                label: const Text('Test Speaker'),
+                onPressed: widget.enabled && !_busy ? _exportRecovery : null,
+                icon: const Icon(Icons.shield_rounded),
+                label: const Text('Export PQ Recovery'),
                 filled: false,
-                minimumSize: const Size(150, 42),
-              ),
-              _NazaActionButton(
-                onPressed: widget.enabled
-                    ? () => unawaited(NazaLiveVoiceBridge.instance.stopAudio())
-                    : null,
-                icon: const Icon(Icons.stop_circle_rounded),
-                label: const Text('Stop Audio'),
-                filled: false,
-                minimumSize: const Size(130, 42),
+                minimumSize: const Size(178, 42),
               ),
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+class _UnlockChangeDialog extends StatefulWidget {
+  final bool passwordRequired;
+
+  const _UnlockChangeDialog({required this.passwordRequired});
+
+  @override
+  State<_UnlockChangeDialog> createState() => _UnlockChangeDialogState();
+}
+
+class _UnlockChangeDialogState extends State<_UnlockChangeDialog> {
+  final TextEditingController _password = TextEditingController();
+  final TextEditingController _confirmation = TextEditingController();
+  late bool _required = widget.passwordRequired;
+  String? _error;
+
+  @override
+  void dispose() {
+    _password
+      ..clear()
+      ..dispose();
+    _confirmation
+      ..clear()
+      ..dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_required && _password.text.length < 12) {
+      setState(() => _error = 'Use at least 12 characters.');
+      return;
+    }
+    if (_required && _password.text != _confirmation.text) {
+      setState(() => _error = 'The two passwords do not match.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _UnlockChangeRequest(
+        passwordRequired: _required,
+        password: _required ? _password.text : '',
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Change startup unlock'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: _required,
+              title: const Text('Require password at each app start'),
+              onChanged: (value) => setState(() {
+                _required = value;
+                _error = null;
+              }),
+            ),
+            if (_required) ...[
+              TextField(
+                controller: _password,
+                obscureText: true,
+                autofocus: true,
+                autofillHints: const [AutofillHints.newPassword],
+                decoration: const InputDecoration(
+                  labelText: 'New startup password',
+                  helperText: 'Use at least 12 characters.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _confirmation,
+                obscureText: true,
+                autofillHints: const [AutofillHints.newPassword],
+                onSubmitted: (_) => _submit(),
+                decoration: const InputDecoration(
+                  labelText: 'Confirm new password',
+                ),
+              ),
+            ] else
+              const Text(
+                'The vault key will be delegated to the operating-system secure key store. This is less portable than a startup password.',
+                style: TextStyle(color: NazaPalette.subtext, height: 1.35),
+              ),
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(_error!, style: const TextStyle(color: NazaPalette.danger)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Apply')),
+      ],
+    );
+  }
+}
+
+class _RecoveryPasswordDialog extends StatefulWidget {
+  final String title;
+  final String description;
+  final String actionLabel;
+  final bool confirmPassword;
+
+  const _RecoveryPasswordDialog({
+    this.title = 'Protect recovery package',
+    this.description =
+        'Choose a separate password for the encrypted ML-KEM-768/X25519 recovery private keys. It cannot be recovered.',
+    this.actionLabel = 'Continue',
+    this.confirmPassword = true,
+  });
+
+  @override
+  State<_RecoveryPasswordDialog> createState() =>
+      _RecoveryPasswordDialogState();
+}
+
+class _RecoveryPasswordDialogState extends State<_RecoveryPasswordDialog> {
+  final TextEditingController _password = TextEditingController();
+  final TextEditingController _confirmation = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _password
+      ..clear()
+      ..dispose();
+    _confirmation
+      ..clear()
+      ..dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_password.text.length < 12) {
+      setState(() => _error = 'Use at least 12 characters.');
+      return;
+    }
+    if (widget.confirmPassword && _password.text != _confirmation.text) {
+      setState(() => _error = 'The two recovery passwords do not match.');
+      return;
+    }
+    Navigator.of(context).pop(_password.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              widget.description,
+              style: const TextStyle(color: NazaPalette.subtext, height: 1.35),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _password,
+              obscureText: true,
+              autofocus: true,
+              autofillHints: const [AutofillHints.newPassword],
+              textInputAction: widget.confirmPassword
+                  ? TextInputAction.next
+                  : TextInputAction.done,
+              onSubmitted: widget.confirmPassword ? null : (_) => _submit(),
+              decoration: const InputDecoration(
+                labelText: 'Recovery password',
+                helperText: 'Use at least 12 characters.',
+              ),
+            ),
+            if (widget.confirmPassword) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _confirmation,
+                obscureText: true,
+                autofillHints: const [AutofillHints.newPassword],
+                onSubmitted: (_) => _submit(),
+                decoration: const InputDecoration(
+                  labelText: 'Confirm recovery password',
+                ),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(_error!, style: const TextStyle(color: NazaPalette.danger)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: Text(widget.actionLabel)),
+      ],
     );
   }
 }
@@ -21160,19 +19165,8 @@ class _SettingsPanel extends StatelessWidget {
         const _SettingsSectionTitle('Model backend'),
         const _BackendPreferenceSection(),
         const SizedBox(height: 14),
-        const _SettingsSectionTitle('Android voice diagnostics'),
-        _VoiceDiagnosticsCard(enabled: actionsEnabled),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('BarkPack setup and testing'),
-        _BarkPackStatusCard(enabled: actionsEnabled),
-        const _BarkPerformanceCard(),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Cryptography'),
-        const _InfoRow(label: 'Vault cipher', value: 'AES-256-GCM'),
-        const _InfoRow(label: 'Key scope', value: 'per-install local key'),
-        const _InfoRow(label: 'AAD', value: 'vault-v2 bound'),
-        const _InfoRow(label: 'History writes', value: 'serialized async'),
-        const _InfoRow(label: 'History limit', value: '250 encrypted rows'),
+        const _SettingsSectionTitle('Security'),
+        _VaultSecurityCard(enabled: actionsEnabled),
         const SizedBox(height: 14),
         const _SettingsSectionTitle('Scanner defense'),
         const _InfoRow(label: 'Road scanner', value: 'enabled'),
@@ -21198,13 +19192,7 @@ class _SettingsPanel extends StatelessWidget {
         const _InfoRow(label: 'Blur shaders', value: 'Disabled'),
         const _InfoRow(label: 'Display font', value: 'Inter'),
         const _InfoRow(label: 'Telemetry font', value: 'JetBrains Mono'),
-        const _InfoRow(
-          label: 'Ambient animation',
-          value: 'Disabled on desktop',
-        ),
         const _InfoRow(label: 'Backdrop', value: 'static glass/ribbon field'),
-        const _InfoRow(label: 'Motion style', value: 'implicit only'),
-        const _InfoRow(label: 'Telemetry timer on desktop', value: 'Disabled'),
         const _InfoRow(label: 'Linux renderer', value: 'software default'),
         const _InfoRow(label: 'Model backend control', value: 'Settings card'),
         const SizedBox(height: 14),
@@ -21718,7 +19706,7 @@ class _AboutToolsSection extends StatelessWidget {
           radius: 18,
           active: true,
           child: Text(
-            'Naza One is a local-first assistant with private AES-GCM history, LiteRT-LM Gemma inference, scanner-specific prompt routing, and lightweight desktop-safe rendering.',
+            'Naza One is a local-first assistant with a boot-gated encrypted SQLite vault, LiteRT-LM Gemma inference, scanner-specific prompt routing, and lightweight desktop-safe rendering.',
             style: TextStyle(
               color: NazaPalette.text,
               height: 1.35,
@@ -21735,14 +19723,15 @@ class _AboutToolsSection extends StatelessWidget {
         ),
         _ToolTile(
           icon: Icons.lock_rounded,
-          title: 'AES-GCM Vault',
-          body: 'Local encrypted history storage.',
+          title: 'Encrypted SQLite Vault',
+          body:
+              'AES-256-GCM records, Argon2id startup unlock, versioned data keys, rotation, and optional hybrid post-quantum recovery export.',
         ),
         _ToolTile(
           icon: Icons.speed_rounded,
           title: 'Stable Desktop v2',
           body:
-              'No drawer, no modal route, no blur; static desktop backdrop plus localized component animations.',
+              'No drawer or blur; static desktop backdrop plus bounded component transitions.',
         ),
         _ToolTile(
           icon: Icons.route_rounded,
@@ -21755,12 +19744,6 @@ class _AboutToolsSection extends StatelessWidget {
           title: 'Food / Water Scanner',
           body:
               'Single-source classification plus multi-scan planning, safety gauge, chromatic diagnostics, and local-only prompts.',
-        ),
-        _ToolTile(
-          icon: Icons.graphic_eq_rounded,
-          title: 'BarkPack Settings Test Lab',
-          body:
-              'Settings-only BarkPack download verification, native probes, deterministic synthesis self-tests, and local WAV playback.',
         ),
       ],
     );
@@ -21788,9 +19771,7 @@ class _PanelScaffold extends StatelessWidget {
           ),
         );
       },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOutCubic,
+      child: Container(
         decoration: BoxDecoration(
           color: const Color(0xB304100B),
           border: const Border(left: BorderSide(color: Color(0x22FFFFFF))),
@@ -21834,9 +19815,7 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOutCubic,
+    return Container(
       padding: const EdgeInsets.symmetric(vertical: 9),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: Color(0x16FFFFFF))),

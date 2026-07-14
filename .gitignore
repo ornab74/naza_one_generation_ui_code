@@ -13,8 +13,6 @@ android/local.properties
 *.iml
 models/gemma-4-E2B-it.litertlm
 default.profraw
-bark_pack/
-bark_source/
-release_barkpack/
-tools/__pycache__/
 flutter_*.log
+tools/__pycache__/build_barkpack_release_index.cpython-311.pyc
+tools/__pycache__/convert_bark_to_barkpack.cpython-311.pyc
