@@ -117,7 +117,10 @@ final class NazaAppConfig {
   static const int chatRecoveryTimeoutSeconds = 5;
   static const int runtimeInitTimeoutSeconds = 30;
   static const int modelInstallTimeoutSeconds = 300;
-  static const int modelLoadTimeoutSeconds = 90;
+  // Native LiteRT-LM engine creation is not cancellable. Keep this above the
+  // measured cold CPU initialization time so a UI timeout does not encourage
+  // a second load while the first one is still allocating the model.
+  static const int modelLoadTimeoutSeconds = 150;
   static const int chatOpenTimeoutSeconds = 20;
   static const int chatAddQueryTimeoutSeconds = 18;
   static const int memoryAllocationTimeoutSeconds = 4;
@@ -401,6 +404,78 @@ enum NazaModelBackendPreference {
       _ => NazaModelBackendPreference.gpuFirst,
     };
   }
+}
+
+/// Resolves the automatic desktop preference without changing a user's saved
+/// setting. Linux LiteRT-LM GPU inference requires an exposed hardware device;
+/// trying GPU first when no such device exists only delays the CPU load.
+NazaModelBackendPreference nazaResolveBackendPreference({
+  required NazaModelBackendPreference requested,
+  required bool isLinux,
+  required bool hasLinuxGpuDevice,
+}) {
+  if (requested == NazaModelBackendPreference.gpuFirst &&
+      isLinux &&
+      !hasLinuxGpuDevice) {
+    return NazaModelBackendPreference.cpuOnly;
+  }
+  return requested;
+}
+
+/// A conservative Linux hardware probe. Automatic GPU-first mode uses this to
+/// skip a known-impossible Vulkan/WebGPU startup, while GPU-only mode uses it
+/// to report an immediate actionable error in containers such as Crostini.
+bool nazaHasLinuxGpuDevice() {
+  if (!Platform.isLinux) return true;
+
+  for (final path in const <String>[
+    '/dev/nvidiactl',
+    '/dev/nvidia0',
+    '/dev/dxg',
+    '/dev/mali0',
+    '/dev/kgsl-3d0',
+  ]) {
+    try {
+      if (FileSystemEntity.typeSync(path, followLinks: true) !=
+          FileSystemEntityType.notFound) {
+        return true;
+      }
+    } catch (_) {
+      // Continue to the DRM render-node probe.
+    }
+  }
+
+  try {
+    final dri = Directory('/dev/dri');
+    if (!dri.existsSync()) return false;
+    return dri.listSync(followLinks: false).any((entity) {
+      final name = entity.path.split(Platform.pathSeparator).last;
+      return name.startsWith('renderD');
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+bool nazaIsActiveModelIdentityError(Object error) {
+  final message = error.toString().toLowerCase();
+  return message.contains('no active inference model') ||
+      message.contains('active model is no longer installed') ||
+      message.contains('model file paths not found');
+}
+
+bool nazaIsNativeEngineInitializationError(Object error) {
+  final message = error.toString().toLowerCase();
+  return message.contains('failed to create engine') ||
+      message.contains('backendinitexception') ||
+      message.contains('ffi backends failed');
+}
+
+bool nazaBackendSatisfiesRequirement({
+  required bool requireGpu,
+  required PreferredBackend? activeBackend,
+}) {
+  return !requireGpu || activeBackend == PreferredBackend.gpu;
 }
 
 final class NazaRuntimeSnapshot {
@@ -9740,6 +9815,20 @@ final class NazaBackendUnavailable implements Exception {
   String toString() => message;
 }
 
+final class NazaModelLoadStillRunning implements Exception {
+  final int timeoutSeconds;
+
+  const NazaModelLoadStillRunning(this.timeoutSeconds);
+
+  @override
+  String toString() {
+    return 'LiteRT-LM engine initialization is still running after '
+        '${timeoutSeconds}s. Native initialization cannot be cancelled, so '
+        'Naza One kept the original load instead of starting over. Wait for '
+        'the runtime status to report ready, then send the message again.';
+  }
+}
+
 final class NazaLocalGemma {
   NazaLocalGemma._();
 
@@ -9766,11 +9855,15 @@ final class NazaLocalGemma {
   Future<dynamic>? _nativeModelLoadFuture;
   PreferredBackend? _nativeModelLoadBackend;
   bool? _nativeModelLoadSupportsVision;
+  bool? _nativeModelLoadRequiresGpu;
   int? _nativeModelLoadLifecycleSerial;
   Future<void>? _backendPreferenceLoadFuture;
   int _modelLifecycleSerial = 0;
   bool _modelSupportsVision = false;
   bool _requestVisionOnLoad = false;
+  bool _nativeModelLoadTimedOut = false;
+  bool _textGpuUnavailableForRuntime = false;
+  bool _visionGpuUnavailableForRuntime = false;
   int _generationSerial = 0;
   int _cancelledGeneration = -1;
   int _cancellationSignalGeneration = -1;
@@ -9813,6 +9906,8 @@ final class NazaLocalGemma {
     }
 
     final hadLoadedModel = _model != null || _chat != null;
+    _textGpuUnavailableForRuntime = false;
+    _visionGpuUnavailableForRuntime = false;
     backendPreference.value = preference;
     final saved = await _persistBackendPreference();
 
@@ -9999,6 +10094,7 @@ final class NazaLocalGemma {
       if (_chat != null && _model != null) return;
       final pendingBackend = _nativeModelLoadBackend;
       final pendingVision = _nativeModelLoadSupportsVision;
+      final pendingRequiresGpu = _nativeModelLoadRequiresGpu;
       if (_nativeModelLoadFuture != null && pendingBackend != null) {
         snapshot.value = snapshot.value.copyWith(
           busy: true,
@@ -10008,6 +10104,7 @@ final class NazaLocalGemma {
         _model = await _getActiveModelWithTimeout(
           pendingBackend,
           supportVision: pendingVision ?? false,
+          requireGpu: pendingRequiresGpu ?? false,
         );
         _modelSupportsVision = pendingVision ?? false;
         _chat = await _createChatWithTimeout(
@@ -10074,12 +10171,15 @@ final class NazaLocalGemma {
         // overlapping native sessions and crash Android. Let the user retry
         // only after the original operation has settled.
         if (error is TimeoutException ||
+            error is NazaModelLoadStillRunning ||
             error is NazaModelLoadSuperseded ||
             error is NazaBackendUnavailable) {
           rethrow;
         }
         await _settleFailedNativeModelLoad();
-        if (!usedCachedInstall) rethrow;
+        if (!usedCachedInstall || !nazaIsActiveModelIdentityError(error)) {
+          rethrow;
+        }
         await NazaModelAttestationStore.instance.clearRuntimeModelTrust();
         await _installConfiguredModel(force: true);
         await _loadActiveModelForBackend(
@@ -10103,13 +10203,23 @@ final class NazaLocalGemma {
 
       unawaited(_persistRuntimeSnapshot());
     } catch (error) {
+      final stillInitializing = error is NazaModelLoadStillRunning;
+      final completedAfterTimeout = stillInitializing && _model != null;
       snapshot.value = snapshot.value.copyWith(
-        busy: false,
-        modelLoaded: false,
-        phase: 'local model failed',
-        error:
-            'Could not load ${NazaAppConfig.modelFileName}. '
-            '${_modelSetupHint()} Raw error: $error',
+        busy: stillInitializing && !completedAfterTimeout,
+        modelLoaded: _model != null,
+        phase: completedAfterTimeout
+            ? 'model initialized; ready for the next message'
+            : stillInitializing
+            ? 'model initialization continues in background'
+            : 'local model failed',
+        error: completedAfterTimeout
+            ? null
+            : stillInitializing
+            ? error.toString()
+            : 'Could not load ${NazaAppConfig.modelFileName}. '
+                  '${_modelSetupHint(error)} Raw error: $error',
+        clearError: completedAfterTimeout,
       );
       unawaited(_persistRuntimeSnapshot());
       rethrow;
@@ -10185,7 +10295,7 @@ final class NazaLocalGemma {
     } catch (error) {
       return NazaResponse(
         text:
-            'The local model is not ready yet. ${_modelSetupHint()}\n\n'
+            'The local model is not ready yet. ${_modelSetupHint(error)}\n\n'
             'Details: $error',
         score: route.score,
         route: 'model-unavailable',
@@ -11285,8 +11395,25 @@ final class NazaLocalGemma {
     NazaModelBackendPreference preference, {
     required bool supportVision,
   }) async {
-    switch (preference) {
+    final hasLinuxGpuDevice = nazaHasLinuxGpuDevice();
+    final effectivePreference = nazaResolveBackendPreference(
+      requested: preference,
+      isLinux: Platform.isLinux,
+      hasLinuxGpuDevice: hasLinuxGpuDevice,
+    );
+
+    switch (effectivePreference) {
       case NazaModelBackendPreference.cpuOnly:
+        final automaticLinuxFallback =
+            preference == NazaModelBackendPreference.gpuFirst &&
+            effectivePreference == NazaModelBackendPreference.cpuOnly;
+        snapshot.value = snapshot.value.copyWith(
+          usingGpu: false,
+          phase: automaticLinuxFallback
+              ? 'no Linux GPU device detected; initializing directly on CPU'
+              : 'initializing model on CPU',
+          clearError: true,
+        );
         _model = await _getActiveModelWithTimeout(
           PreferredBackend.cpu,
           supportVision: supportVision,
@@ -11299,20 +11426,21 @@ final class NazaLocalGemma {
         return;
       case NazaModelBackendPreference.gpuOnly:
         try {
+          if (Platform.isLinux && !hasLinuxGpuDevice) {
+            throw const NazaBackendUnavailable(
+              'GPU-only mode cannot start because Linux exposes no hardware '
+              'GPU device. Choose CPU only or GPU first in Settings.',
+            );
+          }
+          snapshot.value = snapshot.value.copyWith(
+            phase: 'initializing required GPU backend',
+            clearError: true,
+          );
           _model = await _getActiveModelWithTimeout(
             PreferredBackend.gpu,
             supportVision: supportVision,
+            requireGpu: true,
           );
-          if (_activeBackendOf(_model) != PreferredBackend.gpu) {
-            try {
-              await _model?.close();
-            } catch (_) {}
-            _model = null;
-            throw const NazaBackendUnavailable(
-              'LiteRT could not create the GPU engine and fell back to CPU, '
-              'but GPU-only mode forbids that fallback.',
-            );
-          }
           snapshot.value = snapshot.value.copyWith(
             usingGpu: true,
             phase: 'model loaded on GPU backend',
@@ -11331,37 +11459,35 @@ final class NazaLocalGemma {
           rethrow;
         }
       case NazaModelBackendPreference.gpuFirst:
-        try {
-          _model = await _getActiveModelWithTimeout(
-            PreferredBackend.gpu,
-            supportVision: supportVision,
-          );
-          final usedGpu = _activeBackendOf(_model) == PreferredBackend.gpu;
-          snapshot.value = snapshot.value.copyWith(
-            usingGpu: usedGpu,
-            phase: usedGpu
-                ? 'model loaded on GPU backend'
-                : 'GPU unavailable; model loaded on CPU fallback',
-            clearError: true,
-          );
-          return;
-        } catch (error) {
-          if (error is TimeoutException || error is NazaModelLoadSuperseded) {
-            rethrow;
-          }
-          await _settleFailedNativeModelLoad();
-          _model = await _getActiveModelWithTimeout(
-            PreferredBackend.cpu,
-            supportVision: supportVision,
-          );
-
-          snapshot.value = snapshot.value.copyWith(
-            usingGpu: false,
-            phase: 'model loaded on CPU fallback',
-            clearError: true,
-          );
-          return;
+        final gpuUnavailableForProfile = supportVision
+            ? _visionGpuUnavailableForRuntime
+            : _textGpuUnavailableForRuntime;
+        final requestedBackend = gpuUnavailableForProfile
+            ? PreferredBackend.cpu
+            : PreferredBackend.gpu;
+        snapshot.value = snapshot.value.copyWith(
+          usingGpu: false,
+          phase: requestedBackend == PreferredBackend.gpu
+              ? 'initializing GPU backend with built-in CPU fallback'
+              : 'using remembered CPU fallback for this model profile',
+          clearError: true,
+        );
+        _model = await _getActiveModelWithTimeout(
+          requestedBackend,
+          supportVision: supportVision,
+        );
+        final usedGpu = _activeBackendOf(_model) == PreferredBackend.gpu;
+        if (requestedBackend == PreferredBackend.gpu && !usedGpu) {
+          _rememberGpuFallback(supportVision: supportVision);
         }
+        snapshot.value = snapshot.value.copyWith(
+          usingGpu: usedGpu,
+          phase: usedGpu
+              ? 'model loaded on GPU backend'
+              : 'GPU unavailable; model loaded on CPU fallback',
+          clearError: true,
+        );
+        return;
     }
   }
 
@@ -11373,6 +11499,19 @@ final class NazaLocalGemma {
     } catch (_) {
       return null;
     }
+  }
+
+  void _rememberGpuFallback({required bool supportVision}) {
+    if (supportVision) {
+      _visionGpuUnavailableForRuntime = true;
+      return;
+    }
+
+    // A text-only GPU failure is a strong signal that the accelerator itself
+    // is unavailable, so do not pay the same probe cost again for vision. A
+    // vision-only failure stays scoped because text GPU inference may work.
+    _textGpuUnavailableForRuntime = true;
+    _visionGpuUnavailableForRuntime = true;
   }
 
   Future<NazaMemoryAllocation> _allocateMemoryForTurn({
@@ -11411,17 +11550,28 @@ final class NazaLocalGemma {
   Future<dynamic> _getActiveModelWithTimeout(
     PreferredBackend backend, {
     required bool supportVision,
+    bool requireGpu = false,
   }) {
     final activeLoad = _nativeModelLoadFuture;
     if (activeLoad != null) {
+      if (_nativeModelLoadTimedOut) {
+        return Future<dynamic>.error(
+          const NazaModelLoadStillRunning(
+            NazaAppConfig.modelLoadTimeoutSeconds,
+          ),
+        );
+      }
       return _awaitUsableNativeModel(
         activeLoad,
         _nativeModelLoadBackend ?? backend,
         _nativeModelLoadLifecycleSerial ?? _modelLifecycleSerial,
+        supportVision: _nativeModelLoadSupportsVision ?? supportVision,
+        requireGpu: _nativeModelLoadRequiresGpu ?? requireGpu,
       );
     }
 
     final lifecycleSerial = _modelLifecycleSerial;
+    _nativeModelLoadTimedOut = false;
     final Future<dynamic> operation = FlutterGemma.getActiveModel(
       maxTokens: NazaAppConfig.contextTokens,
       preferredBackend: backend,
@@ -11432,43 +11582,122 @@ final class NazaLocalGemma {
     _nativeModelLoadFuture = operation;
     _nativeModelLoadBackend = backend;
     _nativeModelLoadSupportsVision = supportVision;
+    _nativeModelLoadRequiresGpu = requireGpu;
     _nativeModelLoadLifecycleSerial = lifecycleSerial;
     unawaited(
       operation
-          .then<void>((loaded) async {
-            if (_modelLifecycleSerial == lifecycleSerial) {
-              _model ??= loaded;
-              _modelSupportsVision = supportVision;
-            } else {
-              try {
-                await loaded.close();
-              } catch (_) {
-                // A late native result belongs to a closed lifecycle.
+          .then<void>(
+            (loaded) async {
+              if (_modelLifecycleSerial == lifecycleSerial) {
+                final activeBackend = _activeBackendOf(loaded);
+                if (backend == PreferredBackend.gpu &&
+                    activeBackend != PreferredBackend.gpu) {
+                  _rememberGpuFallback(supportVision: supportVision);
+                }
+                if (!nazaBackendSatisfiesRequirement(
+                  requireGpu: requireGpu,
+                  activeBackend: activeBackend,
+                )) {
+                  if (_nativeModelLoadTimedOut) {
+                    try {
+                      await loaded.close();
+                    } catch (_) {}
+                    snapshot.value = snapshot.value.copyWith(
+                      modelLoaded: false,
+                      busy: false,
+                      usingGpu: false,
+                      phase: 'GPU backend failed',
+                      error:
+                          'GPU-only mode rejected LiteRT-LM\'s late CPU '
+                          'fallback. Choose CPU only or GPU first in Settings.',
+                    );
+                    unawaited(_persistRuntimeSnapshot());
+                  }
+                  return;
+                }
+                _model ??= loaded;
+                _modelSupportsVision = supportVision;
+                if (_nativeModelLoadTimedOut) {
+                  _requestVisionOnLoad = false;
+                  snapshot.value = snapshot.value.copyWith(
+                    modelLoaded: true,
+                    busy: false,
+                    usingGpu: _activeBackendOf(loaded) == PreferredBackend.gpu,
+                    phase: 'model initialized; ready for the next message',
+                    clearError: true,
+                  );
+                  unawaited(_persistRuntimeSnapshot());
+                }
+              } else {
+                try {
+                  await loaded.close();
+                } catch (_) {
+                  // A late native result belongs to a closed lifecycle.
+                }
               }
-            }
-          }, onError: (Object _, StackTrace _) {})
+            },
+            onError: (Object error, StackTrace _) {
+              if (_modelLifecycleSerial == lifecycleSerial &&
+                  _nativeModelLoadTimedOut) {
+                snapshot.value = snapshot.value.copyWith(
+                  modelLoaded: false,
+                  busy: false,
+                  phase: 'background model initialization failed',
+                  error: '${_modelSetupHint(error)} Raw error: $error',
+                );
+                unawaited(_persistRuntimeSnapshot());
+              }
+            },
+          )
           .whenComplete(() {
             if (identical(_nativeModelLoadFuture, operation)) {
               _nativeModelLoadFuture = null;
               _nativeModelLoadBackend = null;
               _nativeModelLoadSupportsVision = null;
+              _nativeModelLoadRequiresGpu = null;
               _nativeModelLoadLifecycleSerial = null;
+              _nativeModelLoadTimedOut = false;
             }
           }),
     );
-    return _awaitUsableNativeModel(operation, backend, lifecycleSerial);
+    return _awaitUsableNativeModel(
+      operation,
+      backend,
+      lifecycleSerial,
+      supportVision: supportVision,
+      requireGpu: requireGpu,
+    );
   }
 
   Future<dynamic> _awaitUsableNativeModel(
     Future<dynamic> operation,
     PreferredBackend backend,
-    int lifecycleSerial,
-  ) async {
+    int lifecycleSerial, {
+    required bool supportVision,
+    required bool requireGpu,
+  }) async {
     final loaded = await _timeoutModelLoad(operation, backend);
     if (_modelLifecycleSerial != lifecycleSerial) {
       // The completion observer owns closing this late handle. Reject it here
       // so a detached Android activity cannot create a session on that model.
       throw const NazaModelLoadSuperseded();
+    }
+    final activeBackend = _activeBackendOf(loaded);
+    if (backend == PreferredBackend.gpu &&
+        activeBackend != PreferredBackend.gpu) {
+      _rememberGpuFallback(supportVision: supportVision);
+    }
+    if (!nazaBackendSatisfiesRequirement(
+      requireGpu: requireGpu,
+      activeBackend: activeBackend,
+    )) {
+      try {
+        await loaded.close();
+      } catch (_) {}
+      throw const NazaBackendUnavailable(
+        'LiteRT could not create the GPU engine and fell back to CPU, but '
+        'GPU-only mode forbids that fallback.',
+      );
     }
     return loaded;
   }
@@ -11485,6 +11714,7 @@ final class NazaLocalGemma {
       _nativeModelLoadFuture = null;
       _nativeModelLoadBackend = null;
       _nativeModelLoadSupportsVision = null;
+      _nativeModelLoadRequiresGpu = null;
       _nativeModelLoadLifecycleSerial = null;
     }
   }
@@ -11496,9 +11726,11 @@ final class NazaLocalGemma {
     return operation.timeout(
       const Duration(seconds: NazaAppConfig.modelLoadTimeoutSeconds),
       onTimeout: () {
-        throw TimeoutException(
-          '${backend.name.toUpperCase()} model load timed out after '
-          '${NazaAppConfig.modelLoadTimeoutSeconds}s.',
+        if (identical(_nativeModelLoadFuture, operation)) {
+          _nativeModelLoadTimedOut = true;
+        }
+        throw const NazaModelLoadStillRunning(
+          NazaAppConfig.modelLoadTimeoutSeconds,
         );
       },
     );
@@ -11557,7 +11789,18 @@ final class NazaLocalGemma {
     }
   }
 
-  String _modelSetupHint() {
+  String _modelSetupHint(Object error) {
+    if (error is NazaModelLoadStillRunning) {
+      return 'The verified LiteRT-LM engine is still initializing in the '
+          'background; no download, reinstall, or second model load is needed.';
+    }
+    if (error is NazaBackendUnavailable ||
+        nazaIsNativeEngineInitializationError(error)) {
+      return 'The model passed SHA-256 verification; this native message '
+          'usually indicates an unavailable accelerator or insufficient '
+          'memory, not a corrupt model. On Linux, use CPU only when no '
+          'hardware Vulkan GPU is exposed and close memory-heavy apps.';
+    }
     return 'Naza One downloads ${NazaAppConfig.modelFileName} only from the pinned HTTPS Hugging Face URL, '
         'or accepts a local ${NazaAppConfig.modelPathEnvironmentVariable} / executable models folder file only when its SHA-256 equals '
         '${NazaAppConfig.modelSha256}. Check network access and available app-support storage.';
