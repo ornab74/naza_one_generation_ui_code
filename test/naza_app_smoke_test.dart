@@ -171,18 +171,36 @@ void main() {
     expect(find.text('I-95 northbound retention check'), findsOneWidget);
 
     await tester.tap(find.text('Food'));
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.enterText(
-      find.byType(TextField, skipOffstage: true).first,
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    final fridgeNote = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          widget.decoration?.labelText == 'Optional note',
+      description: 'fridge optional note field',
+    );
+    expect(fridgeNote, findsOneWidget);
+    await tester.enterText(fridgeNote, 'Bottled water retention check');
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(fridgeNote).controller!.text,
       'Bottled water retention check',
     );
-    await tester.pump();
 
     await tester.tap(find.text('History'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Food'));
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('Bottled water retention check'), findsOneWidget);
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    final reopenedFridgeNote = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          widget.decoration?.labelText == 'Optional note',
+      description: 'reopened fridge optional note field',
+    );
+    expect(reopenedFridgeNote, findsOneWidget);
+    expect(
+      tester.widget<TextField>(reopenedFridgeNote).controller!.text,
+      'Bottled water retention check',
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

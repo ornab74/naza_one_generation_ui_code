@@ -696,7 +696,7 @@ visibility=## The Algorithmic Frontier
         ),
         isTrue,
       );
-      expect(NazaAppConfig.continuationWarmSessionTurns, 2);
+      expect(NazaAppConfig.continuationWarmSessionTurns, 3);
     });
 
     test('rejects a continuation that replays an assimilated prose chunk', () {

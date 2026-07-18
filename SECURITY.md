@@ -84,24 +84,40 @@ missing or unauthenticated attestation, partial download, or digest mismatch
 invalidates trust and fails closed. The model itself is integrity-protected but
 not encrypted because it is public model data.
 
-## Optional post-quantum recovery
+## Default hybrid post-quantum recovery
 
 ML-KEM is used only where two separately held key components are meaningful:
 encrypted export and recovery. It is intentionally absent from password
 derivation and local vault unlock.
 
-The `naza-pq-backup-v1` format uses:
+Recovery enrollment is default-on for every new and migrated vault. The v2
+profile uses separated private-key-kit and encrypted-backup artifacts:
 
-- ML-KEM-768 and ephemeral X25519 in a hybrid construction;
-- transcript-bound HKDF-SHA-256 over both shared secrets;
+- ML-KEM-1024 and ephemeral X25519 in a hybrid construction;
+- ML-DSA-87 origin signatures proving that v2 backups were authorized by the
+  enrolled recovery key kit rather than merely encrypted to its public key;
+- transcript-bound HKDF-SHA-512 over both shared secrets;
 - AES-256-GCM for backup confidentiality and authentication;
-- an Argon2id-derived key and AES-256-GCM for the recovery private-key bundle.
+- an authenticated payload manifest with format, size, digest, record count,
+  suite, recipient identity, and creation time;
+- Argon2id (96 MiB, four iterations, 32-byte salt) and AES-256-GCM for the
+  private recovery key kit.
+
+Version-1 ML-KEM-768/HKDF-SHA-256 combined packages remain decryptable for
+backward compatibility but are never selected for new enrollment.
+
+The live vault retains only the public recovery identity. New backup exports
+must reopen the separate private key kit and authenticate it with the recovery
+password before an ML-DSA-87 signature is produced. Recovery is marked ready
+only after the saved kit and backup pass a complete decrypt and record-level
+validation pass.
 
 This design protects against compromise of only one key-establishment
 primitive. It does not help if the backup and decrypted recovery key are on the
-same compromised device. Store the recovery private-key bundle separately,
-protect its password, and test recovery before relying on it. The implementation
-does not claim FIPS validation or resistance to every side-channel.
+same compromised device. Store the private key kit offline and separately from
+backup ciphertext, protect its password, and use the full verification action
+before relying on it. The pure-Dart provider is FIPS 203/204-aligned; the app
+does not claim FIPS 140 validation or resistance to every side-channel.
 
 ## Threats outside the design
 
@@ -116,8 +132,11 @@ These controls do not protect against:
 - intentionally exported plaintext or disclosure by another authorized user;
 - denial of service, file deletion, rollback to an older valid snapshot, or
   traffic analysis of model downloads;
-- data retained by platform backup, filesystem snapshots, swap, or flash-media
-  wear leveling.
+- data retained by filesystem snapshots, swap, or flash-media wear leveling.
+
+Android application backup and device-transfer extraction are disabled and
+explicitly exclude application storage. Other operating systems, privileged
+backup tools, and full-device snapshots remain outside the app's control.
 
 No cryptographic design can recover a forgotten boot password without valid,
 separately retained recovery material.

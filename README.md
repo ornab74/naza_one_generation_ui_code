@@ -68,18 +68,29 @@ The inference backend is selectable in Settings:
 `NAZA_DESKTOP_CPU=1` or `NAZA_DESKTOP_GPU=only` can seed the first-run backend
 preference.
 
-## Optional post-quantum recovery
+## Default hybrid post-quantum recovery
 
 Post-quantum cryptography is deliberately outside the local vault-unlock path.
-The optional encrypted backup/recovery format uses a hybrid of ML-KEM-768 and
-X25519, combines both shared secrets with transcript-bound HKDF-SHA-256, and
-encrypts the exported bytes with AES-256-GCM. The recovery private-key bundle is
-itself protected by a local Argon2id-derived key.
+Recovery policy is enabled by default. New recovery identities use ML-KEM-1024
+and X25519, combine both shared secrets with transcript-bound HKDF-SHA-512, and
+encrypt authenticated payloads with AES-256-GCM. ML-DSA-87 signs each v2 backup
+so possessing only the public recovery key is not enough to manufacture one.
+The private recovery key kit
+is protected by Argon2id (96 MiB, four iterations, 32-byte salt) and is saved as
+a separate artifact from encrypted vault backups. Existing version-1
+ML-KEM-768 recovery packages remain restorable through an explicit compatibility
+path.
 
 ML-KEM does not make a password-derived, single-device database more secure by
-itself. The recovery design is useful only when the recovery private key is
-kept separately from the device holding the encrypted backup. Losing both the
-password and the recovery material is unrecoverable.
+itself. The recovery design creates a useful boundary only when the private key
+kit is kept offline and separately from the device and backup ciphertext.
+Settings records enrollment and full decrypt-verification status, but never
+stores the recovery private key. Creating a later backup requires reopening the
+separate key kit and entering its password so the export can be signed. Losing
+the password or private key kit is
+unrecoverable. The pure-Dart provider is FIPS 203/204-aligned and tested
+against known-answer vectors; it is not a FIPS 140 validated cryptographic
+module.
 
 ## Build and test
 
@@ -114,8 +125,10 @@ rebuild.
   scanner workflows.
 - `lib/security/secure_database.dart` implements the encrypted SQLite record
   store, boot unlock, and key rotation.
-- `lib/security/post_quantum_export.dart` implements optional hybrid recovery
-  exports.
+- `lib/security/post_quantum_export.dart` implements versioned hybrid recovery
+  cryptography and legacy compatibility.
+- `lib/security/post_quantum_recovery.dart` binds separated key-kit and backup
+  manifests for setup, verification, and restore.
 - `test/` covers vault authentication, tamper detection, rotation, recovery,
   routing, and UI behavior.
 

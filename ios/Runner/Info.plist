@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Naza One uses the camera only when you choose to photograph your fridge or a baking item for private on-device analysis.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Naza One opens your photo library only when you choose an image for private on-device food analysis.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

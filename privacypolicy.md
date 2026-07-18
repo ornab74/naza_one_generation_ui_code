@@ -2,7 +2,7 @@
 
 **Effective date:** July 14, 2026
 
-**Last updated:** July 14, 2026
+**Last updated:** July 18, 2026
 
 Naza One (the “App”) is a local-first artificial intelligence assistant. This
 policy describes how the App processes, stores, and protects information. It
@@ -11,14 +11,15 @@ builds, including the Android package `com.qroadscan.lightcal`.
 
 ## 1. Summary
 
-Naza One performs chat, scanner, memory, and model inference on your device. It
+Naza One performs chat, scanner, food-vision, memory, and model inference on your device. It
 does not require an account and does not contain advertising, behavioral
 tracking, a developer-operated chat server, microphone features, or voice
 generation.
 
 The App connects to the internet to download its local AI model when a verified
-copy is not already available. Operating-system backup or device-transfer
-services may also handle App files according to your device settings.
+copy is not already available. Automatic Android cloud backup and
+device-to-device transfer are disabled for App-private data. You may still
+create and move an encrypted recovery export yourself.
 
 ## 2. Information you provide or create
 
@@ -29,28 +30,35 @@ generated responses, timestamps, routing labels, summaries, tags, scanner
 drafts, and local vector-memory representations to provide history and
 continuity.
 
-### Road and food/water scanners
+### Road and text scanners
 
 Scanner entries are information you intentionally provide. Depending on the
 entry, they may contain location descriptions, health or safety observations,
 food details, or other sensitive text. The App does not automatically acquire
-GPS location, contacts, or camera input for these workflows.
+GPS location or contacts.
 
-### Images you select
+### Images you capture or select
 
-If you attach an image to a supported prompt, the system file picker grants the
-App access to that selected file so it can be processed by the local model. The
-App does not scan your photo library or other files. Conversation history may
-retain the selected file's name and dimensions; the original image is not
+If you attach an image to a supported prompt, the system picker grants the App
+access to that selected file so it can be processed by the local model. The App
+does not scan your photo library or other files. On supported mobile devices,
+you may also choose to open the camera for a fridge or bake-completion photo.
+
+Food photos are converted to bounded, metadata-free PNG images before local
+analysis. When you analyze and save a fridge or bake entry, the normalized
+photo and its structured result are retained as encrypted SQLite records so
+you can revisit the food history or re-run an interrupted analysis. Chat image
+history may retain the selected file's name and dimensions. Images are not
 uploaded to a developer-operated service.
 
 ### Passwords and recovery material
 
 The boot password is used locally to derive an encryption key with Argon2id. It
 is not stored or transmitted, and the developer cannot recover it. If you
-create optional post-quantum recovery material, the generated public key,
-password-protected private-key bundle, and encrypted backup remain local unless
-you choose to copy, export, or share them.
+set up post-quantum recovery, only its public enrollment state is retained in
+the vault. The password-protected private recovery key kit and encrypted vault
+backup are exported as separate local files. They remain local unless you
+choose to move, copy, or share them.
 
 ## 3. Model downloads and network data
 
@@ -101,16 +109,22 @@ No storage system is completely secure. Use a device screen lock, current
 security updates, and appropriate control over physical and administrative
 access.
 
-## 5. Optional encrypted backup and recovery
+## 5. Encrypted backup and recovery
 
-An optional backup/recovery format uses hybrid ML-KEM-768 and X25519 key
-establishment, HKDF-SHA-256, and AES-256-GCM. It is not part of local database
-unlock and does not transmit a backup. A backup leaves the device only when you
-choose to move or share it.
+Post-quantum recovery is enabled as the default recovery policy for new and
+migrated vaults, but it does not become ready until you complete setup and
+verify the exported files. The current format uses hybrid ML-KEM-1024 and
+X25519 key establishment, ML-DSA-87 backup-origin signatures, HKDF-SHA-512,
+AES-256-GCM, and an Argon2id-protected private recovery key kit. Creating a new
+backup therefore requires the separate kit and recovery password. Recovery is
+separate from normal local database unlock and does not transmit a backup. The
+App can still read its earlier combined ML-KEM-768 recovery format for
+compatibility.
 
-Recovery is useful only if the password-protected private recovery material is
-kept separately from the encrypted backup. Anyone who obtains the backup,
-recovery private-key bundle, and its password may decrypt the exported content.
+Recovery is useful only if the password-protected private recovery key kit is
+kept separately from the encrypted backup. Anyone who obtains both files and
+the recovery password may decrypt the exported content. Losing any required
+file or the password can make the backup unrecoverable.
 
 ## 6. Information the App does not intentionally collect
 
@@ -133,7 +147,8 @@ Locally processed information is used to:
 - generate AI responses and scanner results;
 - maintain history and optional local memory;
 - restore drafts and preferences;
-- process an image you deliberately select;
+- process an image you deliberately capture or select;
+- maintain an encrypted fridge and bake-analysis history;
 - verify the downloaded model and maintain security state;
 - display local status, errors, and diagnostics;
 - create an encrypted backup when you request one.
@@ -147,9 +162,8 @@ handled in these limited circumstances:
    diagnostics, recovery material, or an encrypted backup.
 2. **Model delivery.** Hugging Face and its infrastructure receive the network
    request used to download the model.
-3. **Operating-system services.** The system file picker, secure credential
-   store, and optional backup or device-transfer services operate under the
-   platform provider's policies.
+3. **Operating-system services.** The camera, system file or photo picker, and
+   secure credential store operate under the platform provider's policies.
 4. **Legal and safety matters.** The developer may disclose information
    actually available to them when required by valid legal process or needed to
    protect rights and safety. Because there is no conversation server, the
@@ -157,10 +171,12 @@ handled in these limited circumstances:
 
 ## 9. Backup and device transfer
 
-Depending on the platform, account, manufacturer, and settings, the operating
-system may back up or transfer files from App-private storage. Availability and
-retention of those copies are controlled by the platform provider. Clearing
-the App may not immediately delete an older provider-managed backup.
+Automatic Android cloud backup and Android device-to-device transfer are
+disabled for App-private files, databases, shared preferences, and external
+App storage. This reduces unintended copying but is not a guarantee against a
+compromised device, administrator tools, manufacturer behavior, or copies made
+outside the App. Older provider-managed copies created by a previous App
+version may remain subject to the provider's retention rules.
 
 Treat exported recovery files as sensitive. Store encrypted backups separately
 from their private recovery material and passwords.
@@ -169,8 +185,9 @@ from their private recovery material and passwords.
 
 Local data remains until it is deleted, overwritten, automatically trimmed,
 App storage is cleared, or the App is uninstalled. The model and settings may
-remain until App storage is cleared. Provider-managed backups follow the
-provider's retention rules.
+remain until App storage is cleared. User-exported recovery files remain where
+you placed them, and any older provider-managed copies follow the provider's
+retention rules.
 
 There is no App account to delete. Available controls may let you clear history
 or memory. To remove all active on-device data, clear Naza One's application
@@ -181,6 +198,8 @@ cannot be guaranteed.
 ## 11. Permissions
 
 - **Internet:** downloads the verified local AI model.
+- **Camera (when you choose it):** captures a fridge or bake-completion image
+  for local food analysis on supported mobile devices.
 - **Files or photos selected by you:** the system picker provides access only
   to the item you choose, subject to platform behavior.
 
@@ -195,9 +214,9 @@ child intentionally shares.
 
 ## 13. Your choices and rights
 
-You can decide whether to retain local history or memory, attach an image,
-require a boot password, create recovery material, use platform backup, or
-share content. Privacy law may also provide rights of access, correction,
+You can decide whether to retain local history or memory, capture or attach an
+image, require a boot password, complete recovery setup, export recovery
+material, or share content. Privacy law may also provide rights of access, correction,
 deletion, restriction, objection, or portability.
 
 Because primary user content remains on your device, the developer generally
