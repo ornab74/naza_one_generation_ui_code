@@ -17029,13 +17029,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
   final FoodVisionDraftController _foodVisionDraft =
       FoodVisionDraftController();
 
-  final List<NazaUiMessage> _messages = [
-    NazaUiMessage.assistant(
-      'Naza One is ready. Type a message and press Send to load the local model.',
-      route: 'system',
-      score: 1,
-    ),
-  ];
+  final List<NazaUiMessage> _messages = <NazaUiMessage>[];
   String _activeThreadId = NazaHistoryRow._id();
   final List<NazaHistoryRow> _threadRows = <NazaHistoryRow>[];
   String? _continuationOriginalPrompt;
@@ -17815,17 +17809,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
       _continuationTurnId = null;
       _continuationAssistantMessageId = null;
       _continuationText = '';
-      _messages
-        ..clear()
-        ..add(
-          NazaUiMessage.assistant(
-            'New private thread ready. The local model will receive only this thread’s bounded context.',
-            route: 'system',
-            score: 1,
-          ),
-        );
+      _messages.clear();
       _panel = NazaPanel.chat;
-      _status = 'new thread';
+      _status = 'ready';
     });
     _scrollToBottom(force: true);
     _inputFocus.requestFocus();
@@ -17851,15 +17837,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
               score: row.score,
             ),
           );
-      }
-      if (turns.isEmpty) {
-        _messages.add(
-          NazaUiMessage.assistant(
-            'This thread is empty.',
-            route: 'system',
-            score: 1,
-          ),
-        );
       }
       final last = turns.isEmpty ? null : turns.last;
       _continuationOriginalPrompt = last?.user;
@@ -18281,6 +18258,7 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final title = _title(panel);
     return Container(
       height: 68,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -18307,18 +18285,22 @@ class _TopBar extends StatelessWidget {
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 220),
               switchInCurve: Curves.easeOutCubic,
-              child: Text(
-                _title(panel),
-                key: ValueKey<NazaPanel>(panel),
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: NazaPalette.text,
-                  fontWeight: FontWeight.w900,
-                  fontSize: 23,
-                  letterSpacing: -0.7,
-                  fontFamily: NazaFonts.display,
-                ),
-              ),
+              child: title == null
+                  ? const SizedBox.shrink(
+                      key: ValueKey<NazaPanel>(NazaPanel.chat),
+                    )
+                  : Text(
+                      title,
+                      key: ValueKey<NazaPanel>(panel),
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: NazaPalette.text,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 23,
+                        letterSpacing: -0.7,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
             ),
           ),
           if (panel == NazaPanel.chat) ...[
@@ -18382,10 +18364,10 @@ class _TopBar extends StatelessWidget {
     );
   }
 
-  static String _title(NazaPanel panel) {
+  static String? _title(NazaPanel panel) {
     switch (panel) {
       case NazaPanel.chat:
-        return 'New Chat';
+        return null;
       case NazaPanel.roadScanner:
         return 'Road Scanner';
       case NazaPanel.foodWater:

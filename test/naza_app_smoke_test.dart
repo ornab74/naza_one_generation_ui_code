@@ -130,8 +130,9 @@ void main() {
     await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
     await tester.pump();
 
-    expect(find.text('New Chat'), findsOneWidget);
-    expect(find.textContaining('Naza One is ready'), findsOneWidget);
+    expect(find.text('New Chat'), findsNothing);
+    expect(find.textContaining('Naza One is ready'), findsNothing);
+    expect(find.textContaining('New private thread ready'), findsNothing);
     final visibleTextFields = find.byType(TextField, skipOffstage: true);
     expect(visibleTextFields, findsOneWidget);
     expect(find.text('Ask anything...'), findsOneWidget);
@@ -146,6 +147,12 @@ void main() {
     await tester.enterText(visibleTextFields, 'Visible immediately');
     await tester.pump();
     expect(find.text('Visible immediately'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Start new thread'));
+    await tester.pump();
+    expect(find.text('New Chat'), findsNothing);
+    expect(find.textContaining('Naza One is ready'), findsNothing);
+    expect(find.textContaining('New private thread ready'), findsNothing);
 
     await tester.pumpWidget(const SizedBox.shrink());
   });
