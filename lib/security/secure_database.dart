@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/dart.dart' show DartArgon2id;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite;
@@ -1450,11 +1451,19 @@ Future<Uint8List> _deriveArgon2({
   final passwordBytes = Uint8List.fromList(utf8.encode(password));
   try {
     final derived = await Isolate.run<List<int>>(() async {
-      final algorithm = Argon2id(
+      // This function already owns a dedicated worker isolate. The default
+      // desktop Argon2 implementation would otherwise spawn another isolate
+      // inside it, causing avoidable isolate-group startup/safepoint pauses in
+      // debug builds. The KDF parameters and resulting bytes are unchanged.
+      const noNestedWorkers = 0;
+      const uninterruptedWorkerChunk = -1;
+      final algorithm = DartArgon2id(
         parallelism: parallelism,
         memory: memoryKiB,
         iterations: iterations,
         hashLength: 32,
+        maxIsolates: noNestedWorkers,
+        blocksPerProcessingChunk: uninterruptedWorkerChunk,
       );
       final key = await algorithm.deriveKey(
         secretKey: SecretKey(passwordBytes),

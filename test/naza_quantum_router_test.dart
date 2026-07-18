@@ -696,7 +696,22 @@ visibility=## The Algorithmic Frontier
         ),
         isTrue,
       );
-      expect(NazaAppConfig.continuationWarmSessionTurns, 3);
+      expect(NazaAppConfig.continuationWarmSessionTurns, 4);
+    });
+
+    test('uses a lightweight safe seam for provisional stream paint', () {
+      const prefix = 'return respon';
+      expect(
+        NazaContinuationEngine.joinForStreamingPaint(prefix, 'se.json();'),
+        'return response.json();',
+      );
+      expect(
+        NazaContinuationEngine.joinForStreamingPaint(
+          prefix,
+          'Useful prose.\nclosing=private control text',
+        ),
+        prefix,
+      );
     });
 
     test('rejects a continuation that replays an assimilated prose chunk', () {

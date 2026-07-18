@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
+import 'package:cryptography/dart.dart' show DartArgon2id;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/security/secure_database.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite;
@@ -20,6 +22,36 @@ void main() {
     if (await directory.exists()) {
       await directory.delete(recursive: true);
     }
+  });
+
+  test('single-worker Argon2 derives the standard-compatible key', () async {
+    final password = SecretKey(utf8.encode('compatibility-password'));
+    final salt = Uint8List.fromList(List<int>.generate(16, (index) => index));
+    final standard = Argon2id(
+      parallelism: 1,
+      memory: 64,
+      iterations: 2,
+      hashLength: 32,
+    );
+    const singleWorker = DartArgon2id(
+      parallelism: 1,
+      memory: 64,
+      iterations: 2,
+      hashLength: 32,
+      maxIsolates: 0,
+      blocksPerProcessingChunk: -1,
+    );
+
+    final standardBytes = await (await standard.deriveKey(
+      secretKey: password,
+      nonce: salt,
+    )).extractBytes();
+    final singleWorkerBytes = await (await singleWorker.deriveKey(
+      secretKey: password,
+      nonce: salt,
+    )).extractBytes();
+
+    expect(singleWorkerBytes, standardBytes);
   });
 
   test('requires setup, unlocks, and never stores record plaintext', () async {

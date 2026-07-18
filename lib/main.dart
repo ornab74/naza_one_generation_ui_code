@@ -113,7 +113,10 @@ final class NazaAppConfig {
   static const int continuationIdleTimeoutSeconds = 20;
   static const int continuationChatOpenTimeoutSeconds = 8;
   static const int continuationPromptSubmitTimeoutSeconds = 8;
-  static const int continuationWarmSessionTurns = 3;
+  // One initial response plus the default three continuation chunks can share
+  // one native conversation. Context-window errors still trigger a bounded
+  // fresh-session retry when a longer custom continuation run needs it.
+  static const int continuationWarmSessionTurns = 4;
   static const int chatRecoveryTimeoutSeconds = 5;
   static const int runtimeInitTimeoutSeconds = 30;
   static const int modelInstallTimeoutSeconds = 300;
@@ -7985,6 +7988,18 @@ $seamGuidance
     return assembleCandidate(prefix: prefix, continuation: continuation).text;
   }
 
+  static String joinForStreamingPaint(String prefix, String continuation) {
+    // Streaming paint is provisional. Keep overlap/replay trimming and hide
+    // private control output, but defer the expensive whole-artifact code and
+    // structure analysis to assembleCandidate after the chunk is complete.
+    // Running that validator on every token batch repeatedly reparsed the
+    // entire accumulated answer on the UI isolate.
+    if (_firstControlLeak(continuation) != null) {
+      return stripDoneMarker(prefix);
+    }
+    return _joinUnchecked(prefix, continuation);
+  }
+
   static String _joinUnchecked(String prefix, String continuation) {
     final first = stripDoneMarker(prefix, preserveTrailingWhitespace: true);
     final second = _trimLeadingReplay(
@@ -9848,6 +9863,7 @@ final class NazaLocalGemma {
   dynamic _model;
   dynamic _chat;
   dynamic _continuationChat;
+  int _chatSessionTurns = 0;
   int _continuationSessionTurns = 0;
   Future<void>? _continuationCloseFuture;
   Future<void>? _loadingFuture;
@@ -10111,6 +10127,7 @@ final class NazaLocalGemma {
           systemInstruction: NazaAppConfig.systemInstruction,
           maxOutputTokens: NazaAppConfig.outputTokens,
         );
+        _chatSessionTurns = 0;
         snapshot.value = snapshot.value.copyWith(
           modelLoaded: true,
           busy: false,
@@ -10126,6 +10143,7 @@ final class NazaLocalGemma {
           systemInstruction: NazaAppConfig.systemInstruction,
           maxOutputTokens: NazaAppConfig.outputTokens,
         );
+        _chatSessionTurns = 0;
         snapshot.value = snapshot.value.copyWith(
           modelLoaded: true,
           busy: false,
@@ -10194,6 +10212,7 @@ final class NazaLocalGemma {
         systemInstruction: NazaAppConfig.systemInstruction,
         maxOutputTokens: NazaAppConfig.outputTokens,
       );
+      _chatSessionTurns = 0;
       snapshot.value = snapshot.value.copyWith(
         modelLoaded: true,
         busy: false,
@@ -10467,6 +10486,10 @@ final class NazaLocalGemma {
           onPartial: onPartial == null ? null : paintInitialTransaction,
         );
       }
+      // Every normal turn starts in a fresh bounded primary conversation.
+      // Retain the generated-turn count when that conversation is later
+      // parked for manual or automatic continuation.
+      _chatSessionTurns = 1;
       var clean = stream.text;
 
       if (_cancelledGeneration == generationId) {
@@ -10869,7 +10892,10 @@ final class NazaLocalGemma {
     );
 
     try {
-      var warm = _chat != null && _warmHistoryTurnId == historyTurnId;
+      var warm =
+          _chat != null &&
+          _warmHistoryTurnId == historyTurnId &&
+          _chatSessionTurns < NazaAppConfig.continuationWarmSessionTurns;
       if (!warm && !chatWasMissing) {
         generation.value = generation.value.copyWith(
           stage: 'opening compact continuation context',
@@ -10924,6 +10950,7 @@ final class NazaLocalGemma {
         maxTokens: NazaAppConfig.continuationOutputTokens,
         idleTimeoutSeconds: NazaAppConfig.continuationIdleTimeoutSeconds,
       );
+      _chatSessionTurns++;
       final joined = NazaContinuationEngine.stripDoneMarker(
         NazaContinuationEngine.join(prefix, stream.text),
       ).trimRight();
@@ -11010,8 +11037,11 @@ final class NazaLocalGemma {
             // follow-up avoids close/open/prefill churn between visible chunks.
             _continuationChat = _chat;
             _chat = null;
-            _continuationSessionTurns =
-                NazaAppConfig.continuationWarmSessionTurns - 1;
+            // The transferred session contains exactly the initial generated
+            // turn. Starting at limit-1 made the very next continuation hit
+            // the recycle threshold and synchronously delete the conversation.
+            _continuationSessionTurns = math.max(1, _chatSessionTurns);
+            _chatSessionTurns = 0;
             generation.value = generation.value.copyWith(
               stage: 'continuing in the warm LiteRT session',
             );
@@ -11024,6 +11054,7 @@ final class NazaLocalGemma {
             await _closeContinuationSession();
             final primaryChat = _chat;
             _chat = null;
+            _chatSessionTurns = 0;
             try {
               await primaryChat?.session?.close().timeout(
                 const Duration(
@@ -11138,16 +11169,25 @@ final class NazaLocalGemma {
   }
 
   Future<void> _refreshPrimaryChatAfterContinuation() async {
-    _chat = null;
-    // Do not open a throwaway primary session while the user is waiting for
-    // the completed answer. The model stays resident; ensureReady lazily opens
-    // the next bounded chat when the next turn actually starts.
-    unawaited(_beginClosingContinuationSession());
+    // Keep the completed native conversation parked as the primary chat. A
+    // session close calls LiteRT conversation_delete synchronously, so doing
+    // it here blocks the exact frame that should paint the completed answer.
+    // The next bounded turn retires it after publishing its working state, or
+    // manual Continue can reuse the warm context immediately.
+    final completedChat = _continuationChat;
+    final completedTurns = _continuationSessionTurns;
+    _continuationChat = null;
+    _continuationSessionTurns = 0;
+    if (completedChat != null) {
+      _chat = completedChat;
+      _chatSessionTurns = completedTurns;
+    }
   }
 
   Future<void> _recoverChatAfterGenerationError() async {
     final chat = _chat;
     _chat = null;
+    _chatSessionTurns = 0;
     await _closeContinuationSession();
 
     try {
@@ -11170,8 +11210,10 @@ final class NazaLocalGemma {
         maxOutputTokens: NazaAppConfig.outputTokens,
         timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
       );
+      _chatSessionTurns = 0;
     } catch (_) {
       _chat = null;
+      _chatSessionTurns = 0;
     }
   }
 
@@ -11180,6 +11222,18 @@ final class NazaLocalGemma {
   }) async {
     final chat = _chat;
     _chat = null;
+    _chatSessionTurns = 0;
+
+    if (chat != null) {
+      // Make the already-published working state visible before entering the
+      // package's synchronous native conversation teardown.
+      WidgetsBinding.instance.scheduleFrame();
+      try {
+        await WidgetsBinding.instance.endOfFrame.timeout(
+          const Duration(milliseconds: 80),
+        );
+      } catch (_) {}
+    }
 
     try {
       await chat?.session?.close().timeout(
@@ -11196,6 +11250,7 @@ final class NazaLocalGemma {
       maxOutputTokens: NazaAppConfig.outputTokens,
       timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
     );
+    _chatSessionTurns = 0;
   }
 
   bool cancelActiveGeneration({
@@ -11306,6 +11361,7 @@ final class NazaLocalGemma {
     final primaryChat = _chat;
     final continuationChat = _continuationChat;
     _chat = null;
+    _chatSessionTurns = 0;
     _continuationChat = null;
     _continuationSessionTurns = 0;
     try {
@@ -11319,6 +11375,8 @@ final class NazaLocalGemma {
       systemInstruction: NazaAppConfig.systemInstruction,
       maxOutputTokens: NazaAppConfig.outputTokens,
     );
+    _chatSessionTurns = 0;
+    _warmHistoryTurnId = null;
 
     snapshot.value = snapshot.value.copyWith(
       phase: 'chat context reset',
@@ -11819,6 +11877,7 @@ final class NazaLocalGemma {
     } catch (_) {}
 
     _chat = null;
+    _chatSessionTurns = 0;
     _continuationChat = null;
     _continuationSessionTurns = 0;
     _model = null;
@@ -11890,11 +11949,48 @@ final class NazaLocalGemma {
     final cancelledSignal = Object();
     final deadlineSignal = Object();
     var interrupted = false;
+    var streamFinished = false;
+    var cancellationObserved = false;
+    Completer<Object>? pendingCancellationWait;
+    Future<void>? iteratorCancelFuture;
 
     Future<void> stopActiveChat() async {
       try {
         await activeChat.stopGeneration().timeout(const Duration(seconds: 2));
       } catch (_) {}
+    }
+
+    Future<void> cancelIteratorOnce() {
+      final active = iteratorCancelFuture;
+      if (active != null) return active;
+      final operation = () async {
+        try {
+          await iterator.cancel().timeout(const Duration(seconds: 2));
+        } catch (_) {}
+      }();
+      iteratorCancelFuture = operation;
+      return operation;
+    }
+
+    // Observe cancellation once for the entire stream. Attaching a new
+    // callback to the same signal for every token retains hundreds of losing
+    // Future.any branches until cancellation and then wakes them all at once.
+    final signal = _cancellationSignalGeneration == generationId
+        ? _cancellationSignal
+        : null;
+    if (signal != null) {
+      unawaited(
+        signal.future.then<void>((_) {
+          if (streamFinished) return;
+          cancellationObserved = true;
+          final pending = pendingCancellationWait;
+          if (pending != null && !pending.isCompleted) {
+            pending.complete(cancelledSignal);
+          }
+          unawaited(stopActiveChat());
+          unawaited(cancelIteratorOnce());
+        }),
+      );
     }
 
     try {
@@ -11925,19 +12021,35 @@ final class NazaLocalGemma {
           (moved) => moved,
           onError: (Object error, StackTrace stack) => AsyncError(error, stack),
         );
-        final signal = _cancellationSignalGeneration == generationId
-            ? _cancellationSignal
-            : null;
-        final outcome = await Future.any<Object>([
-          moveFuture,
-          Future<Object>.delayed(remaining, () => deadlineSignal),
-          if (signal != null)
-            signal.future.then<Object>((_) => cancelledSignal),
-        ]);
+        // A real Timer can be cancelled when the next token wins. Using
+        // Future.delayed here leaked one live deadline per token for 20-32s.
+        final deadline = Completer<Object>();
+        final deadlineTimer = Timer(remaining, () {
+          if (!deadline.isCompleted) deadline.complete(deadlineSignal);
+        });
+        final cancellationWait = Completer<Object>();
+        pendingCancellationWait = cancellationWait;
+        if (cancellationObserved || _cancelledGeneration == generationId) {
+          cancellationWait.complete(cancelledSignal);
+        }
+        late final Object outcome;
+        try {
+          outcome = await Future.any<Object>([
+            moveFuture,
+            deadline.future,
+            cancellationWait.future,
+          ]);
+        } finally {
+          if (identical(pendingCancellationWait, cancellationWait)) {
+            pendingCancellationWait = null;
+          }
+          deadlineTimer.cancel();
+        }
 
-        if (identical(outcome, cancelledSignal)) {
+        if (identical(outcome, cancelledSignal) ||
+            cancellationObserved ||
+            _cancelledGeneration == generationId) {
           interrupted = true;
-          unawaited(stopActiveChat());
           break;
         }
         if (identical(outcome, deadlineSignal)) {
@@ -12000,10 +12112,7 @@ final class NazaLocalGemma {
         if (onPartial != null) {
           final shouldEmit =
               now.difference(lastPartialAt) >=
-                  const Duration(
-                    milliseconds: NazaAppConfig.streamPaintThrottleMs,
-                  ) ||
-              tokenClosedPhrase;
+              const Duration(milliseconds: NazaAppConfig.streamPaintThrottleMs);
 
           if (shouldEmit) {
             lastPartialAt = now;
@@ -12013,7 +12122,12 @@ final class NazaLocalGemma {
               stripContinuationMarkers: stripContinuationMarkers,
             );
             if (partial.isNotEmpty) {
-              onPartial(NazaContinuationEngine.join(partialPrefix, partial));
+              onPartial(
+                NazaContinuationEngine.joinForStreamingPaint(
+                  partialPrefix,
+                  partial,
+                ),
+              );
             }
           }
         }
@@ -12025,8 +12139,9 @@ final class NazaLocalGemma {
         }
       }
     } finally {
+      streamFinished = true;
       if (interrupted) {
-        unawaited(iterator.cancel().timeout(const Duration(seconds: 2)));
+        unawaited(cancelIteratorOnce());
       }
     }
 
@@ -12043,12 +12158,22 @@ final class NazaLocalGemma {
       );
     }
 
+    final cleanResponse = _cleanResponse(
+      rawResponse.toString(),
+      preserveLeadingWhitespace: partialPrefix.isNotEmpty,
+      stripContinuationMarkers: stripContinuationMarkers,
+    );
+    if (onPartial != null && cleanResponse.isNotEmpty) {
+      onPartial(
+        NazaContinuationEngine.joinForStreamingPaint(
+          partialPrefix,
+          cleanResponse,
+        ),
+      );
+    }
+
     return NazaStreamResult(
-      text: _cleanResponse(
-        rawResponse.toString(),
-        preserveLeadingWhitespace: partialPrefix.isNotEmpty,
-        stripContinuationMarkers: stripContinuationMarkers,
-      ),
+      text: cleanResponse,
       estimatedTokens: finalEstimatedTokens,
       maxTokens: maxTokens,
       nearTokenCeiling:
@@ -15391,31 +15516,29 @@ final class NazaVectorMemory {
   Future<void> _recordAccess(List<_ScoredMemoryChunk> selected) {
     final selectedIds = selected.map((item) => item.chunk.id).toSet();
     if (selectedIds.isEmpty) return Future<void>.value();
+    final chunks = _chunks;
+    if (chunks == null || chunks.isEmpty) return Future<void>.value();
 
-    final operation = _storageTail.then((_) async {
-      final chunks = await _readChunksNow();
-      if (chunks.isEmpty) return;
-      final now = DateTime.now();
-      var changed = false;
-      final next = chunks
-          .map((chunk) {
-            if (!selectedIds.contains(chunk.id)) return chunk;
-            changed = true;
-            return chunk.copyWith(
-              accessCount: chunk.accessCount + 1,
-              lastAccessedAt: now,
-            );
-          })
-          .toList(growable: false);
-      if (!changed) return;
-      await _writeChunksNow(next);
+    final now = DateTime.now();
+    var changed = false;
+    final next = chunks
+        .map((chunk) {
+          if (!selectedIds.contains(chunk.id)) return chunk;
+          changed = true;
+          return chunk.copyWith(
+            accessCount: chunk.accessCount + 1,
+            lastAccessedAt: now,
+          );
+        })
+        .toList(growable: false);
+    if (changed) {
+      // Keep access telemetry in memory while inference is active. The normal
+      // post-response rememberMessagePair write persists these counters along
+      // with the new chunks, avoiding an extra full JSON/AES/SQLite rewrite of
+      // the large memory record at generation start.
       _chunks = next;
-    });
-    _storageTail = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
+    }
+    return Future<void>.value();
   }
 
   List<String> _workingMemoryTurnIds(
