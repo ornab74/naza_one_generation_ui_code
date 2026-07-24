@@ -1,10 +1,28 @@
 # Naza One
 
 Naza One is a private, local-first Flutter assistant. It runs Gemma through
-LiteRT-LM on the user's device, provides chat plus road and food/water scanner
-workflows, and keeps user-created state in an encrypted SQLite record store.
+LiteRT-LM on the user's device, provides chat plus road, food/water, and pantry
+management workflows, and keeps user-created state in an encrypted SQLite
+record store.
 There is no account, advertising SDK, cloud chat backend, voice mode, or voice
 model pack.
+
+## Pantry Autopilot
+
+The Naza Kitchen workspace includes an approval-gated pantry manager for food
+and household supplies. Users can scan pantry, cupboard, or supply-closet
+photos on a configurable schedule (14 days by default), verify the resulting
+inventory, configure targets and use rates, and build budget-aware
+replenishment plans. Local Gemma can organize search phrases, substitutions,
+and review warnings, but a deterministic engine owns quantities and budget
+selection.
+
+DoorDash's July 2026 `dd-cli` release is a waitlist-gated macOS beta and its
+public announcement does not document a stable command grammar. Naza probes
+only non-purchasing help/version commands and exports an approved JSON agent
+brief; it never guesses checkout flags or executes model text. The brief
+requires a live final-cart review and a fresh confirmation immediately before
+checkout. See [docs/pantry-autopilot.md](docs/pantry-autopilot.md).
 
 ![Naza One demo](./demo.png)
 
@@ -129,6 +147,8 @@ rebuild.
   cryptography and legacy compatibility.
 - `lib/security/post_quantum_recovery.dart` binds separated key-kit and backup
   manifests for setup, verification, and restore.
+- `lib/pantry/` contains pantry vision contracts, encrypted inventory/order
+  persistence, deterministic replenishment, UI, and the DoorDash CLI boundary.
 - `test/` covers vault authentication, tamper detection, rotation, recovery,
   routing, and UI behavior.
 
