@@ -1,7 +1,7 @@
 name: naza_one
 description: A private local-first Gemma chat, scanner, and food vision journal.
 publish_to: none
-version: 1.0.8+9
+version: 1.0.9+10
 
 environment:
   sdk: ^3.12.0
@@ -13,7 +13,7 @@ dependencies:
   crypto: ^3.0.6
   file_selector: ^1.1.0
   flutter_gemma: ^1.3.0
-  flutter_gemma_litertlm: ^1.1.0
+  flutter_gemma_litertlm: ^1.2.0
   flutter_secure_storage: ^10.3.1
   image_picker: ^1.2.3
   path_provider: ^2.1.6
@@ -30,7 +30,7 @@ msix_config:
   display_name: Naza One
   publisher_display_name: Naza
   identity_name: Naza.NazaOne
-  msix_version: 1.0.8.0
+  msix_version: 1.0.9.0
   logo_path: assets/branding/naza_orb_512.png
   capabilities: internetClient
   store: true
