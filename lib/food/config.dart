@@ -14,7 +14,12 @@ final class FoodVisionConfig {
   static const int recipeOutputTokens = 640;
   static const int bakeOutputTokens = 420;
   static const int visionMaxImages = 1;
-  static const int visionMaxImageDimension = 1280;
+
+  // Keep local multimodal prefill bounded. 1280 px inputs can create a large
+  // vision-token and memory spike in LiteRT-LM, especially on Chromebooks and
+  // mobile GPUs. 896 preserves useful OCR/scene detail while substantially
+  // reducing native allocation pressure and first-token stalls.
+  static const int visionMaxImageDimension = 896;
   static const int visionMaxSourceImageBytes = 32 * 1024 * 1024;
   static const int visionMaxImageBytes = 8 * 1024 * 1024;
   static const int runtimeInitTimeoutSeconds = 30;
