@@ -1,8 +1,24 @@
+import 'dart:ffi' show Abi;
+
 import 'package:flutter_gemma/flutter_gemma.dart' show PreferredBackend;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/main.dart';
 
 void main() {
+  group('configured model ABI policy', () {
+    test('rejects Chromebook Android x64 before model download', () {
+      expect(nazaConfiguredModelSupportsAbi(Abi.androidX64), isFalse);
+      expect(
+        const NazaUnsupportedAndroidAbi(Abi.androidX64).toString(),
+        allOf(contains('Chromebook'), contains('Linux x64 build')),
+      );
+    });
+
+    test('accepts the supported Android arm64 runtime', () {
+      expect(nazaConfiguredModelSupportsAbi(Abi.androidArm64), isTrue);
+    });
+  });
+
   group('Naza desktop backend policy', () {
     test('skips automatic GPU startup on Linux without a GPU device', () {
       expect(

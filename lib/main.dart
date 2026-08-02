@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -12,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
+import 'package:image_picker/image_picker.dart' as image_picker;
 import 'package:path_provider/path_provider.dart';
 
 import 'food/food_hub.dart';
@@ -77,6 +79,7 @@ final class NazaAppConfig {
   const NazaAppConfig._();
 
   static const String appName = 'Naza One';
+  static const String signupUrl = 'https://qroadscan.com/register';
   static const String modelFileName = 'gemma-4-E2B-it.litertlm';
   static const String modelPathEnvironmentVariable = 'NAZA_MODEL_PATH';
   static const String modelDownloadUrl =
@@ -239,6 +242,27 @@ Return only the exact scanner schema requested by the user prompt. Keep cues and
 - Output contains no internal diagnostic or prompt-control text.
 [/completion_criteria]
 ''';
+}
+
+bool nazaConfiguredModelSupportsAbi(Abi abi) {
+  return abi != Abi.androidX64 &&
+      abi != Abi.androidArm &&
+      abi != Abi.androidIA32;
+}
+
+final class NazaUnsupportedAndroidAbi implements Exception {
+  final Abi abi;
+
+  const NazaUnsupportedAndroidAbi(this.abi);
+
+  @override
+  String toString() =>
+      'This Chromebook runs Android apps as $abi, but the private '
+      '${NazaAppConfig.modelFileName} runtime supports Android arm64-v8a only. '
+      'CPU mode cannot translate this native model runtime. Install Naza One\'s '
+      'Linux x64 build in ChromeOS Linux instead; it supports this processor. '
+      'Sign up or get release help at ${NazaAppConfig.signupUrl}. The Android '
+      'build is for arm64-v8a phones, tablets, and Chromebooks.';
 }
 
 /// Escapes dynamic values before they enter trusted model-control blocks.
@@ -10158,6 +10182,13 @@ final class NazaLocalGemma {
         clearError: true,
       );
 
+      if (Platform.isAndroid) {
+        final abi = Abi.current();
+        if (!nazaConfiguredModelSupportsAbi(abi)) {
+          throw NazaUnsupportedAndroidAbi(abi);
+        }
+      }
+
       await prepareBackendPreference();
       await bootstrapRuntimeOnly();
 
@@ -11848,6 +11879,9 @@ final class NazaLocalGemma {
   }
 
   String _modelSetupHint(Object error) {
+    if (error is NazaUnsupportedAndroidAbi) {
+      return error.toString();
+    }
     if (error is NazaModelLoadStillRunning) {
       return 'The verified LiteRT-LM engine is still initializing in the '
           'background; no download, reinstall, or second model load is needed.';
@@ -12345,13 +12379,21 @@ final class NazaVisionPickResult {
 typedef NazaVisionPickerCallback = Future<NazaVisionPickResult> Function();
 
 final class NazaVisionPicker {
-  NazaVisionPicker({Future<file_selector.XFile?> Function()? fileOpener})
-    : _fileOpener = fileOpener ?? _openPortableFile;
+  NazaVisionPicker({
+    Future<file_selector.XFile?> Function()? fileOpener,
+    image_picker.ImagePicker? mobilePicker,
+    bool? useMobilePicker,
+  }) : _fileOpener = fileOpener ?? _openPortableFile,
+       _mobilePicker = mobilePicker ?? image_picker.ImagePicker(),
+       _useMobilePicker =
+           useMobilePicker ?? (Platform.isAndroid || Platform.isIOS);
 
   static final NazaVisionPicker instance = NazaVisionPicker();
   static const Set<String> _portableExtensions = {'jpg', 'jpeg', 'png', 'webp'};
 
   final Future<file_selector.XFile?> Function() _fileOpener;
+  final image_picker.ImagePicker _mobilePicker;
+  final bool _useMobilePicker;
 
   Future<NazaVisionPickResult> pick() async {
     try {
@@ -12386,7 +12428,9 @@ final class NazaVisionPicker {
   }
 
   Future<NazaVisionImage?> _pickPortableImage() async {
-    final file = await _fileOpener();
+    final file = _useMobilePicker
+        ? await _openMobileImage()
+        : await _fileOpener();
     if (file == null) return null;
 
     final extension = _extensionOf(file.name);
@@ -12412,6 +12456,29 @@ final class NazaVisionPicker {
       );
     }
     return _normalizePortableImage(sourceBytes, file.name);
+  }
+
+  Future<file_selector.XFile?> _openMobileImage() async {
+    // Android can destroy the activity while its picker intent is open. Recover
+    // that result before starting another request so the attachment is not lost
+    // when the app returns under memory pressure.
+    if (Platform.isAndroid) {
+      final lost = await _mobilePicker.retrieveLostData();
+      if (!lost.isEmpty) {
+        final recovered = lost.files;
+        if (recovered != null && recovered.isNotEmpty) return recovered.first;
+        final error = lost.exception;
+        if (error != null) throw error;
+      }
+    }
+
+    return _mobilePicker.pickImage(
+      source: image_picker.ImageSource.gallery,
+      maxWidth: NazaAppConfig.visionMaxImageDimension.toDouble(),
+      maxHeight: NazaAppConfig.visionMaxImageDimension.toDouble(),
+      imageQuality: 95,
+      requestFullMetadata: false,
+    );
   }
 
   static Future<file_selector.XFile?> _openPortableFile() {
