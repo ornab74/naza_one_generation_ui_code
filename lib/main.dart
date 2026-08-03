@@ -18483,6 +18483,91 @@ class _NazaBackdropPainter extends CustomPainter {
   bool shouldRepaint(covariant _NazaBackdropPainter oldDelegate) => false;
 }
 
+class _ModelWorkingBeacon extends StatefulWidget {
+  const _ModelWorkingBeacon();
+
+  @override
+  State<_ModelWorkingBeacon> createState() => _ModelWorkingBeaconState();
+}
+
+class _ModelWorkingBeaconState extends State<_ModelWorkingBeacon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1550),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Local model is working',
+      child: SizedBox(
+        width: 38,
+        height: 38,
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) => CustomPaint(
+            painter: _ModelWorkingBeaconPainter(_controller.value),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModelWorkingBeaconPainter extends CustomPainter {
+  final double progress;
+
+  const _ModelWorkingBeaconPainter(this.progress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide * 0.13;
+    canvas.drawCircle(
+      center,
+      radius * 2.5,
+      Paint()
+        ..color = NazaPalette.mintSoft.withAlpha(35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+    );
+    canvas.drawCircle(center, radius, Paint()..color = NazaPalette.mintSoft);
+    for (var i = 0; i < 3; i++) {
+      final phase = (progress + i / 3) % 1.0;
+      final orbitRadius = size.shortestSide * (0.16 + phase * 0.34);
+      final angle = phase * math.pi * 2 + i * math.pi * 0.67;
+      final point = Offset(
+        center.dx + math.cos(angle) * orbitRadius,
+        center.dy + math.sin(angle) * orbitRadius,
+      );
+      final opacity = ((1 - phase) * 0.72 + 0.18).clamp(0.0, 1.0);
+      canvas.drawCircle(
+        point,
+        1.7 + (1 - phase) * 1.2,
+        Paint()..color = NazaPalette.mint.withAlpha((opacity * 255).round()),
+      );
+    }
+    canvas.drawCircle(
+      center,
+      size.shortestSide * 0.42,
+      Paint()
+        ..color = NazaPalette.mint.withAlpha(80)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ModelWorkingBeaconPainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
+
 class _TopBar extends StatelessWidget {
   final NazaPanel panel;
   final String status;
@@ -18552,6 +18637,7 @@ class _TopBar extends StatelessWidget {
             ),
           ),
           if (panel == NazaPanel.chat) ...[
+            if (sending) const _ModelWorkingBeacon(),
             IconButton(
               onPressed: sending ? null : onNewThread,
               tooltip: 'Start new thread',

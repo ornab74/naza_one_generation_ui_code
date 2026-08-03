@@ -1,7 +1,7 @@
 name: naza_one
 description: A private local-first Gemma chat, scanner, and food vision journal.
 publish_to: none
-version: 1.0.8+9
+version: 1.0.9+10
 
 environment:
   sdk: ^3.12.0
