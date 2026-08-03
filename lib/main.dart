@@ -111,16 +111,16 @@ final class NazaAppConfig {
   static const String continuationDoneMarker = '<NAZA_CONTINUATION_DONE>';
   static const int streamPaintThrottleMs = 360;
   static const int telemetryThrottleMs = 500;
-  static const int generationIdleTimeoutSeconds = 32;
-  static const int generationTotalTimeoutSeconds = 110;
-  static const int continuationIdleTimeoutSeconds = 20;
-  static const int continuationChatOpenTimeoutSeconds = 8;
-  static const int continuationPromptSubmitTimeoutSeconds = 8;
+  static const int generationIdleTimeoutSeconds = 90;
+  static const int generationTotalTimeoutSeconds = 300;
+  static const int continuationIdleTimeoutSeconds = 45;
+  static const int continuationChatOpenTimeoutSeconds = 12;
+  static const int continuationPromptSubmitTimeoutSeconds = 12;
   // One initial response plus the default three continuation chunks can share
   // one native conversation. Context-window errors still trigger a bounded
   // fresh-session retry when a longer custom continuation run needs it.
   static const int continuationWarmSessionTurns = 4;
-  static const int chatRecoveryTimeoutSeconds = 5;
+  static const int chatRecoveryTimeoutSeconds = 8;
   static const int runtimeInitTimeoutSeconds = 30;
   static const int modelInstallTimeoutSeconds = 300;
   // Native LiteRT-LM engine creation is not cancellable. Keep this above the
@@ -128,7 +128,7 @@ final class NazaAppConfig {
   // a second load while the first one is still allocating the model.
   static const int modelLoadTimeoutSeconds = 150;
   static const int chatOpenTimeoutSeconds = 20;
-  static const int chatAddQueryTimeoutSeconds = 18;
+  static const int chatAddQueryTimeoutSeconds = 30;
   static const int memoryAllocationTimeoutSeconds = 4;
   static const String vaultAad = 'naza-one-vault-v2-generation-ui';
   static const String keyFileName = 'naza_one_vault.key';
