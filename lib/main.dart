@@ -17407,9 +17407,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
       modelPrompt: text,
       visibleUserText: text,
       visionImage: visionImage,
-      workingText: visionImage == null
-          ? 'Naza One is working locally. You can write the next message while it finishes.'
-          : 'Gemma is inspecting the image locally with a bounded vision context.',
+      workingText: '',
       focusComposerWhenDone: true,
       mode: mode,
     );
@@ -18274,6 +18272,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
                   return const _ModelFirstBootCard();
                 }
                 final message = _messages[index - (showModelCard ? 1 : 0)];
+                if (message.isWorking && message.text.trim().isEmpty) {
+                  return const SizedBox.shrink();
+                }
                 return _StableMessageBubble(
                   key: ValueKey<String>(message.id),
                   message: message,
