@@ -51,6 +51,12 @@ you can revisit the food history or re-run an interrupted analysis. Chat image
 history may retain the selected file's name and dimensions. Images are not
 uploaded to a developer-operated service.
 
+Pantry Autopilot uses the same local image path for pantry, cupboard, and
+household-supply photos. It stores structured observations, user-verified
+quantity policies, and replenishment drafts as encrypted local records. Pantry
+records do not intentionally contain DoorDash credentials, payment-card data,
+or a full delivery address.
+
 ### Passwords and recovery material
 
 The boot password is used locally to derive an encryption key with Argon2id. It
@@ -149,6 +155,7 @@ Locally processed information is used to:
 - restore drafts and preferences;
 - process an image you deliberately capture or select;
 - maintain an encrypted fridge and bake-analysis history;
+- maintain encrypted pantry inventory and replenishment drafts;
 - verify the downloaded model and maintain security state;
 - display local status, errors, and diagnostics;
 - create an encrypted backup when you request one.
@@ -163,7 +170,9 @@ handled in these limited circumstances:
 2. **Model delivery.** Hugging Face and its infrastructure receive the network
    request used to download the model.
 3. **Operating-system services.** The camera, system file or photo picker, and
-   secure credential store operate under the platform provider's policies.
+   secure credential store operate under the platform provider's policies. If
+   you copy an approved DoorDash agent brief, the system clipboard and software
+   you paste it into receive that brief under their own policies.
 4. **Legal and safety matters.** The developer may disclose information
    actually available to them when required by valid legal process or needed to
    protect rights and safety. Because there is no conversation server, the

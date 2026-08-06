@@ -84,6 +84,22 @@ missing or unauthenticated attestation, partial download, or digest mismatch
 invalidates trust and fails closed. The model itself is integrity-protected but
 not encrypted because it is public model data.
 
+## Pantry commerce boundary
+
+Pantry photos and replenishment records follow the existing local-model and
+encrypted-record boundaries. Vision output is treated as untrusted evidence:
+unseen items are not marked absent, and newly observed items start with
+automatic replenishment disabled until the user reviews their policy.
+
+The DoorDash bridge does not evaluate model output as code or construct an
+undocumented checkout command. On supported macOS systems it runs only
+non-purchasing `dd-cli --version` and `dd-cli --help` probes, then creates a
+bounded JSON brief from a locally approved plan. That approval is not checkout
+authority. The brief requires the live merchant, cart, substitutions, taxes,
+fees, tip, delivery-address summary, and total to be displayed for a fresh
+confirmation immediately before purchase. DoorDash authentication and payment
+secrets remain outside the Naza vault.
+
 ## Default hybrid post-quantum recovery
 
 ML-KEM is used only where two separately held key components are meaningful:

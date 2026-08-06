@@ -56,6 +56,7 @@ class FoodVisionHub extends StatefulWidget {
   final FoodRecipeRegenerator regenerateRecipes;
   final VoidCallback onCancel;
   final Widget? foodSafetyChild;
+  final Widget? pantryAutopilotChild;
   final FoodVisionDraftController? draftController;
 
   const FoodVisionHub({
@@ -67,6 +68,7 @@ class FoodVisionHub extends StatefulWidget {
     required this.regenerateRecipes,
     required this.onCancel,
     this.foodSafetyChild,
+    this.pantryAutopilotChild,
     this.draftController,
   });
 
@@ -74,7 +76,7 @@ class FoodVisionHub extends StatefulWidget {
   State<FoodVisionHub> createState() => _FoodVisionHubState();
 }
 
-enum _FoodHubTab { fridge, recipes, bake, safety }
+enum _FoodHubTab { fridge, pantry, recipes, bake, safety }
 
 enum _HubTask {
   loadingHistory,
@@ -658,6 +660,11 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
                         label: 'Fridge',
                       ),
                       NavigationDestination(
+                        icon: Icon(Icons.auto_awesome_motion_outlined),
+                        selectedIcon: Icon(Icons.auto_awesome_motion_rounded),
+                        label: 'Pantry',
+                      ),
+                      NavigationDestination(
                         icon: Icon(Icons.menu_book_outlined),
                         selectedIcon: Icon(Icons.menu_book_rounded),
                         label: 'Recipes',
@@ -717,6 +724,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
                     : () => unawaited(_analyzeFridge()),
                 onOpenRecipes: () => _selectTab(_FoodHubTab.recipes),
               ),
+              widget.pantryAutopilotChild ?? const _MissingPantryAutopilot(),
               _RecipesTab(
                 sourceLog: _latestFridgeLog,
                 busy: _busy,
@@ -792,6 +800,23 @@ final class _FoodColors {
   static const sky = Color(0xFF7FD7FF);
 }
 
+class _MissingPantryAutopilot extends StatelessWidget {
+  const _MissingPantryAutopilot();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text(
+          'Pantry Autopilot is unavailable in this host configuration.',
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+}
+
 class _HubMark extends StatelessWidget {
   const _HubMark();
 
@@ -830,6 +855,11 @@ class _HubRail extends StatelessWidget {
           icon: Icon(Icons.kitchen_outlined),
           selectedIcon: Icon(Icons.kitchen_rounded),
           label: Text('Fridge'),
+        ),
+        NavigationRailDestination(
+          icon: Icon(Icons.auto_awesome_motion_outlined),
+          selectedIcon: Icon(Icons.auto_awesome_motion_rounded),
+          label: Text('Pantry'),
         ),
         NavigationRailDestination(
           icon: Icon(Icons.menu_book_outlined),

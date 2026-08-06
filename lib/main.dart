@@ -21,6 +21,11 @@ import 'food/models.dart';
 import 'food/photo_picker.dart';
 import 'food/prompts.dart';
 import 'food/repository.dart';
+import 'pantry/doordash_cli.dart';
+import 'pantry/models.dart';
+import 'pantry/pantry_hub.dart';
+import 'pantry/prompts.dart';
+import 'pantry/repository.dart';
 import 'security/post_quantum_export.dart';
 import 'security/post_quantum_recovery.dart';
 import 'security/secure_database.dart';
@@ -17239,6 +17244,8 @@ class NazaStableHome extends StatefulWidget {
   final bool initializeServices;
   final FoodRepository? foodRepository;
   final FoodPhotoPicker? foodPhotoPicker;
+  final PantryRepository? pantryRepository;
+  final DoorDashOrderingGateway? doorDashOrderingGateway;
   final NazaPanel initialPanel;
 
   const NazaStableHome({
@@ -17247,6 +17254,8 @@ class NazaStableHome extends StatefulWidget {
     this.initializeServices = true,
     this.foodRepository,
     this.foodPhotoPicker,
+    this.pantryRepository,
+    this.doorDashOrderingGateway,
     this.initialPanel = NazaPanel.chat,
   });
 
@@ -17261,6 +17270,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
   final ScrollController _scrollController = ScrollController();
   late final FoodRepository _foodRepository;
   late final FoodPhotoPicker _foodPhotoPicker;
+  late final PantryRepository _pantryRepository;
+  late final DoorDashOrderingGateway _doorDashOrderingGateway;
   final FoodVisionDraftController _foodVisionDraft =
       FoodVisionDraftController();
 
@@ -17299,6 +17310,13 @@ class _NazaStableHomeState extends State<NazaStableHome>
             ? EncryptedFoodRepository()
             : MemoryFoodRepository());
     _foodPhotoPicker = widget.foodPhotoPicker ?? FoodPhotoPicker.instance;
+    _pantryRepository =
+        widget.pantryRepository ??
+        (widget.initializeServices
+            ? EncryptedPantryRepository()
+            : MemoryPantryRepository());
+    _doorDashOrderingGateway =
+        widget.doorDashOrderingGateway ?? DoorDashCliGateway();
     WidgetsBinding.instance.addObserver(this);
     if (widget.initializeServices) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -17785,6 +17803,117 @@ class _NazaStableHomeState extends State<NazaStableHome>
           _sending = false;
           _stopping = false;
           _status = 'food vision ready';
+        });
+      }
+    }
+  }
+
+  Future<PantryScanResult> _analyzePantryImage(
+    FoodVisionImage image,
+    String zone,
+    String note,
+    List<PantryItem> priorItems,
+  ) async {
+    if (_sending) {
+      return PantryScanResult.failed(
+        'Another local model task is already running.',
+      );
+    }
+    setState(() {
+      _sending = true;
+      _stopping = false;
+      _status = 'mapping pantry supplies locally';
+    });
+    try {
+      final response = await NazaLocalGemma.instance.send(
+        PantryPrompts.inventoryPhoto(
+          image: image,
+          zone: zone,
+          note: note,
+          priorItems: priorItems,
+        ),
+        historyUserText: 'Private pantry and household-supply photo analysis',
+        visionImage: NazaVisionImage(
+          bytes: image.bytes,
+          name: image.name,
+          width: image.width,
+          height: image.height,
+        ),
+        useMemory: false,
+        persistTurn: false,
+        maxContinuationsOverride: 0,
+        origin: NazaGenerationOrigin.scanner,
+        routeOverride: 'pantry-inventory-vision',
+        systemInstructionOverride: PantryPrompts.inventorySystemInstruction,
+      );
+      if (response.cancelled) {
+        return PantryScanResult.failed('Pantry analysis stopped.');
+      }
+      if (response.route.contains('error') ||
+          response.route.contains('unavailable')) {
+        return PantryScanResult.failed(response.text);
+      }
+      return PantryScanResult.fromModelText(response.text);
+    } catch (error) {
+      return PantryScanResult.failed(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _stopping = false;
+          _status = 'pantry autopilot ready';
+        });
+      }
+    }
+  }
+
+  Future<PantryPlanAdvisory> _generatePantryAdvisory(
+    PantryState state,
+    PantryOrderPlan plan,
+  ) async {
+    if (_sending) {
+      return const PantryPlanAdvisory(
+        warnings: <String>['Another local model task is already running.'],
+      );
+    }
+    setState(() {
+      _sending = true;
+      _stopping = false;
+      _status = 'organizing pantry order locally';
+    });
+    try {
+      final response = await NazaLocalGemma.instance.send(
+        PantryPrompts.orderAdvisory(state: state, plan: plan),
+        historyUserText: 'Organize the approved pantry replenishment draft',
+        useMemory: false,
+        persistTurn: false,
+        maxContinuationsOverride: 0,
+        origin: NazaGenerationOrigin.scanner,
+        routeOverride: 'pantry-order-advisory',
+        systemInstructionOverride: PantryPrompts.advisorySystemInstruction,
+      );
+      if (response.cancelled ||
+          response.route.contains('error') ||
+          response.route.contains('unavailable')) {
+        return PantryPlanAdvisory(
+          warnings: <String>[
+            response.text.trim().isEmpty
+                ? 'Local order advice did not complete.'
+                : response.text,
+          ],
+        );
+      }
+      return PantryPlanAdvisory.fromModelText(response.text);
+    } catch (error) {
+      return PantryPlanAdvisory(
+        warnings: <String>['Local order advice failed: $error'],
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _stopping = false;
+          _status = 'pantry autopilot ready';
         });
       }
     }
@@ -18301,6 +18430,14 @@ class _NazaStableHomeState extends State<NazaStableHome>
           regenerateRecipes: _regenerateFoodRecipes,
           onCancel: _stopActiveGeneration,
           draftController: _foodVisionDraft,
+          pantryAutopilotChild: PantryAutopilotHub(
+            repository: _pantryRepository,
+            photoPicker: _foodPhotoPicker,
+            analyzeImage: _analyzePantryImage,
+            generateAdvisory: _generatePantryAdvisory,
+            orderingGateway: _doorDashOrderingGateway,
+            onCancel: _stopActiveGeneration,
+          ),
           foodSafetyChild: _FoodWaterScannerPanel(
             embedded: true,
             actionsEnabled: !_sending,
