@@ -233,7 +233,6 @@ jobs:
           $appFilesXml = Get-Content $appFilesPath -Raw
           $escapedReleaseDir = $releaseDir.Replace('&', '&amp;').Replace("'", '&apos;').Replace('"', '&quot;')
           $appFilesXml = $appFilesXml.Replace('SourceDir\', "$escapedReleaseDir\")
-          $appFilesXml = $appFilesXml.Replace('%5B', '[').Replace('%5D', ']')
           Set-Content -Path $appFilesPath -Value $appFilesXml -Encoding UTF8
 
           # Validate every harvested payload before compiling the installer.
