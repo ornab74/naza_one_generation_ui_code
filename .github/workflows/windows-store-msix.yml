@@ -67,14 +67,32 @@ jobs:
 
       - name: Validate generated manifest
         shell: pwsh
+        env:
+          WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
         run: |
           $ErrorActionPreference = 'Stop'
           $msix = Get-ChildItem -Path build/windows -Recurse -Filter '*.msix' | Select-Object -First 1
           if (-not $msix) { throw 'Generated MSIX was not found.' }
 
+          $makeAppx = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Recurse -Filter 'makeappx.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\makeappx\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          if (-not $makeAppx) {
+            throw 'makeappx.exe was not found in the installed Windows SDK.'
+          }
+
+          Write-Host "Using MakeAppx: $($makeAppx.FullName)"
           $unpackDir = Join-Path $env:RUNNER_TEMP 'naza-one-msix-validation'
+          Remove-Item -Path $unpackDir -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $unpackDir -Force | Out-Null
-          makeappx unpack /p $msix.FullName /d $unpackDir /o | Out-Null
+
+          & $makeAppx.FullName unpack /p $msix.FullName /d $unpackDir /o | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "MakeAppx unpack failed with exit code $LASTEXITCODE"
+          }
 
           [xml]$manifest = Get-Content (Join-Path $unpackDir 'AppxManifest.xml') -Raw
           $publisherDisplayName = $manifest.Package.Properties.PublisherDisplayName
