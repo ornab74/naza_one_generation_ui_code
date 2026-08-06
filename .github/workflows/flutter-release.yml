@@ -232,7 +232,7 @@ jobs:
           & "$wixDir\candle.exe" -out "$installerDir\" "$installerDir\Product.wxs" "$installerDir\AppFiles.wxs"
           if ($LASTEXITCODE -ne 0) { throw "candle.exe failed with exit code $LASTEXITCODE" }
 
-          & "$wixDir\light.exe" -ext WixUIExtension -cultures:en-us -out "naza-one-windows-x64.msi" "$installerDir\Product.wixobj" "$installerDir\AppFiles.wixobj"
+          & "$wixDir\light.exe" -b "$releaseDir" -ext WixUIExtension -cultures:en-us -out "naza-one-windows-x64.msi" "$installerDir\Product.wixobj" "$installerDir\AppFiles.wixobj"
           if ($LASTEXITCODE -ne 0) { throw "light.exe failed with exit code $LASTEXITCODE" }
 
           if (-not (Test-Path "naza-one-windows-x64.msi")) { throw 'MSI output was not created' }
