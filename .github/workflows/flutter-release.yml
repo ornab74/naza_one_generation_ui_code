@@ -181,15 +181,21 @@ jobs:
       - name: Build Windows MSI
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+
           $wix = Get-Command candle.exe -ErrorAction SilentlyContinue
           if (-not $wix) {
             choco install wixtoolset --no-progress --yes
+            if ($LASTEXITCODE -ne 0) { throw "WiX installation failed with exit code $LASTEXITCODE" }
           }
 
           $wixDir = Split-Path (Get-Command candle.exe -ErrorAction Stop).Source
           $releaseDir = "$PWD\build\windows\x64\runner\Release"
           $installerDir = "$PWD\installer"
+          $iconPath = "$PWD\windows\runner\resources\app_icon.ico"
           New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
+
+          if (-not (Test-Path $iconPath)) { throw "MSI icon not found: $iconPath" }
 
           $versionLine = Get-Content pubspec.yaml | Select-String '^version:' | Select-Object -First 1
           if (-not $versionLine) { throw 'pubspec version not found' }
@@ -203,6 +209,9 @@ jobs:
               <Package InstallerVersion='500' Compressed='yes' InstallScope='perMachine' />
               <MediaTemplate />
               <MajorUpgrade DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />
+              <Icon Id='NazaOneIcon' SourceFile='$iconPath' />
+              <Property Id='ARPPRODUCTICON' Value='NazaOneIcon' />
+              <Property Id='ARPHELPLINK' Value='https://github.com/ornab74/naza_one_generation_ui_code' />
               <UIRef Id='WixUI_Minimal' />
               <Directory Id='TARGETDIR' Name='SourceDir'>
                 <Directory Id='ProgramFilesFolder'>
@@ -217,9 +226,16 @@ jobs:
           "@
           Set-Content -Path "$installerDir\Product.wxs" -Value $productWxs -Encoding UTF8
 
-          & "$wixDir\heat.exe" dir "$releaseDir" -gg -scom -sfrag -srd -dr INSTALLFOLDER -cg AppFiles -out "$installerDir\AppFiles.wxs"
-          & "$wixDir\candle.exe" "$installerDir\Product.wxs" "$installerDir\AppFiles.wxs" -out "$installerDir\Product.wixobj"
+          & "$wixDir\heat.exe" dir "$releaseDir" -gg -scom -sreg -sfrag -srd -dr INSTALLFOLDER -cg AppFiles -out "$installerDir\AppFiles.wxs"
+          if ($LASTEXITCODE -ne 0) { throw "heat.exe failed with exit code $LASTEXITCODE" }
+
+          & "$wixDir\candle.exe" -out "$installerDir\" "$installerDir\Product.wxs" "$installerDir\AppFiles.wxs"
+          if ($LASTEXITCODE -ne 0) { throw "candle.exe failed with exit code $LASTEXITCODE" }
+
           & "$wixDir\light.exe" -ext WixUIExtension -cultures:en-us -out "naza-one-windows-x64.msi" "$installerDir\Product.wixobj" "$installerDir\AppFiles.wixobj"
+          if ($LASTEXITCODE -ne 0) { throw "light.exe failed with exit code $LASTEXITCODE" }
+
+          if (-not (Test-Path "naza-one-windows-x64.msi")) { throw 'MSI output was not created' }
 
       - name: Build optional Microsoft Store MSIX
         if: github.event_name != 'pull_request'
