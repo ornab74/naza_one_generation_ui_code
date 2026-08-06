@@ -190,12 +190,10 @@ jobs:
           }
 
           $wixDir = Split-Path (Get-Command candle.exe -ErrorAction Stop).Source
-          $releaseDir = "$PWD\build\windows\x64\runner\Release"
+          $releaseDir = (Resolve-Path "$PWD\build\windows\x64\runner\Release").Path
           $installerDir = "$PWD\installer"
-          $iconPath = "$PWD\windows\runner\resources\app_icon.ico"
+          $iconPath = (Resolve-Path "$PWD\windows\runner\resources\app_icon.ico").Path
           New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
-
-          if (-not (Test-Path $iconPath)) { throw "MSI icon not found: $iconPath" }
 
           $versionLine = Get-Content pubspec.yaml | Select-String '^version:' | Select-Object -First 1
           if (-not $versionLine) { throw 'pubspec version not found' }
@@ -226,13 +224,35 @@ jobs:
           "@
           Set-Content -Path "$installerDir\Product.wxs" -Value $productWxs -Encoding UTF8
 
-          & "$wixDir\heat.exe" dir "$releaseDir" -gg -scom -sreg -sfrag -srd -dr INSTALLFOLDER -cg AppFiles -out "$installerDir\AppFiles.wxs"
+          $appFilesPath = "$installerDir\AppFiles.wxs"
+          & "$wixDir\heat.exe" dir "$releaseDir" -gg -scom -sreg -sfrag -srd -dr INSTALLFOLDER -cg AppFiles -out $appFilesPath
           if ($LASTEXITCODE -ne 0) { throw "heat.exe failed with exit code $LASTEXITCODE" }
 
-          & "$wixDir\candle.exe" -out "$installerDir\" "$installerDir\Product.wxs" "$installerDir\AppFiles.wxs"
+          # Heat emits SourceDir-relative paths. Replace them with absolute paths so
+          # Light does not depend on working-directory or bind-path interpretation.
+          $appFilesXml = Get-Content $appFilesPath -Raw
+          $escapedReleaseDir = $releaseDir.Replace('&', '&amp;').Replace("'", '&apos;').Replace('"', '&quot;')
+          $appFilesXml = $appFilesXml.Replace('SourceDir\', "$escapedReleaseDir\")
+          $appFilesXml = $appFilesXml.Replace('%5B', '[').Replace('%5D', ']')
+          Set-Content -Path $appFilesPath -Value $appFilesXml -Encoding UTF8
+
+          # Validate every harvested payload before compiling the installer.
+          [xml]$harvested = Get-Content $appFilesPath -Raw
+          $namespace = New-Object System.Xml.XmlNamespaceManager($harvested.NameTable)
+          $namespace.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
+          $missing = @()
+          foreach ($file in $harvested.SelectNodes('//w:File', $namespace)) {
+            $source = [System.Net.WebUtility]::HtmlDecode($file.Source)
+            if (-not (Test-Path -LiteralPath $source)) { $missing += $source }
+          }
+          if ($missing.Count -gt 0) {
+            throw "WiX payload validation failed. Missing files:`n$($missing -join "`n")"
+          }
+
+          & "$wixDir\candle.exe" -out "$installerDir\" "$installerDir\Product.wxs" $appFilesPath
           if ($LASTEXITCODE -ne 0) { throw "candle.exe failed with exit code $LASTEXITCODE" }
 
-          & "$wixDir\light.exe" -b "$releaseDir" -ext WixUIExtension -cultures:en-us -out "naza-one-windows-x64.msi" "$installerDir\Product.wixobj" "$installerDir\AppFiles.wixobj"
+          & "$wixDir\light.exe" -ext WixUIExtension -cultures:en-us -out "naza-one-windows-x64.msi" "$installerDir\Product.wixobj" "$installerDir\AppFiles.wixobj"
           if ($LASTEXITCODE -ne 0) { throw "light.exe failed with exit code $LASTEXITCODE" }
 
           if (-not (Test-Path "naza-one-windows-x64.msi")) { throw 'MSI output was not created' }
