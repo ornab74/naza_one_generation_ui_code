@@ -178,6 +178,49 @@ jobs:
         run: |
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath naza-one-windows-x64.zip -Force
 
+      - name: Build Windows MSI
+        shell: pwsh
+        run: |
+          $wix = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if (-not $wix) {
+            choco install wixtoolset --no-progress --yes
+          }
+
+          $wixDir = Split-Path (Get-Command candle.exe -ErrorAction Stop).Source
+          $releaseDir = "$PWD\build\windows\x64\runner\Release"
+          $installerDir = "$PWD\installer"
+          New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
+
+          $versionLine = Get-Content pubspec.yaml | Select-String '^version:' | Select-Object -First 1
+          if (-not $versionLine) { throw 'pubspec version not found' }
+          $version = ($versionLine -replace '^version:\s*', '').Split('+')[0]
+          if ($version -match '^\d+\.\d+\.\d+$') { $version = "$version.0" }
+
+          $productWxs = @"
+          <?xml version='1.0' encoding='UTF-8'?>
+          <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+            <Product Id='*' Name='Naza One' Language='1033' Version='$version' Manufacturer='Naza' UpgradeCode='D4F4A2E4-7E74-4D06-8E45-0A8CD1BA1C2E'>
+              <Package InstallerVersion='500' Compressed='yes' InstallScope='perMachine' />
+              <MediaTemplate />
+              <MajorUpgrade DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />
+              <UIRef Id='WixUI_Minimal' />
+              <Directory Id='TARGETDIR' Name='SourceDir'>
+                <Directory Id='ProgramFilesFolder'>
+                  <Directory Id='INSTALLFOLDER' Name='Naza One' />
+                </Directory>
+              </Directory>
+              <Feature Id='ProductFeature' Title='Naza One' Level='1'>
+                <ComponentGroupRef Id='AppFiles' />
+              </Feature>
+            </Product>
+          </Wix>
+          "@
+          Set-Content -Path "$installerDir\Product.wxs" -Value $productWxs -Encoding UTF8
+
+          & "$wixDir\heat.exe" dir "$releaseDir" -gg -scom -sfrag -srd -dr INSTALLFOLDER -cg AppFiles -out "$installerDir\AppFiles.wxs"
+          & "$wixDir\candle.exe" "$installerDir\Product.wxs" "$installerDir\AppFiles.wxs" -out "$installerDir\Product.wixobj"
+          & "$wixDir\light.exe" -ext WixUIExtension -cultures:en-us -out "naza-one-windows-x64.msi" "$installerDir\Product.wixobj" "$installerDir\AppFiles.wixobj"
+
       - name: Build optional Microsoft Store MSIX
         if: github.event_name != 'pull_request'
         shell: pwsh
@@ -222,6 +265,7 @@ jobs:
           name: Naza-One-Windows-x64
           path: |
             naza-one-windows-x64.zip
+            naza-one-windows-x64.msi
             build/windows/**/*.msix
           if-no-files-found: error
 
