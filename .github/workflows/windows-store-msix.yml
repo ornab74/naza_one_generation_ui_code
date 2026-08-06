@@ -18,7 +18,7 @@ env:
   FLUTTER_VERSION: "3.44.4"
   STORE_DISPLAY_NAME: "Naza One"
   STORE_PUBLISHER_DISPLAY_NAME: "Graylan Janulis"
-  STORE_IDENTITY_NAME: "Naza.NazaOne"
+  STORE_IDENTITY_NAME: "GraylanJanulis.NazaOne"
 
 jobs:
   store-msix:
