@@ -28,9 +28,9 @@ dev_dependencies:
 
 msix_config:
   display_name: Naza One
-  publisher_display_name: Naza
+  publisher_display_name: Graylan Janulis
   identity_name: Naza.NazaOne
-  msix_version: 1.0.8.0
+  msix_version: 1.0.9.0
   logo_path: assets/branding/naza_orb_512.png
   capabilities: internetClient
   store: true
