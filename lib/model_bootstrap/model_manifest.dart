@@ -1,5 +1,58 @@
 import 'package:dart_ipfs/dart_ipfs.dart';
 
+/// Reproducible UnixFS settings used both when publishing and when locally
+/// attaching the verified model to a low-resource Kubo filestore.
+///
+/// Keep these values identical to the options used for the original IPFS
+/// upload. A different chunker, CID version, leaf format, or DAG layout creates
+/// a different root CID even when the model bytes are identical.
+class ModelSeedProfile {
+  const ModelSeedProfile({
+    this.cidVersion = 1,
+    this.hashFunction = 'sha2-256',
+    this.chunker = 'size-262144',
+    this.rawLeaves = true,
+    this.trickle = false,
+  });
+
+  final int cidVersion;
+  final String hashFunction;
+  final String chunker;
+  final bool rawLeaves;
+  final bool trickle;
+
+  void validate() {
+    if (cidVersion != 1) {
+      throw const ModelManifestException(
+        'Low-resource no-copy seeding requires CIDv1.',
+      );
+    }
+    if (hashFunction != 'sha2-256') {
+      throw const ModelManifestException(
+        'Only sha2-256 IPFS blocks are supported for model seeding.',
+      );
+    }
+    if (!RegExp(r'^size-[1-9][0-9]{3,7}$').hasMatch(chunker)) {
+      throw const ModelManifestException('Unsafe or unsupported IPFS chunker.');
+    }
+    if (!rawLeaves) {
+      throw const ModelManifestException(
+        'No-copy filestore seeding requires raw UnixFS leaves.',
+      );
+    }
+  }
+
+  List<String> get kuboAddArguments => <String>[
+    '--cid-version=$cidVersion',
+    '--hash=$hashFunction',
+    '--chunker=$chunker',
+    '--raw-leaves=$rawLeaves',
+    '--trickle=$trickle',
+  ];
+
+  String get publishingCommandArguments => kuboAddArguments.join(' ');
+}
+
 /// Immutable, security-sensitive metadata for one downloadable model.
 ///
 /// Replace [cid] and [sha256] only after the final model file has been added to
@@ -16,6 +69,7 @@ class ModelManifest {
       'cloudflare-ipfs.com',
       'dweb.link',
     ],
+    this.seedProfile = const ModelSeedProfile(),
   });
 
   final String fileName;
@@ -23,6 +77,7 @@ class ModelManifest {
   final String sha256;
   final int? expectedBytes;
   final List<String> gatewayHosts;
+  final ModelSeedProfile seedProfile;
 
   bool get isConfigured =>
       cid.isNotEmpty &&
@@ -80,6 +135,8 @@ class ModelManifest {
         throw ModelManifestException('Unsafe gateway host: $host');
       }
     }
+
+    seedProfile.validate();
   }
 
   Iterable<Uri> get gatewayUris sync* {
@@ -108,6 +165,8 @@ class ModelManifestException implements Exception {
 /// 1. Replace [cid] with the immutable IPFS CID.
 /// 2. Replace [sha256] with the independently calculated SHA-256.
 /// 3. Set [expectedBytes] to the exact byte count when known.
+/// 4. Upload with the exact [seedProfile] settings so every seeder recreates
+///    the same UnixFS root CID without copying the model into a second store.
 ///
 /// Until then, the boot screen safely allows the app to continue without
 /// attempting a download.
@@ -116,4 +175,11 @@ const primaryModelManifest = ModelManifest(
   cid: 'REPLACE_WITH_IPFS_CID',
   sha256: 'REPLACE_WITH_64_CHARACTER_SHA256',
   expectedBytes: null,
+  seedProfile: ModelSeedProfile(
+    cidVersion: 1,
+    hashFunction: 'sha2-256',
+    chunker: 'size-262144',
+    rawLeaves: true,
+    trickle: false,
+  ),
 );
