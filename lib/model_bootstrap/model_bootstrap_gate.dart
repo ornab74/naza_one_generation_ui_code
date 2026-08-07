@@ -2,15 +2,21 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'low_resource_model_seeder.dart';
 import 'model_manifest.dart';
 import 'secure_model_downloader.dart';
 
 typedef AppLauncher = FutureOr<void> Function();
 
 class ModelBootstrapGate extends StatefulWidget {
-  const ModelBootstrapGate({required this.launchApp, super.key});
+  const ModelBootstrapGate({
+    required this.launchApp,
+    required this.modelSeeder,
+    super.key,
+  });
 
   final AppLauncher launchApp;
+  final LowResourceModelSeeder modelSeeder;
 
   @override
   State<ModelBootstrapGate> createState() => _ModelBootstrapGateState();
@@ -21,6 +27,7 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
   ModelDownloadProgress _progress = const ModelDownloadProgress(
     phase: ModelDownloadPhase.checking,
   );
+  ModelSeedStatus? _seedStatus;
   String? _error;
   bool _launching = false;
 
@@ -32,7 +39,10 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
   }
 
   Future<void> _bootstrap() async {
-    setState(() => _error = null);
+    setState(() {
+      _error = null;
+      _seedStatus = null;
+    });
 
     if (!primaryModelManifest.isConfigured) {
       setState(() {
@@ -44,12 +54,28 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
     }
 
     try {
-      await _downloader.ensureModel(
+      final model = await _downloader.ensureModel(
         manifest: primaryModelManifest,
         onProgress: (progress) {
           if (mounted) setState(() => _progress = progress);
         },
       );
+
+      if (mounted) {
+        setState(() {
+          _seedStatus = const ModelSeedStatus(
+            state: ModelSeedState.configuring,
+            message: 'Preparing low-resource IPFS seeding.',
+          );
+        });
+      }
+
+      final seedStatus = await widget.modelSeeder.start(
+        model: model,
+        manifest: primaryModelManifest,
+      );
+      if (mounted) setState(() => _seedStatus = seedStatus);
+
       await _launch();
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
@@ -65,6 +91,8 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
   @override
   void dispose() {
     _downloader.close();
+    // The seeder is intentionally owned by main.dart rather than this boot
+    // screen so replacing the root app does not stop an active seed session.
     super.dispose();
   }
 
@@ -120,13 +148,14 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
                         ),
                         const SizedBox(height: 24),
                         LinearProgressIndicator(
-                          value: _progress.fraction,
+                          value: _seedStatus == null ? _progress.fraction : null,
                           minHeight: 9,
                           borderRadius: BorderRadius.circular(99),
                         ),
                         const SizedBox(height: 12),
                         Text(
                           _detailText,
+                          textAlign: TextAlign.center,
                           style: const TextStyle(
                             color: Color(0xFF8CA79D),
                             fontFamily: 'JetBrainsMono',
@@ -173,7 +202,7 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
                         const SizedBox(height: 22),
                         const Text(
                           'HTTPS gateways • immutable IPFS CID • SHA-256 '
-                          'verification • atomic install',
+                          'verification • no-copy low-power seeding',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Color(0xFF638579),
@@ -195,6 +224,8 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
   String get _statusText {
     if (_launching) return 'Opening the verified local AI workspace…';
     if (_error != null) return 'Model setup needs attention.';
+    final seedStatus = _seedStatus;
+    if (seedStatus != null) return seedStatus.message;
     switch (_progress.phase) {
       case ModelDownloadPhase.checking:
         return 'Checking the local model and its manifest values.';
@@ -208,6 +239,19 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
   }
 
   String get _detailText {
+    final seedStatus = _seedStatus;
+    if (seedStatus != null) {
+      return switch (seedStatus.state) {
+        ModelSeedState.seeding =>
+          '1 CPU thread • 256 MiB memory target • 8 connections max',
+        ModelSeedState.unavailable =>
+          'Install Kubo to enable desktop seeding; the app still runs normally.',
+        ModelSeedState.unsupported =>
+          'Seeding is available on desktop platforms with Kubo.',
+        _ => seedStatus.state.name.toUpperCase(),
+      };
+    }
+
     final host = _progress.gatewayHost;
     final received = _formatBytes(_progress.receivedBytes);
     final total = _progress.totalBytes;
