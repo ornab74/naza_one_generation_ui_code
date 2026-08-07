@@ -6,6 +6,27 @@ void main() {
     expect(primaryModelManifest.isConfigured, isFalse);
   });
 
+  test('default seed profile is deterministic and low-copy compatible', () {
+    const profile = ModelSeedProfile();
+
+    expect(profile.validate, returnsNormally);
+    expect(
+      profile.kuboAddArguments,
+      containsAll(<String>[
+        '--cid-version=1',
+        '--hash=sha2-256',
+        '--chunker=size-262144',
+        '--raw-leaves=true',
+        '--trickle=false',
+      ]),
+    );
+  });
+
+  test('rejects a seed profile without raw leaves', () {
+    const profile = ModelSeedProfile(rawLeaves: false);
+    expect(profile.validate, throwsA(isA<ModelManifestException>()));
+  });
+
   test('rejects traversal file names', () {
     const manifest = ModelManifest(
       fileName: '../model.bin',
