@@ -11,10 +11,6 @@ import 'security_kernel.dart';
 
 /// High-level hardened runtime that composes the vault controller, derived
 /// identities, persistent forward-secure audit, and guardian-managed roots.
-///
-/// This is intentionally a facade rather than a rewrite of the already-tested
-/// encrypted vault. It makes the hardened components mandatory at runtime while
-/// preserving the existing VUK/DEK implementation.
 final class NazaHardenedSecurityRuntime {
   NazaHardenedSecurityRuntime({
     required this.vault,
@@ -186,6 +182,7 @@ final class NazaHardenedSecurityRuntime {
     return NazaHardenedVaultController(
       vault: vault,
       secureStore: secureStore,
+      keyGuardian: guardian,
       appIdentity: appIdentity,
       modelIdentity: identities.modelIdentity,
       policyIdentity: identities.trustPolicyIdentity,
@@ -213,6 +210,12 @@ final class NazaHardenedSecurityRuntime {
       vaultId: state.vaultId,
       purpose: NazaGuardianPurpose.auditRoot,
     );
+    if (_capabilityRoot!.exportable || _auditRoot!.exportable) {
+      throw const NazaSecurityException(
+        'guardian_exportable_root',
+        'Hardened runtime roots must be represented by non-exportable handles.',
+      );
+    }
 
     final derived = await guardian.deriveEphemeralSecret(
       handle: _capabilityRoot!,
