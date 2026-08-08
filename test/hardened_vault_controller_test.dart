@@ -127,7 +127,11 @@ void main() {
         isA<NazaSecurityException>().having(
           (error) => error.code,
           'code',
-          anyOf('rollback_detected', 'rollback_state_missing'),
+          anyOf(
+            'rollback_detected',
+            'rollback_state_missing',
+            'security_state_missing',
+          ),
         ),
       ),
     );
