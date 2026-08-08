@@ -259,17 +259,22 @@ final class NazaHardenedSecurityRuntime {
         'format': 'naza-audit-checkpoint-v2',
       },
     );
+    NazaPersistentForwardAudit? candidateAudit;
     try {
-      final audit = NazaPersistentForwardAudit(
+      candidateAudit = NazaPersistentForwardAudit(
         vault: vault,
         secureStore: secureStore,
         vaultId: state.vaultId,
         checkpointKey: checkpointKey,
       );
-      await audit.initialize();
-      await audit.verifyRecent();
+      await candidateAudit.initialize();
+      await candidateAudit.verifyRecent();
       _persistentAudit?.destroy();
-      _persistentAudit = audit;
+      _persistentAudit = candidateAudit;
+      candidateAudit = null;
+    } catch (_) {
+      candidateAudit?.destroy();
+      rethrow;
     } finally {
       _zero(checkpointKey);
     }
