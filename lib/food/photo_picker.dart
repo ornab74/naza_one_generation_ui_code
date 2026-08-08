@@ -10,15 +10,12 @@ import 'package:image_picker/image_picker.dart' as image_picker;
 import 'config.dart';
 import 'models.dart';
 
-enum FoodPhotoSource { camera, gallery, files }
+enum FoodPhotoSource { camera, gallery }
 
 enum FoodPhotoPickOutcome { selected, cancelled, unavailable, failed }
 
 enum FoodPhotoPlatform { mobile, desktop, unsupported }
 
-/// An acquired image before privacy-preserving decode and re-encoding.
-///
-/// Tests can inject this value without loading either native picker plugin.
 final class FoodPhotoSourceData {
   final Uint8List bytes;
   final String name;
@@ -56,14 +53,12 @@ final class FoodPhotoPickResult {
       outcome == FoodPhotoPickOutcome.selected && image != null;
 }
 
-/// Acquires one food/scanner photo and converts it to a bounded,
-/// metadata-free PNG.
+/// Acquires scanner photos and converts them to bounded metadata-free PNGs.
 ///
-/// Camera and gallery acquisition on mobile use `image_picker`. Explicit
-/// `files` selection uses the OS document/file picker on every supported
-/// platform, including Android. Desktop gallery and files both use
-/// `file_selector`. Every path still passes through the same decode, size,
-/// dimension and metadata-stripping normalization boundary.
+/// The original two-value [FoodPhotoSource] enum stays stable so existing
+/// exhaustive UI switches remain source-compatible. Explicit Files access is
+/// exposed through [pickFiles], which uses the OS document picker and then the
+/// exact same size/decode/re-encode privacy boundary.
 final class FoodPhotoPicker {
   FoodPhotoPicker({
     this.acquirer,
@@ -89,8 +84,35 @@ final class FoodPhotoPicker {
     return pick(FoodPhotoSource.gallery);
   }
 
-  Future<FoodPhotoPickResult> pickFiles() {
-    return pick(FoodPhotoSource.files);
+  Future<FoodPhotoPickResult> pickFiles() async {
+    Uint8List? workingBytes;
+    try {
+      final acquired = await _acquireSystemFile();
+      if (acquired == null) return const FoodPhotoPickResult.cancelled();
+      _validateSourceLength(acquired.bytes.length);
+      workingBytes = Uint8List.fromList(acquired.bytes);
+      final image = await _normalize(workingBytes, acquired.name);
+      return FoodPhotoPickResult.selected(image);
+    } on MissingPluginException {
+      return const FoodPhotoPickResult.unavailable(
+        'The system file picker is unavailable in this build.',
+      );
+    } on UnsupportedError catch (error) {
+      return FoodPhotoPickResult.unavailable(_friendlyError(error));
+    } on FormatException catch (error) {
+      return FoodPhotoPickResult.failed(error.message.toString());
+    } on PlatformException catch (error) {
+      final detail = error.message?.trim();
+      return FoodPhotoPickResult.failed(
+        detail == null || detail.isEmpty
+            ? 'The system file picker failed (${error.code}).'
+            : detail,
+      );
+    } catch (error) {
+      return FoodPhotoPickResult.failed(_friendlyError(error));
+    } finally {
+      workingBytes?.fillRange(0, workingBytes.length, 0);
+    }
   }
 
   Future<FoodPhotoPickResult> pick(FoodPhotoSource source) async {
@@ -98,15 +120,7 @@ final class FoodPhotoPicker {
     try {
       final acquired = await (acquirer?.call(source) ?? _acquire(source));
       if (acquired == null) return const FoodPhotoPickResult.cancelled();
-      if (acquired.bytes.isEmpty) {
-        return const FoodPhotoPickResult.failed('The selected image is empty.');
-      }
-      if (acquired.bytes.length > FoodVisionConfig.visionMaxSourceImageBytes) {
-        return const FoodPhotoPickResult.failed(
-          'The selected image exceeds the 32 MB source limit.',
-        );
-      }
-
+      _validateSourceLength(acquired.bytes.length);
       workingBytes = Uint8List.fromList(acquired.bytes);
       final image = await _normalize(workingBytes, acquired.name);
       return FoodPhotoPickResult.selected(image);
@@ -133,9 +147,6 @@ final class FoodPhotoPicker {
   Future<FoodPhotoSourceData?> _acquire(FoodPhotoSource source) async {
     switch (_platform) {
       case FoodPhotoPlatform.mobile:
-        if (source == FoodPhotoSource.files) {
-          return _acquireSystemFile();
-        }
         return _acquireMobile(source);
       case FoodPhotoPlatform.desktop:
         if (source == FoodPhotoSource.camera) {
@@ -171,6 +182,9 @@ final class FoodPhotoPicker {
   }
 
   Future<FoodPhotoSourceData?> _acquireSystemFile() async {
+    if (_platform == FoodPhotoPlatform.unsupported) {
+      throw UnsupportedError('File selection is unavailable on this platform.');
+    }
     final picked = await _desktopFilePicker();
     if (picked == null) return null;
     final length = await picked.length();
@@ -251,8 +265,6 @@ final class FoodPhotoPicker {
         );
       }
 
-      // PNG encoding writes only decoded pixels. Original EXIF, GPS, camera,
-      // filename-path, and other source metadata never enter the result.
       return FoodVisionImage(
         bytes: Uint8List.fromList(
           encoded.buffer.asUint8List(
@@ -313,13 +325,9 @@ final class FoodPhotoPicker {
       return 'Photo-library access was denied. Allow photo access in system settings, then try again.';
     }
     if (_isUnavailablePlatformError(error)) {
-      return switch (source) {
-        FoodPhotoSource.camera => 'No usable camera is available on this device.',
-        FoodPhotoSource.gallery =>
-          'The system photo-library picker is unavailable on this device.',
-        FoodPhotoSource.files =>
-          'The system file picker is unavailable on this device.',
-      };
+      return source == FoodPhotoSource.camera
+          ? 'No usable camera is available on this device.'
+          : 'The system photo-library picker is unavailable on this device.';
     }
     final detail = error.message?.trim();
     return detail == null || detail.isEmpty
