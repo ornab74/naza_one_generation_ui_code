@@ -3,26 +3,21 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'key_guardian.dart';
 import 'secure_database.dart';
 import 'security_kernel.dart';
 
 const _securityStateNamespace = 'security.kernel';
 const _securityStateKey = 'state-v1';
 const _securityStateFormat = 'naza-security-state-v1';
-const _kernelKeyPrefix = 'naza-security-kernel-key-v1';
 const _rollbackKeyPrefix = 'naza-security-highest-epoch-v1';
 
 /// Hardened facade over [NazaSecureDatabase].
 ///
-/// This layer adds deterministic authorization for privileged operations and a
-/// two-copy rollback signal:
-///
-///  * the current security epoch is stored as an encrypted vault record;
-///  * the highest observed epoch is stored independently in the platform secure
-///    store through [NazaDeviceKeyStore].
-///
-/// Restoring an older database/header pair therefore fails closed once a newer
-/// security epoch has been committed to the device store.
+/// The controller deliberately keeps durable capability-root material behind a
+/// [NazaKeyGuardian]. Each active security epoch receives a newly derived
+/// capability key bound to the complete security state. Epoch transitions
+/// replace the kernel instead of carrying the old capability key forward.
 final class NazaHardenedVaultController {
   NazaHardenedVaultController({
     required this.vault,
@@ -32,10 +27,12 @@ final class NazaHardenedVaultController {
     required this.policyIdentity,
     required this.recoveryGeneration,
     required this.trustRootIdentity,
-  });
+    NazaKeyGuardian? keyGuardian,
+  }) : keyGuardian = keyGuardian ?? NazaSecureStoreKeyGuardian(secureStore);
 
   final NazaSecureDatabase vault;
   final NazaDeviceKeyStore secureStore;
+  final NazaKeyGuardian keyGuardian;
 
   String appIdentity;
   String modelIdentity;
@@ -127,9 +124,8 @@ final class NazaHardenedVaultController {
     return vault.delete(namespace, key);
   }
 
-  /// Fresh password verification is intentionally required for capabilities
-  /// that authorize privileged operations. Device-only convenience unlock does
-  /// not silently become authority to export or mutate trust configuration.
+  /// Fresh password verification is required before issuing a privileged
+  /// capability. The capability remains single-use and state-bound.
   Future<NazaCapabilityLease> authorizeWithPassword({
     required String password,
     required NazaPrivilegedAction action,
@@ -165,7 +161,7 @@ final class NazaHardenedVaultController {
       resource: 'vault',
     );
     final records = await vault.exportRecords();
-    records.remove(const NazaVaultRecordKey(_securityStateNamespace, _securityStateKey));
+    records.removeWhere((key, _) => key.namespace.startsWith('security.'));
     await _auditEvent('vault-exported', <String, Object?>{
       'recordCount': records.length,
     });
@@ -281,7 +277,10 @@ final class NazaHardenedVaultController {
 
   Future<void> _attachSecurityState({required bool allowMigration}) async {
     if (!vault.isUnlocked) {
-      throw const NazaSecurityException('vault_locked', 'Vault must be unlocked first.');
+      throw const NazaSecurityException(
+        'vault_locked',
+        'Vault must be unlocked first.',
+      );
     }
 
     final snapshot = await _readVaultHeaderSnapshot();
@@ -293,7 +292,10 @@ final class NazaHardenedVaultController {
     );
     final minimumEpoch = await guard.minimumEpoch();
 
-    final rawState = await vault.readJson(_securityStateNamespace, _securityStateKey);
+    final rawState = await vault.readJson(
+      _securityStateNamespace,
+      _securityStateKey,
+    );
     int epoch;
     if (rawState == null) {
       if (!allowMigration || minimumEpoch > 0) {
@@ -308,7 +310,10 @@ final class NazaHardenedVaultController {
         headerGeneration: snapshot.headerGeneration,
       );
     } else {
-      final state = _parseSecurityMetadata(rawState, expectedVaultId: snapshot.vaultId);
+      final state = _parseSecurityMetadata(
+        rawState,
+        expectedVaultId: snapshot.vaultId,
+      );
       epoch = state.epoch;
       if (state.headerGeneration > snapshot.headerGeneration) {
         throw const NazaSecurityException(
@@ -319,25 +324,56 @@ final class NazaHardenedVaultController {
     }
 
     await guard.verify(epoch);
-    final capabilityKey = await _loadOrCreateSecret(
-      '$_kernelKeyPrefix-${snapshot.vaultId}',
-    );
+    final nextKernel = await _createEpochKernel(snapshot.vaultId, epoch);
     final auditSeed = _randomBytes(32);
     try {
-      final kernel = NazaSecurityKernel(
-        capabilityKey: capabilityKey,
-        initialState: _buildState(snapshot.vaultId, epoch),
-      );
       _kernel?.destroy();
       _audit?.destroy();
-      _kernel = kernel;
+      _kernel = nextKernel;
       _audit = NazaForwardSecureAudit(initialKey: auditSeed);
       _rollbackGuard = guard;
       _securityEpoch = epoch;
       await guard.commit(epoch);
     } finally {
-      _zero(capabilityKey);
       _zero(auditSeed);
+    }
+  }
+
+  Future<NazaSecurityKernel> _createEpochKernel(
+    String vaultId,
+    int epoch,
+  ) async {
+    final state = _buildState(vaultId, epoch);
+    final handle = await keyGuardian.ensureRoot(
+      vaultId: vaultId,
+      purpose: NazaGuardianPurpose.capabilityRoot,
+    );
+    if (handle.exportable) {
+      throw const NazaSecurityException(
+        'guardian_exportable_root',
+        'Hardened capability roots must not be exposed as exportable handles.',
+      );
+    }
+    final capabilityKey = await keyGuardian.deriveEphemeralSecret(
+      handle: handle,
+      label: 'capability-kernel-epoch',
+      context: <String, Object?>{
+        'epoch': epoch,
+        'vaultId': vaultId,
+        'appIdentity': state.appIdentity,
+        'modelIdentity': state.modelIdentity,
+        'policyIdentity': state.policyIdentity,
+        'recoveryGeneration': state.recoveryGeneration,
+        'trustRootIdentity': state.trustRootIdentity,
+      },
+    );
+    try {
+      return NazaSecurityKernel(
+        capabilityKey: capabilityKey,
+        initialState: state,
+      );
+    } finally {
+      _zero(capabilityKey);
     }
   }
 
@@ -345,12 +381,15 @@ final class NazaHardenedVaultController {
     String event,
     Map<String, Object?> data,
   ) async {
-    final kernel = _requireKernel();
+    _requireKernel();
     final guard = _rollbackGuard;
     final vaultId = _vaultId;
     final current = _securityEpoch;
     if (guard == null || vaultId == null || current == null) {
-      throw const NazaSecurityException('security_state_missing', 'Security state is not attached.');
+      throw const NazaSecurityException(
+        'security_state_missing',
+        'Security state is not attached.',
+      );
     }
     final snapshot = await _readVaultHeaderSnapshot();
     if (snapshot.vaultId != vaultId) {
@@ -361,17 +400,19 @@ final class NazaHardenedVaultController {
     }
     final next = current + 1;
 
-    // Crash-safe order: commit the authenticated in-vault epoch first. If the
-    // process dies before the device-store commit, the vault is newer than the
-    // guard and remains recoverable. The reverse ordering could brick a valid
-    // vault after a crash.
     await _writeSecurityMetadata(
       epoch: next,
       headerGeneration: snapshot.headerGeneration,
     );
     await guard.commit(next);
+
+    // Derive the new epoch key only after persistent epoch state commits. Old
+    // leases become useless because the old kernel is destroyed immediately.
+    final nextKernel = await _createEpochKernel(vaultId, next);
+    final oldKernel = _kernel;
+    _kernel = nextKernel;
     _securityEpoch = next;
-    kernel.transition(_buildState(vaultId, next));
+    oldKernel?.destroy();
     await _auditEvent(event, data);
   }
 
@@ -380,15 +421,22 @@ final class NazaHardenedVaultController {
     required int headerGeneration,
   }) {
     if (epoch < 1 || headerGeneration < 1) {
-      throw const NazaSecurityException('invalid_epoch', 'Security generations must be positive.');
+      throw const NazaSecurityException(
+        'invalid_epoch',
+        'Security generations must be positive.',
+      );
     }
-    return vault.writeJson(_securityStateNamespace, _securityStateKey, <String, Object?>{
-      'format': _securityStateFormat,
-      'vaultId': _vaultId ?? '',
-      'epoch': epoch,
-      'headerGeneration': headerGeneration,
-      'updatedAt': DateTime.now().toUtc().toIso8601String(),
-    });
+    return vault.writeJson(
+      _securityStateNamespace,
+      _securityStateKey,
+      <String, Object?>{
+        'format': _securityStateFormat,
+        'vaultId': _vaultId ?? '',
+        'epoch': epoch,
+        'headerGeneration': headerGeneration,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
   }
 
   _VaultSecurityMetadata _parseSecurityMetadata(
@@ -396,7 +444,10 @@ final class NazaHardenedVaultController {
     required String expectedVaultId,
   }) {
     if (raw is! Map) {
-      throw const NazaSecurityException('security_state_corrupt', 'Encrypted security state is malformed.');
+      throw const NazaSecurityException(
+        'security_state_corrupt',
+        'Encrypted security state is malformed.',
+      );
     }
     final format = raw['format']?.toString() ?? '';
     final vaultId = raw['vaultId']?.toString() ?? '';
@@ -419,21 +470,33 @@ final class NazaHardenedVaultController {
 
   Future<_VaultHeaderSnapshot> _readVaultHeaderSnapshot() async {
     final databaseFile = await vault.databaseFile();
-    final headerFile = File('${databaseFile.parent.path}/naza_one_vault.header.json');
+    final headerFile = File(
+      '${databaseFile.parent.path}/naza_one_vault.header.json',
+    );
     if (!await headerFile.exists()) {
-      throw const NazaSecurityException('header_missing', 'Vault header is missing.');
+      throw const NazaSecurityException(
+        'header_missing',
+        'Vault header is missing.',
+      );
     }
     try {
       final decoded = jsonDecode(await headerFile.readAsString());
       if (decoded is! Map) throw const FormatException('header is not a map');
       final vaultId = decoded['vaultId']?.toString() ?? '';
       final generation = _positiveInt(decoded['generation']);
-      if (!RegExp(r'^[A-Za-z0-9_-]{16,64}$').hasMatch(vaultId) || generation == null) {
+      if (!RegExp(r'^[A-Za-z0-9_-]{16,64}$').hasMatch(vaultId) ||
+          generation == null) {
         throw const FormatException('invalid header identity');
       }
-      return _VaultHeaderSnapshot(vaultId: vaultId, headerGeneration: generation);
+      return _VaultHeaderSnapshot(
+        vaultId: vaultId,
+        headerGeneration: generation,
+      );
     } catch (error) {
-      throw NazaSecurityException('header_invalid', 'Vault header security metadata is invalid: $error');
+      throw NazaSecurityException(
+        'header_invalid',
+        'Vault header security metadata is invalid: $error',
+      );
     }
   }
 
@@ -449,30 +512,18 @@ final class NazaHardenedVaultController {
     );
   }
 
-  Future<Uint8List> _loadOrCreateSecret(String storageKey) async {
-    final encoded = await secureStore.read(storageKey);
-    if (encoded != null && encoded.isNotEmpty) {
-      try {
-        final value = Uint8List.fromList(base64Decode(encoded));
-        if (value.length != 32) throw const FormatException('wrong secret length');
-        return value;
-      } catch (error) {
-        throw NazaSecurityException(
-          'secure_state_corrupt',
-          'Protected security-kernel state is malformed: $error',
-        );
-      }
-    }
-    final created = _randomBytes(32);
-    await secureStore.write(storageKey, base64Encode(created));
-    return created;
-  }
-
-  Future<void> _auditEvent(String event, Map<String, Object?> data) async {
+  Future<void> _auditEvent(
+    String event,
+    Map<String, Object?> data,
+  ) async {
     final audit = _audit;
     final epoch = _securityEpoch;
     if (audit == null || epoch == null) return;
-    await audit.append(event: event, data: data, securityEpoch: epoch);
+    await audit.append(
+      event: event,
+      data: data,
+      securityEpoch: epoch,
+    );
   }
 
   void _destroySessionSecurity() {
@@ -488,7 +539,10 @@ final class NazaHardenedVaultController {
   NazaSecurityKernel _requireKernel() {
     final kernel = _kernel;
     if (kernel == null || !vault.isUnlocked) {
-      throw const NazaSecurityException('security_session_missing', 'Hardened security session is not active.');
+      throw const NazaSecurityException(
+        'security_session_missing',
+        'Hardened security session is not active.',
+      );
     }
     return kernel;
   }
@@ -502,7 +556,7 @@ final class NazaHardenedVaultController {
   }
 
   void _rejectReservedKey(String namespace, String key) {
-    if (namespace == _securityStateNamespace) {
+    if (namespace.startsWith('security.')) {
       throw ArgumentError.value(
         '$namespace/$key',
         'record',
@@ -528,14 +582,20 @@ final class _VaultHeaderSnapshot {
   final String vaultId;
   final int headerGeneration;
 
-  const _VaultHeaderSnapshot({required this.vaultId, required this.headerGeneration});
+  const _VaultHeaderSnapshot({
+    required this.vaultId,
+    required this.headerGeneration,
+  });
 }
 
 final class _VaultSecurityMetadata {
   final int epoch;
   final int headerGeneration;
 
-  const _VaultSecurityMetadata({required this.epoch, required this.headerGeneration});
+  const _VaultSecurityMetadata({
+    required this.epoch,
+    required this.headerGeneration,
+  });
 }
 
 int? _positiveInt(Object? value) {
