@@ -8,7 +8,8 @@ import 'secure_database.dart';
 
 const _auditFormat = 'naza-persistent-audit-v1';
 const _auditNamespace = 'security.audit';
-const _auditCheckpointPrefix = 'naza-audit-checkpoint-v1';
+const _auditCheckpointFormat = 'naza-audit-checkpoint-v2';
+const _auditCheckpointPrefix = 'naza-audit-checkpoint-v2';
 
 final class NazaPersistentAuditEntry {
   final int sequence;
@@ -63,7 +64,7 @@ final class NazaPersistentAuditCheckpoint {
     if (json['format'] != _auditFormat) {
       throw const NazaPersistentAuditException(
         'checkpoint_format',
-        'Persistent audit checkpoint format is invalid.',
+        'Persistent audit checkpoint payload format is invalid.',
       );
     }
     final sequence = _positiveOrZeroInt(json['sequence']);
@@ -72,7 +73,7 @@ final class NazaPersistentAuditCheckpoint {
     if (sequence == null || tip.isEmpty || ratchetKey.isEmpty) {
       throw const NazaPersistentAuditException(
         'checkpoint_corrupt',
-        'Persistent audit checkpoint is malformed.',
+        'Persistent audit checkpoint payload is malformed.',
       );
     }
     return NazaPersistentAuditCheckpoint(
@@ -85,24 +86,26 @@ final class NazaPersistentAuditCheckpoint {
 
 /// Forward-secure audit log with restart persistence.
 ///
-/// Entries are stored as encrypted vault records. The ratchet checkpoint is
-/// stored independently in the platform protected store. The previous ratchet
-/// key is erased on a best-effort basis after each successful checkpoint.
-///
-/// Crash order:
-///   1. write encrypted audit entry to the vault;
-///   2. advance protected checkpoint.
-///
-/// On restart, one exactly-next vault entry may exist beyond the protected
-/// checkpoint. It is verified with the current ratchet key and then adopted.
-/// More than one uncheckpointed entry, gaps, reordering, or digest mismatch are
-/// treated as tamper/corruption rather than silently repaired.
+/// Audit entries are encrypted by the vault. Restart state is independently
+/// sealed with AES-256-GCM under a guardian-derived checkpoint key, binding the
+/// checkpoint to this vault ID through AEAD associated data. The current
+/// ratchet key therefore never appears as plaintext in the secure-store record.
 final class NazaPersistentForwardAudit {
   NazaPersistentForwardAudit({
     required this.vault,
     required this.secureStore,
     required this.vaultId,
-  });
+    required List<int> checkpointKey,
+  }) : _checkpointKey = Uint8List.fromList(checkpointKey) {
+    if (_checkpointKey.length != 32) {
+      _zero(_checkpointKey);
+      throw ArgumentError.value(
+        checkpointKey.length,
+        'checkpointKey',
+        'Audit checkpoint key must be 32 bytes.',
+      );
+    }
+  }
 
   final NazaSecureDatabase vault;
   final NazaDeviceKeyStore secureStore;
@@ -110,17 +113,26 @@ final class NazaPersistentForwardAudit {
 
   final Hmac _hmac = Hmac.sha256();
   final Sha256 _sha256 = Sha256();
+  final AesGcm _checkpointCipher = AesGcm.with256bits();
+  final Uint8List _checkpointKey;
 
   int _sequence = 0;
   String _tip = 'GENESIS';
   Uint8List? _ratchetKey;
   bool _initialized = false;
+  bool _disposed = false;
 
   int get sequence => _sequence;
   String get tip => _tip;
   bool get initialized => _initialized;
 
   Future<void> initialize() async {
+    if (_disposed) {
+      throw const NazaPersistentAuditException(
+        'audit_disposed',
+        'Persistent audit instance has been destroyed.',
+      );
+    }
     _validateVaultId(vaultId);
     if (!vault.isUnlocked) {
       throw const NazaPersistentAuditException(
@@ -128,10 +140,20 @@ final class NazaPersistentForwardAudit {
         'Vault must be unlocked before the persistent audit can initialize.',
       );
     }
-    destroy();
+    _resetRatchet();
 
     final checkpointRaw = await secureStore.read(_checkpointStorageKey);
     if (checkpointRaw == null || checkpointRaw.isEmpty) {
+      // Once an audit entry exists, disappearance of the external checkpoint is
+      // a tamper/rollback signal. Do not rebuild a new GENESIS checkpoint over
+      // existing history.
+      final existingFirst = await vault.readJson(_auditNamespace, _entryKey(1));
+      if (existingFirst != null) {
+        throw const NazaPersistentAuditException(
+          'checkpoint_missing',
+          'Persistent audit history exists but its protected checkpoint is missing.',
+        );
+      }
       final key = _randomBytes(32);
       _ratchetKey = Uint8List.fromList(key);
       _sequence = 0;
@@ -139,7 +161,7 @@ final class NazaPersistentForwardAudit {
       await _persistCheckpoint();
       _zero(key);
     } else {
-      final checkpoint = _decodeCheckpoint(checkpointRaw);
+      final checkpoint = await _decodeCheckpoint(checkpointRaw);
       final key = _decodeKey(checkpoint.ratchetKey);
       _ratchetKey = key;
       _sequence = checkpoint.sequence;
@@ -187,6 +209,9 @@ final class NazaPersistentForwardAudit {
       digest: digest,
     );
 
+    // Entry first, checkpoint second. A crash between these writes leaves one
+    // authenticated pending entry that startup can reconcile using the old
+    // checkpoint ratchet key.
     await vault.writeJson(
       _auditNamespace,
       _entryKey(nextSequence),
@@ -342,21 +367,67 @@ final class NazaPersistentForwardAudit {
       tip: _tip,
       ratchetKey: base64Encode(_requireRatchetKey()),
     );
-    await secureStore.write(
-      _checkpointStorageKey,
-      jsonEncode(checkpoint.toJson()),
+    final clear = Uint8List.fromList(
+      utf8.encode(jsonEncode(checkpoint.toJson())),
     );
+    try {
+      final box = await _checkpointCipher.encrypt(
+        clear,
+        secretKey: SecretKey(_checkpointKey),
+        aad: _checkpointAad,
+      );
+      await secureStore.write(
+        _checkpointStorageKey,
+        jsonEncode(<String, Object?>{
+          'format': _auditCheckpointFormat,
+          'cipher': 'AES-256-GCM',
+          'nonce': base64Encode(box.nonce),
+          'cipherText': base64Encode(box.cipherText),
+          'mac': base64Encode(box.mac.bytes),
+        }),
+      );
+    } finally {
+      _zero(clear);
+    }
   }
 
-  NazaPersistentAuditCheckpoint _decodeCheckpoint(String encoded) {
+  Future<NazaPersistentAuditCheckpoint> _decodeCheckpoint(String encoded) async {
     try {
-      final decoded = jsonDecode(encoded);
-      if (decoded is! Map) throw const FormatException('not a map');
-      return NazaPersistentAuditCheckpoint.fromJson(
-        Map<String, Object?>.from(decoded),
+      final outer = jsonDecode(encoded);
+      if (outer is! Map ||
+          outer['format'] != _auditCheckpointFormat ||
+          outer['cipher'] != 'AES-256-GCM') {
+        throw const FormatException('invalid checkpoint envelope');
+      }
+      final clear = Uint8List.fromList(
+        await _checkpointCipher.decrypt(
+          SecretBox(
+            base64Decode(outer['cipherText'].toString()),
+            nonce: base64Decode(outer['nonce'].toString()),
+            mac: Mac(base64Decode(outer['mac'].toString())),
+          ),
+          secretKey: SecretKey(_checkpointKey),
+          aad: _checkpointAad,
+        ),
       );
+      try {
+        final inner = jsonDecode(utf8.decode(clear));
+        if (inner is! Map) throw const FormatException('payload not a map');
+        return NazaPersistentAuditCheckpoint.fromJson(
+          Map<String, Object?>.from(inner),
+        );
+      } finally {
+        _zero(clear);
+      }
+    } on SecretBoxAuthenticationError catch (error) {
+      throw NazaPersistentAuditException(
+        'checkpoint_authentication',
+        'Persistent audit checkpoint authentication failed.',
+        error,
+      );
+    } on NazaPersistentAuditException {
+      rethrow;
     } catch (error) {
-      if (error is NazaPersistentAuditException) rethrow;
       throw NazaPersistentAuditException(
         'checkpoint_corrupt',
         'Protected audit checkpoint is malformed: $error',
@@ -418,6 +489,10 @@ final class NazaPersistentForwardAudit {
     }
   }
 
+  List<int> get _checkpointAad => utf8.encode(
+    '$_auditCheckpointFormat/$vaultId',
+  );
+
   String get _checkpointStorageKey => '$_auditCheckpointPrefix-$vaultId';
 
   String _entryKey(int sequence) => sequence.toString().padLeft(20, '0');
@@ -434,7 +509,7 @@ final class NazaPersistentForwardAudit {
   }
 
   void _requireInitialized() {
-    if (!_initialized || _ratchetKey == null) {
+    if (_disposed || !_initialized || _ratchetKey == null) {
       throw const NazaPersistentAuditException(
         'audit_uninitialized',
         'Persistent audit is not initialized.',
@@ -442,20 +517,27 @@ final class NazaPersistentForwardAudit {
     }
   }
 
-  void destroy() {
+  void _resetRatchet() {
     _initialized = false;
     _sequence = 0;
     _tip = 'GENESIS';
     _zero(_ratchetKey);
     _ratchetKey = null;
   }
+
+  void destroy() {
+    _resetRatchet();
+    _zero(_checkpointKey);
+    _disposed = true;
+  }
 }
 
 final class NazaPersistentAuditException implements Exception {
   final String code;
   final String message;
+  final Object? cause;
 
-  const NazaPersistentAuditException(this.code, this.message);
+  const NazaPersistentAuditException(this.code, this.message, [this.cause]);
 
   @override
   String toString() => 'NazaPersistentAuditException($code): $message';
