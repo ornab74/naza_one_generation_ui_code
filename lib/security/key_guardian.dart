@@ -9,30 +9,19 @@ import 'secure_database.dart';
 const _guardianFormat = 'naza-key-guardian-v1';
 
 enum NazaGuardianProtection {
-  /// Test-only/in-memory implementations.
   volatileMemory,
-
-  /// The root is held by the operating-system protected secret store. This
-  /// raises the bar over ordinary application files but is not claimed to be a
-  /// non-exportable hardware key.
   platformSecureStore,
-
-  /// Reserved for platform implementations backed by TPM / StrongBox /
-  /// Secure Enclave or another non-exportable hardware primitive.
   hardwareBacked,
 }
 
 enum NazaGuardianPurpose {
   capabilityRoot,
   auditRoot,
+  rollbackRoot,
   ipcRoot,
   modelTrustRoot,
 }
 
-/// Opaque reference to guardian-managed root material.
-///
-/// Callers receive an identifier and protection metadata, never the durable
-/// root key bytes themselves.
 final class NazaKeyHandle {
   final String id;
   final NazaGuardianPurpose purpose;
@@ -53,9 +42,6 @@ abstract interface class NazaKeyGuardian {
     required NazaGuardianPurpose purpose,
   });
 
-  /// Derives an ephemeral, purpose-bound secret from an opaque root handle.
-  /// The caller owns and must clear the returned mutable bytes as soon as the
-  /// operation/session ends.
   Future<Uint8List> deriveEphemeralSecret({
     required NazaKeyHandle handle,
     required String label,
@@ -65,13 +51,9 @@ abstract interface class NazaKeyGuardian {
   Future<void> revokeRoot(NazaKeyHandle handle);
 }
 
-/// Portable guardian used by the current Flutter implementation.
-///
-/// Durable root bytes are serialized only into [NazaDeviceKeyStore]. They are
-/// loaded inside this guardian long enough to derive a short-lived child key
-/// and are then overwritten on a best-effort basis. Dart cannot guarantee that
-/// runtime copies never existed, so this is intentionally *not* described as
-/// RAM-proof or hardware non-exportable.
+/// Portable guardian backed by [NazaDeviceKeyStore]. Durable roots are loaded
+/// only long enough to derive short-lived children and are overwritten on a
+/// best-effort basis. This provider does not claim hardware non-exportability.
 final class NazaSecureStoreKeyGuardian implements NazaKeyGuardian {
   NazaSecureStoreKeyGuardian(this._store);
 
