@@ -97,8 +97,8 @@ void main() {
       password: 'runtime-password',
       model: model,
       recovery: NazaPostQuantumRecoveryState.defaults(),
-      initialRecords: const <NazaVaultRecordKey, Object?>{
-        NazaVaultRecordKey('history', 'one'): <String, Object?>{'value': 1},
+      initialRecords: <NazaVaultRecordKey, Object?>{
+        const NazaVaultRecordKey('history', 'one'): <String, Object?>{'value': 1},
       },
     );
 
@@ -160,8 +160,8 @@ void main() {
       password: 'runtime-password',
       model: model,
       recovery: NazaPostQuantumRecoveryState.defaults(),
-      initialRecords: const <NazaVaultRecordKey, Object?>{
-        NazaVaultRecordKey('history', 'one'): <String, Object?>{'value': 1},
+      initialRecords: <NazaVaultRecordKey, Object?>{
+        const NazaVaultRecordKey('history', 'one'): <String, Object?>{'value': 1},
       },
     );
 
