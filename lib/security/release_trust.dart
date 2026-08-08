@@ -10,8 +10,6 @@ import 'package:pqcrypto/pqcrypto.dart';
 const _releaseFormat = 'naza-release-manifest-v1';
 const _releaseContext = 'NazaOne/ReleaseManifest/v1';
 
-/// A release manifest does not carry trust roots. Public keys are supplied by
-/// [NazaReleaseTrustVerifier] from a separately pinned trust source.
 final class NazaReleaseManifest {
   final String releaseVersion;
   final int buildNumber;
@@ -67,9 +65,6 @@ final class NazaReleaseManifest {
   }
 }
 
-/// Result of verifying both signatures and the actual application artifact.
-/// The constructor is private so arbitrary strings cannot become app/root trust
-/// identities without passing [NazaReleaseTrustVerifier].
 final class NazaVerifiedReleaseTrust {
   final String appIdentity;
   final String trustRootIdentity;
@@ -91,11 +86,14 @@ final class NazaVerifiedReleaseTrust {
     required this.securityPolicySha256,
     required String artifactPath,
     required int artifactBytes,
-  }) : _artifactPath = artifactPath,
+  }) :
+       // Public parameter names keep construction readable while the bound
+       // artifact path/length remain private implementation details.
+       // ignore: prefer_initializing_formals
+       _artifactPath = artifactPath,
+       // ignore: prefer_initializing_formals
        _artifactBytes = artifactBytes;
 
-  /// Rechecks the application artifact so a verified manifest cannot be reused
-  /// after on-disk replacement.
   Future<void> reverifyArtifact() async {
     final file = File(_artifactPath);
     if (!await file.exists()) {
