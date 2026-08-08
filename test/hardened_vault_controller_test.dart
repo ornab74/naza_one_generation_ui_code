@@ -144,11 +144,7 @@ void main() {
     expect(controller.securityEpoch, greaterThan(1));
     await controller.lock();
 
-    final headerFile = File('${directory.path}/naza_one_vault.header.json');
-    final header = Map<String, Object?>.from(
-      jsonDecode(await headerFile.readAsString()) as Map,
-    );
-    final vaultId = header['vaultId'].toString();
+    final vaultId = await _vaultId(directory);
     await secureStore.write(
       'naza-security-highest-epoch-v2-$vaultId',
       jsonEncode(<String, Object?>{
@@ -177,6 +173,32 @@ void main() {
     expect(vault.isUnlocked, isFalse);
   });
 
+  test('deleting established rollback state fails closed', () async {
+    await controller.create(password: 'correct-password');
+    final vaultId = await _vaultId(directory);
+    await controller.lock();
+
+    await secureStore.delete('naza-security-highest-epoch-v2-$vaultId');
+
+    vault = NazaSecureDatabase.forTesting(
+      directory,
+      deviceKeyStore: secureStore,
+    );
+    controller = _controller(vault, secureStore);
+
+    await expectLater(
+      controller.unlock('correct-password'),
+      throwsA(
+        isA<NazaSecurityException>().having(
+          (error) => error.code,
+          'code',
+          'rollback_state_missing',
+        ),
+      ),
+    );
+    expect(vault.isUnlocked, isFalse);
+  });
+
   test('tampered encrypted security metadata fails closed', () async {
     await controller.create(password: 'correct-password');
     await controller.lock();
@@ -198,12 +220,19 @@ void main() {
     );
     controller = _controller(vault, secureStore);
 
-    await expectLater(
-      controller.unlock('correct-password'),
-      throwsA(anything),
-    );
+    await expectLater(controller.unlock('correct-password'), throwsA(anything));
     expect(vault.isUnlocked, isFalse);
   });
+}
+
+Future<String> _vaultId(Directory directory) async {
+  final header = Map<String, Object?>.from(
+    jsonDecode(
+          await File('${directory.path}/naza_one_vault.header.json').readAsString(),
+        )
+        as Map,
+  );
+  return header['vaultId'].toString();
 }
 
 NazaHardenedVaultController _controller(
