@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -148,7 +147,9 @@ final class NazaModelIntegrity {
     sink.close();
     final digest = collector.digest;
     if (digest == null) {
-      throw const NazaModelIntegrityException('SHA-256 computation produced no digest.');
+      throw const NazaModelIntegrityException(
+        'SHA-256 computation produced no digest.',
+      );
     }
     return digest.toString();
   }
@@ -181,8 +182,8 @@ final class NazaModelIntegrity {
     final right = b.toLowerCase();
     if (left.length != right.length) return false;
     var diff = 0;
-    for (var i = 0; i < left.length; i++) {
-      diff |= left.codeUnitAt(i) ^ right.codeUnitAt(i);
+    for (var index = 0; index < left.length; index++) {
+      diff |= left.codeUnitAt(index) ^ right.codeUnitAt(index);
     }
     return diff == 0;
   }
@@ -194,7 +195,7 @@ final class _DigestCollector implements Sink<crypto.Digest> {
   @override
   void add(crypto.Digest data) {
     if (digest != null) {
-      throw StateError('Unexpected second digest.');
+      throw StateError('Unexpected second SHA-256 digest.');
     }
     digest = data;
   }
@@ -232,7 +233,10 @@ final class NazaVerifiedModelDownloader {
         return _installFromGitHubRelease(target, onProgress: onProgress);
       case NazaModelDownloadSource.automatic:
         try {
-          return await _installFromHuggingFace(target, onProgress: onProgress);
+          return await _installFromHuggingFace(
+            target,
+            onProgress: onProgress,
+          );
         } on NazaModelSourceUnavailable catch (error) {
           onProgress?.call(
             1,
@@ -251,14 +255,18 @@ final class NazaVerifiedModelDownloader {
     final staging = File('${target.path}.huggingface.download');
     await _deleteIfExists(staging);
     try {
-      onProgress?.call(2, 'Downloading from Hugging Face', 'Pinned model revision');
+      onProgress?.call(
+        2,
+        'Downloading from Hugging Face',
+        'Pinned model revision',
+      );
       await _downloadToFile(
         uri: NazaModelBootstrapManifest.huggingFaceUri,
         destination: staging,
         maxBytes: _maxModelBytes,
         onBytes: (received, total) {
           final percent = total != null && total > 0
-              ? (2 + (received * 78 ~/ total)).clamp(2, 80)
+              ? _boundedInt(2 + (received * 78 ~/ total), 2, 80)
               : 25;
           onProgress?.call(
             percent,
@@ -268,14 +276,22 @@ final class NazaVerifiedModelDownloader {
         },
       );
 
-      onProgress?.call(82, 'Verifying complete model SHA-256', 'Hugging Face download');
+      onProgress?.call(
+        82,
+        'Verifying complete model SHA-256',
+        'Hugging Face download',
+      );
       await NazaModelIntegrity.verifyFile(
         file: staging,
         expectedSha256: NazaModelBootstrapManifest.fullSha256,
         onProgress: (read, total) {
-          final percent = 82 + (read * 15 ~/ (total == 0 ? 1 : total));
+          final percent = _boundedInt(
+            82 + (read * 15 ~/ (total == 0 ? 1 : total)),
+            82,
+            97,
+          );
           onProgress?.call(
-            percent.clamp(82, 97),
+            percent,
             'Verifying complete model SHA-256',
             _formatTransfer(read, total),
           );
@@ -296,6 +312,7 @@ final class NazaVerifiedModelDownloader {
     await _deleteIfExists(joined);
     final joinedSink = joined.openWrite(mode: FileMode.writeOnly);
     var joinedBytes = 0;
+    var sinkClosed = false;
 
     try {
       final parts = NazaModelBootstrapManifest.githubReleaseParts;
@@ -316,9 +333,13 @@ final class NazaVerifiedModelDownloader {
             destination: partFile,
             maxBytes: part.size,
             onBytes: (received, _) {
-              final percent = base + (received * 12 ~/ part.size);
+              final percent = _boundedInt(
+                base + (received * 12 ~/ part.size),
+                base,
+                base + 12,
+              );
               onProgress?.call(
-                percent.clamp(base, base + 12),
+                percent,
                 'Downloading GitHub model part ${index + 1}/${parts.length}',
                 _formatTransfer(received, part.size),
               );
@@ -335,9 +356,13 @@ final class NazaVerifiedModelDownloader {
             expectedSha256: part.sha256,
             expectedSize: part.size,
             onProgress: (read, total) {
-              final percent = base + 13 + (read * 4 ~/ (total == 0 ? 1 : total));
+              final percent = _boundedInt(
+                base + 13 + (read * 4 ~/ (total == 0 ? 1 : total)),
+                base + 13,
+                base + 17,
+              );
               onProgress?.call(
-                percent.clamp(base + 13, base + 17),
+                percent,
                 'Checking SHA-256 for part ${index + 1}/${parts.length}',
                 _formatTransfer(read, total),
               );
@@ -361,6 +386,7 @@ final class NazaVerifiedModelDownloader {
 
       await joinedSink.flush();
       await joinedSink.close();
+      sinkClosed = true;
 
       if (joinedBytes != NazaModelBootstrapManifest.githubJoinedSize) {
         throw NazaModelIntegrityException(
@@ -379,9 +405,13 @@ final class NazaVerifiedModelDownloader {
         expectedSha256: NazaModelBootstrapManifest.fullSha256,
         expectedSize: NazaModelBootstrapManifest.githubJoinedSize,
         onProgress: (read, total) {
-          final percent = 65 + (read * 32 ~/ (total == 0 ? 1 : total));
+          final percent = _boundedInt(
+            65 + (read * 32 ~/ (total == 0 ? 1 : total)),
+            65,
+            97,
+          );
           onProgress?.call(
-            percent.clamp(65, 97),
+            percent,
             'Checking complete joined model SHA-256',
             _formatTransfer(read, total),
           );
@@ -389,9 +419,11 @@ final class NazaVerifiedModelDownloader {
       );
       return _promoteVerified(joined, target, onProgress: onProgress);
     } catch (_) {
-      try {
-        await joinedSink.close();
-      } catch (_) {}
+      if (!sinkClosed) {
+        try {
+          await joinedSink.close();
+        } catch (_) {}
+      }
       await _deleteIfExists(joined);
       rethrow;
     }
@@ -436,7 +468,10 @@ final class NazaVerifiedModelDownloader {
           'HTTP ${response.statusCode} ${response.reasonPhrase ?? ''}'.trim(),
         );
       }
-      final declared = response.contentLength >= 0 ? response.contentLength : null;
+
+      final declared = response.contentLength >= 0
+          ? response.contentLength
+          : null;
       if (declared != null && declared > maxBytes) {
         throw NazaModelIntegrityException(
           'Source declared $declared bytes, above the allowed $maxBytes bytes.',
@@ -448,7 +483,7 @@ final class NazaVerifiedModelDownloader {
       await for (final chunk in response.timeout(_idleTimeout)) {
         received += chunk.length;
         if (received > maxBytes) {
-          throw NazaModelIntegrityException(
+          throw const NazaModelIntegrityException(
             'Source exceeded the allowed model size while downloading.',
           );
         }
@@ -463,7 +498,10 @@ final class NazaVerifiedModelDownloader {
     } on HandshakeException catch (error) {
       throw NazaModelSourceUnavailable(uri, error.message);
     } on TimeoutException catch (error) {
-      throw NazaModelSourceUnavailable(uri, error.message ?? 'network timeout');
+      throw NazaModelSourceUnavailable(
+        uri,
+        error.message ?? 'network timeout',
+      );
     } on HttpException catch (error) {
       throw NazaModelSourceUnavailable(uri, error.message);
     } finally {
@@ -476,6 +514,12 @@ final class NazaVerifiedModelDownloader {
     }
   }
 
+  static int _boundedInt(int value, int minimum, int maximum) {
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+  }
+
   static Future<void> _deleteIfExists(File file) async {
     if (await file.exists()) {
       await file.delete();
@@ -483,8 +527,11 @@ final class NazaVerifiedModelDownloader {
   }
 
   static String _formatTransfer(int received, int? total) {
-    String gib(int bytes) => (bytes / (1024 * 1024 * 1024)).toStringAsFixed(2);
-    if (total == null || total <= 0) return '${gib(received)} GiB received';
+    String gib(int bytes) =>
+        (bytes / (1024 * 1024 * 1024)).toStringAsFixed(2);
+    if (total == null || total <= 0) {
+      return '${gib(received)} GiB received';
+    }
     return '${gib(received)} / ${gib(total)} GiB';
   }
 }
@@ -597,7 +644,7 @@ final class _NazaModelBootstrapScreenState
         onProgress: (percent, phase, detail) {
           if (!mounted) return;
           setState(() {
-            _progress = percent.clamp(0, 100);
+            _progress = percent;
             _phase = phase;
             _detail = detail;
           });
@@ -607,12 +654,14 @@ final class _NazaModelBootstrapScreenState
       if (!mounted) return;
       setState(() {
         _phase = 'Registering model with encrypted attestation';
-        _detail = 'The existing Naza model store is performing its final trust check.';
+        _detail =
+            'The existing Naza model store is performing its final trust check.';
       });
       final verified = await app.NazaSecureModelStore.refresh();
       if (!verified.installed) {
         throw NazaModelIntegrityException(
-          verified.error ?? 'Existing Naza model attestation did not accept the file.',
+          verified.error ??
+              'Existing Naza model attestation did not accept the file.',
         );
       }
       if (!mounted) return;
@@ -742,7 +791,9 @@ final class _NazaModelBootstrapScreenState
                           decoration: BoxDecoration(
                             color: app.NazaPalette.danger.withValues(alpha: 0.08),
                             border: Border.all(
-                              color: app.NazaPalette.danger.withValues(alpha: 0.35),
+                              color: app.NazaPalette.danger.withValues(
+                                alpha: 0.35,
+                              ),
                             ),
                             borderRadius: BorderRadius.circular(14),
                           ),
