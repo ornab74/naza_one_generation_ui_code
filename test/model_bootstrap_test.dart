@@ -49,9 +49,12 @@ void main() {
       expectedSize: bytes.length,
     );
 
-    await file.writeAsBytes(<int>[...bytes.take(bytes.length - 1), 0xff], flush: true);
-    expect(
-      () => NazaModelIntegrity.verifyFile(
+    final tampered = List<int>.from(bytes);
+    tampered[tampered.length - 1] ^= 0x01;
+    await file.writeAsBytes(tampered, flush: true);
+
+    await expectLater(
+      NazaModelIntegrity.verifyFile(
         file: file,
         expectedSha256: expected,
         expectedSize: bytes.length,
