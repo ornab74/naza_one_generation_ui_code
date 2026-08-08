@@ -191,7 +191,7 @@ class _CleanFridgePaneState extends State<_CleanFridgePane> {
   }
 
   Future<void> _pickPhoto() async {
-    if (_busy) return;
+    if (_busy || !_started) return;
     final choice = await _choosePhotoSource(context);
     if (choice == null || !mounted) return;
     setState(() {
@@ -217,7 +217,7 @@ class _CleanFridgePaneState extends State<_CleanFridgePane> {
 
   Future<void> _analyze() async {
     final image = _image;
-    if (_busy || image == null) return;
+    if (_busy || !_started || image == null) return;
     setState(() {
       _busy = true;
       _status = 'Analyzing visible fridge inventory locally';
@@ -268,6 +268,7 @@ class _CleanFridgePaneState extends State<_CleanFridgePane> {
       image: _image,
       note: _note,
       busy: _busy,
+      started: _started,
       onPicture: _pickPhoto,
       onClear: _busy
           ? null
@@ -275,7 +276,7 @@ class _CleanFridgePaneState extends State<_CleanFridgePane> {
                 _image = null;
                 _status = 'Picture cleared';
               }),
-      onAnalyze: _busy || _image == null ? null : _analyze,
+      onAnalyze: _busy || !_started || _image == null ? null : _analyze,
     );
     final results = _FridgeResults(log: _latest);
 
@@ -290,34 +291,33 @@ class _CleanFridgePaneState extends State<_CleanFridgePane> {
               subtitle: _status,
               started: _started,
               busy: _busy,
-              onStart: () => setState(() => _started = true),
+              onStart: () => setState(() {
+                _started = true;
+                _status = 'Scanner started • choose a picture';
+              }),
               onStop: _stop,
               onPicture: _started && !_busy ? _pickPhoto : null,
             ),
             const SizedBox(height: 12),
             Expanded(
-              child: !_started
-                  ? _StartFridgeCard(
-                      onStart: () => setState(() => _started = true),
+              child: wide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        Expanded(child: controls),
+                        const SizedBox(width: 12),
+                        Expanded(child: results),
+                      ],
                     )
-                  : wide
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: <Widget>[
-                            Expanded(child: controls),
-                            const SizedBox(width: 12),
-                            Expanded(child: results),
-                          ],
-                        )
-                      : ListView(
-                          keyboardDismissBehavior:
-                              ScrollViewKeyboardDismissBehavior.onDrag,
-                          children: <Widget>[
-                            controls,
-                            const SizedBox(height: 12),
-                            results,
-                          ],
-                        ),
+                  : ListView(
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
+                      children: <Widget>[
+                        controls,
+                        const SizedBox(height: 12),
+                        results,
+                      ],
+                    ),
             ),
           ],
         ),
@@ -400,52 +400,11 @@ class _ScannerHeader extends StatelessWidget {
       );
 }
 
-class _StartFridgeCard extends StatelessWidget {
-  final VoidCallback onStart;
-  const _StartFridgeCard({required this.onStart});
-
-  @override
-  Widget build(BuildContext context) => Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 620),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(26),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  const Icon(Icons.kitchen_outlined, size: 52),
-                  const SizedBox(height: 14),
-                  Text(
-                    'A cleaner private fridge scan',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Start, take or choose one picture, add an optional note, then review the encrypted structured inventory beside the image.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 18),
-                  FilledButton.icon(
-                    onPressed: onStart,
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Start fridge scanner'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-}
-
 class _FridgeControls extends StatelessWidget {
   final FoodVisionImage? image;
   final TextEditingController note;
   final bool busy;
+  final bool started;
   final VoidCallback onPicture;
   final VoidCallback? onClear;
   final VoidCallback? onAnalyze;
@@ -454,6 +413,7 @@ class _FridgeControls extends StatelessWidget {
     required this.image,
     required this.note,
     required this.busy,
+    required this.started,
     required this.onPicture,
     required this.onClear,
     required this.onAnalyze,
@@ -477,7 +437,7 @@ class _FridgeControls extends StatelessWidget {
                     ),
                   ),
                   FilledButton.tonalIcon(
-                    onPressed: busy ? null : onPicture,
+                    onPressed: busy || !started ? null : onPicture,
                     icon: const Icon(Icons.add_a_photo_rounded),
                     label: Text(image == null ? 'Picture' : 'Replace'),
                   ),
@@ -486,7 +446,7 @@ class _FridgeControls extends StatelessWidget {
               const SizedBox(height: 12),
               if (image == null)
                 Container(
-                  height: 190,
+                  height: 150,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(20),
@@ -494,7 +454,11 @@ class _FridgeControls extends StatelessWidget {
                       color: Theme.of(context).colorScheme.outlineVariant,
                     ),
                   ),
-                  child: const Text('No fridge picture selected'),
+                  child: Text(
+                    started
+                        ? 'No fridge picture selected'
+                        : 'Press Start, then choose a picture',
+                  ),
                 )
               else
                 ClipRRect(
@@ -531,7 +495,13 @@ class _FridgeControls extends StatelessWidget {
               FilledButton.icon(
                 onPressed: onAnalyze,
                 icon: const Icon(Icons.auto_awesome_rounded),
-                label: Text(busy ? 'Analyzing locally…' : 'Analyze & save encrypted'),
+                label: Text(
+                  !started
+                      ? 'Start scanner to analyze'
+                      : busy
+                          ? 'Analyzing locally…'
+                          : 'Analyze & save encrypted',
+                ),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(50),
                 ),
