@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'authenticated_rollback_guard.dart';
 import 'key_guardian.dart';
 import 'secure_database.dart';
 import 'security_kernel.dart';
@@ -10,14 +11,8 @@ import 'security_kernel.dart';
 const _securityStateNamespace = 'security.kernel';
 const _securityStateKey = 'state-v1';
 const _securityStateFormat = 'naza-security-state-v1';
-const _rollbackKeyPrefix = 'naza-security-highest-epoch-v1';
+const _rollbackKeyPrefix = 'naza-security-highest-epoch-v2';
 
-/// Hardened facade over [NazaSecureDatabase].
-///
-/// The controller deliberately keeps durable capability-root material behind a
-/// [NazaKeyGuardian]. Each active security epoch receives a newly derived
-/// capability key bound to the complete security state. Epoch transitions
-/// replace the kernel instead of carrying the old capability key forward.
 final class NazaHardenedVaultController {
   NazaHardenedVaultController({
     required this.vault,
@@ -41,7 +36,7 @@ final class NazaHardenedVaultController {
   String trustRootIdentity;
 
   NazaSecurityKernel? _kernel;
-  NazaRollbackGuard? _rollbackGuard;
+  NazaAuthenticatedRollbackGuard? _rollbackGuard;
   NazaForwardSecureAudit? _audit;
   String? _vaultId;
   int? _securityEpoch;
@@ -124,8 +119,6 @@ final class NazaHardenedVaultController {
     return vault.delete(namespace, key);
   }
 
-  /// Fresh password verification is required before issuing a privileged
-  /// capability. The capability remains single-use and state-bound.
   Future<NazaCapabilityLease> authorizeWithPassword({
     required String password,
     required NazaPrivilegedAction action,
@@ -286,56 +279,79 @@ final class NazaHardenedVaultController {
     final snapshot = await _readVaultHeaderSnapshot();
     _vaultId = snapshot.vaultId;
     final counter = NazaDeviceKeyCounterAdapter(secureStore);
-    final guard = NazaRollbackGuard(
+    final rollbackHandle = await keyGuardian.ensureRoot(
+      vaultId: snapshot.vaultId,
+      purpose: NazaGuardianPurpose.rollbackRoot,
+    );
+    if (rollbackHandle.exportable) {
+      throw const NazaSecurityException(
+        'guardian_exportable_root',
+        'Hardened rollback roots must not be exportable handles.',
+      );
+    }
+    final rollbackKey = await keyGuardian.deriveEphemeralSecret(
+      handle: rollbackHandle,
+      label: 'rollback-floor-authentication',
+      context: <String, Object?>{'vaultId': snapshot.vaultId},
+    );
+    final guard = NazaAuthenticatedRollbackGuard(
       counter,
       storageKey: '$_rollbackKeyPrefix-${snapshot.vaultId}',
+      authenticationKey: rollbackKey,
     );
-    final minimumEpoch = await guard.minimumEpoch();
+    _zero(rollbackKey);
 
-    final rawState = await vault.readJson(
-      _securityStateNamespace,
-      _securityStateKey,
-    );
-    int epoch;
-    if (rawState == null) {
-      if (!allowMigration || minimumEpoch > 0) {
-        throw const NazaSecurityException(
-          'rollback_state_missing',
-          'Protected rollback state exists but the encrypted vault security state is missing.',
-        );
-      }
-      epoch = math.max(1, snapshot.headerGeneration);
-      await _writeSecurityMetadata(
-        epoch: epoch,
-        headerGeneration: snapshot.headerGeneration,
-      );
-    } else {
-      final state = _parseSecurityMetadata(
-        rawState,
-        expectedVaultId: snapshot.vaultId,
-      );
-      epoch = state.epoch;
-      if (state.headerGeneration > snapshot.headerGeneration) {
-        throw const NazaSecurityException(
-          'header_rollback_detected',
-          'The vault header generation is older than the encrypted security state.',
-        );
-      }
-    }
-
-    await guard.verify(epoch);
-    final nextKernel = await _createEpochKernel(snapshot.vaultId, epoch);
-    final auditSeed = _randomBytes(32);
     try {
-      _kernel?.destroy();
-      _audit?.destroy();
-      _kernel = nextKernel;
-      _audit = NazaForwardSecureAudit(initialKey: auditSeed);
-      _rollbackGuard = guard;
-      _securityEpoch = epoch;
-      await guard.commit(epoch);
-    } finally {
-      _zero(auditSeed);
+      final minimumEpoch = await guard.minimumEpoch();
+      final rawState = await vault.readJson(
+        _securityStateNamespace,
+        _securityStateKey,
+      );
+      int epoch;
+      if (rawState == null) {
+        if (!allowMigration || minimumEpoch > 0) {
+          throw const NazaSecurityException(
+            'rollback_state_missing',
+            'Protected rollback state exists but the encrypted vault security state is missing.',
+          );
+        }
+        epoch = math.max(1, snapshot.headerGeneration);
+        await _writeSecurityMetadata(
+          epoch: epoch,
+          headerGeneration: snapshot.headerGeneration,
+        );
+      } else {
+        final state = _parseSecurityMetadata(
+          rawState,
+          expectedVaultId: snapshot.vaultId,
+        );
+        epoch = state.epoch;
+        if (state.headerGeneration > snapshot.headerGeneration) {
+          throw const NazaSecurityException(
+            'header_rollback_detected',
+            'The vault header generation is older than the encrypted security state.',
+          );
+        }
+      }
+
+      await guard.verify(epoch);
+      final nextKernel = await _createEpochKernel(snapshot.vaultId, epoch);
+      final auditSeed = _randomBytes(32);
+      try {
+        _kernel?.destroy();
+        _audit?.destroy();
+        _rollbackGuard?.destroy();
+        _kernel = nextKernel;
+        _audit = NazaForwardSecureAudit(initialKey: auditSeed);
+        _rollbackGuard = guard;
+        _securityEpoch = epoch;
+        await guard.commit(epoch);
+      } finally {
+        _zero(auditSeed);
+      }
+    } catch (_) {
+      guard.destroy();
+      rethrow;
     }
   }
 
@@ -405,9 +421,6 @@ final class NazaHardenedVaultController {
       headerGeneration: snapshot.headerGeneration,
     );
     await guard.commit(next);
-
-    // Derive the new epoch key only after persistent epoch state commits. Old
-    // leases become useless because the old kernel is destroyed immediately.
     final nextKernel = await _createEpochKernel(vaultId, next);
     final oldKernel = _kernel;
     _kernel = nextKernel;
@@ -529,6 +542,7 @@ final class NazaHardenedVaultController {
   void _destroySessionSecurity() {
     _kernel?.destroy();
     _audit?.destroy();
+    _rollbackGuard?.destroy();
     _kernel = null;
     _audit = null;
     _rollbackGuard = null;
