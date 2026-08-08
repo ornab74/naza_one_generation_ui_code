@@ -28,6 +28,7 @@ final class NazaHardenedSecurityRuntime {
   NazaPersistentForwardAudit? _persistentAudit;
   NazaKeyHandle? _capabilityRoot;
   NazaKeyHandle? _auditRoot;
+  NazaVerifiedModelIdentity? _activeModel;
   Uint8List? _sessionBinding;
 
   bool get isReady =>
@@ -56,6 +57,7 @@ final class NazaHardenedSecurityRuntime {
     bool passwordRequired = true,
     Map<NazaVaultRecordKey, Object?> initialRecords = const {},
   }) async {
+    await model.reverifyArtifacts();
     final identities = await const NazaSecurityIdentityDeriver().derive(
       model: model,
       recovery: recovery,
@@ -68,6 +70,7 @@ final class NazaHardenedSecurityRuntime {
       initialRecords: initialRecords,
     );
     try {
+      _activeModel = model;
       _controller = hardened;
       await _initializeRuntimeSecurity(identities);
       await _appendPersistent('runtime-created', <String, Object?>{
@@ -88,6 +91,7 @@ final class NazaHardenedSecurityRuntime {
     required NazaPostQuantumRecoveryState recovery,
     NazaPqTrustPolicy? trustPolicy,
   }) async {
+    await model.reverifyArtifacts();
     final identities = await const NazaSecurityIdentityDeriver().derive(
       model: model,
       recovery: recovery,
@@ -96,6 +100,7 @@ final class NazaHardenedSecurityRuntime {
     final hardened = _newController(identities);
     await hardened.unlock(password);
     try {
+      _activeModel = model;
       _controller = hardened;
       await _initializeRuntimeSecurity(identities);
       await _appendPersistent('runtime-unlocked', <String, Object?>{
@@ -116,6 +121,7 @@ final class NazaHardenedSecurityRuntime {
     }
     _persistentAudit?.destroy();
     _persistentAudit = null;
+    _activeModel = null;
     _zero(_sessionBinding);
     _sessionBinding = null;
     final hardened = _controller;
@@ -127,11 +133,26 @@ final class NazaHardenedSecurityRuntime {
     }
   }
 
+  /// Call immediately before the model worker opens/uses the artifact. The
+  /// production loader's own attestation checks remain complementary; this is
+  /// the hardened security runtime's independent trust gate.
+  Future<void> assertModelStillTrusted() async {
+    final model = _activeModel;
+    if (model == null || !isReady) {
+      throw const NazaSecurityException(
+        'model_trust_unavailable',
+        'No active byte-verified model identity is bound to this runtime.',
+      );
+    }
+    await model.reverifyArtifacts();
+  }
+
   Future<NazaCapabilityLease> authorizeWithPassword({
     required String password,
     required NazaPrivilegedAction action,
     String resource = 'vault',
   }) async {
+    await assertModelStillTrusted();
     final lease = await controller.authorizeWithPassword(
       password: password,
       action: action,
@@ -147,6 +168,7 @@ final class NazaHardenedSecurityRuntime {
   Future<Map<NazaVaultRecordKey, Object?>> exportRecordsAuthorized(
     NazaCapabilityLease lease,
   ) async {
+    await assertModelStillTrusted();
     final records = await controller.exportRecordsAuthorized(lease);
     records.removeWhere((record, _) => record.namespace.startsWith('security.'));
     await _appendPersistent('runtime-vault-exported', <String, Object?>{
@@ -156,6 +178,7 @@ final class NazaHardenedSecurityRuntime {
   }
 
   Future<void> rotateDataKeyAuthorized(NazaCapabilityLease lease) async {
+    await assertModelStillTrusted();
     await controller.rotateDataKeyAuthorized(lease);
     await _appendPersistent(
       'runtime-data-key-rotated',
@@ -279,6 +302,7 @@ final class NazaHardenedSecurityRuntime {
   void _destroySessionState() {
     _persistentAudit?.destroy();
     _persistentAudit = null;
+    _activeModel = null;
     _zero(_sessionBinding);
     _sessionBinding = null;
     _controller = null;
