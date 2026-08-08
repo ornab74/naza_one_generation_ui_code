@@ -36,7 +36,9 @@ final class NazaHardenedSecurityRuntime {
   NazaKeyHandle? _auditRoot;
   Uint8List? _sessionBinding;
 
-  bool get isReady => _controller?.isReady == true && _persistentAudit?.initialized == true;
+  bool get isReady =>
+      _controller?.isReady == true && _persistentAudit?.initialized == true;
+
   NazaHardenedVaultController get controller {
     final value = _controller;
     if (value == null || !isReady) {
@@ -152,6 +154,7 @@ final class NazaHardenedSecurityRuntime {
     NazaCapabilityLease lease,
   ) async {
     final records = await controller.exportRecordsAuthorized(lease);
+    records.removeWhere((record, _) => record.namespace.startsWith('security.'));
     await _appendPersistent('runtime-vault-exported', <String, Object?>{
       'recordCount': records.length,
     });
@@ -160,7 +163,10 @@ final class NazaHardenedSecurityRuntime {
 
   Future<void> rotateDataKeyAuthorized(NazaCapabilityLease lease) async {
     await controller.rotateDataKeyAuthorized(lease);
-    await _appendPersistent('runtime-data-key-rotated', const <String, Object?>{});
+    await _appendPersistent(
+      'runtime-data-key-rotated',
+      const <String, Object?>{},
+    );
   }
 
   Future<void> verifyPersistentAudit({int maxEntries = 256}) async {
@@ -248,7 +254,8 @@ final class NazaHardenedSecurityRuntime {
       event: event,
       data: <String, Object?>{
         ...data,
-        'guardianCapabilityProtection': _capabilityRoot?.protection.name ?? '',
+        'guardianCapabilityProtection':
+            _capabilityRoot?.protection.name ?? '',
         'guardianAuditProtection': _auditRoot?.protection.name ?? '',
       },
       securityEpoch: epoch,
