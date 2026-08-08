@@ -9,8 +9,6 @@ import 'secure_database.dart';
 import 'security_identity.dart';
 import 'security_kernel.dart';
 
-/// High-level hardened runtime that composes the vault controller, derived
-/// identities, persistent forward-secure audit, and guardian-managed roots.
 final class NazaHardenedSecurityRuntime {
   NazaHardenedSecurityRuntime({
     required this.vault,
@@ -230,15 +228,28 @@ final class NazaHardenedSecurityRuntime {
     _zero(_sessionBinding);
     _sessionBinding = derived;
 
-    final audit = NazaPersistentForwardAudit(
-      vault: vault,
-      secureStore: secureStore,
-      vaultId: state.vaultId,
+    final checkpointKey = await guardian.deriveEphemeralSecret(
+      handle: _auditRoot!,
+      label: 'persistent-audit-checkpoint',
+      context: <String, Object?>{
+        'vaultId': state.vaultId,
+        'format': 'naza-audit-checkpoint-v2',
+      },
     );
-    await audit.initialize();
-    await audit.verifyRecent();
-    _persistentAudit?.destroy();
-    _persistentAudit = audit;
+    try {
+      final audit = NazaPersistentForwardAudit(
+        vault: vault,
+        secureStore: secureStore,
+        vaultId: state.vaultId,
+        checkpointKey: checkpointKey,
+      );
+      await audit.initialize();
+      await audit.verifyRecent();
+      _persistentAudit?.destroy();
+      _persistentAudit = audit;
+    } finally {
+      _zero(checkpointKey);
+    }
   }
 
   Future<void> _appendPersistent(
