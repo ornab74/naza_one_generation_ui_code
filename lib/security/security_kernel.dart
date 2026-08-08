@@ -4,8 +4,6 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
-/// Security-critical state that can be bound into capabilities, audit entries,
-/// recovery manifests, and other privileged operations.
 final class NazaSecurityState {
   final int epoch;
   final String vaultId;
@@ -36,8 +34,6 @@ final class NazaSecurityState {
   };
 }
 
-/// High-risk actions are represented explicitly instead of by stringly typed
-/// booleans scattered through the UI.
 enum NazaPrivilegedAction {
   readPrivateData,
   writePrivateData,
@@ -51,8 +47,9 @@ enum NazaPrivilegedAction {
   eraseVault,
 }
 
-/// Single-purpose bearer capability. Capabilities are bound to the exact
-/// security-state digest and become invalid when that state changes.
+/// Single-purpose bearer capability bound to security state, use budget, and a
+/// short authorization lifetime. An unused lease therefore cannot remain valid
+/// indefinitely after the fresh-auth event that created it.
 final class NazaCapabilityLease {
   final String id;
   final NazaPrivilegedAction action;
@@ -61,6 +58,8 @@ final class NazaCapabilityLease {
   final String stateDigest;
   final int maxUses;
   final int issuedMonotonicCounter;
+  final int issuedAtMicros;
+  final int expiresAtMicros;
 
   int _uses = 0;
   bool _revoked = false;
@@ -73,6 +72,8 @@ final class NazaCapabilityLease {
     required this.stateDigest,
     required this.maxUses,
     required this.issuedMonotonicCounter,
+    required this.issuedAtMicros,
+    required this.expiresAtMicros,
   });
 
   int get uses => _uses;
@@ -82,19 +83,18 @@ final class NazaCapabilityLease {
   void revoke() => _revoked = true;
 }
 
-/// A small deterministic policy kernel for privileged operations.
-///
-/// It deliberately does not depend on any LLM output. The model may propose an
-/// action, but the action is authorized only by this deterministic layer.
 final class NazaSecurityKernel {
   NazaSecurityKernel({
     required List<int> capabilityKey,
     required NazaSecurityState initialState,
+    DateTime Function()? clock,
   }) : _capabilityKey = Uint8List.fromList(capabilityKey),
-       _state = initialState;
+       _state = initialState,
+       _clock = clock ?? DateTime.now;
 
   final Uint8List _capabilityKey;
   final Hmac _hmac = Hmac.sha256();
+  final DateTime Function() _clock;
   NazaSecurityState _state;
   int _counter = 0;
   final Map<String, NazaCapabilityLease> _leases = <String, NazaCapabilityLease>{};
@@ -103,7 +103,10 @@ final class NazaSecurityKernel {
 
   Future<String> stateDigest() async {
     final bytes = utf8.encode(_canonicalJson(_state.toCanonicalMap()));
-    final mac = await _hmac.calculateMac(bytes, secretKey: SecretKey(_capabilityKey));
+    final mac = await _hmac.calculateMac(
+      bytes,
+      secretKey: SecretKey(_capabilityKey),
+    );
     return base64UrlEncode(mac.bytes).replaceAll('=', '');
   }
 
@@ -111,15 +114,26 @@ final class NazaSecurityKernel {
     required NazaPrivilegedAction action,
     required String resource,
     int maxUses = 1,
+    Duration ttl = const Duration(seconds: 60),
   }) async {
     if (maxUses < 1 || maxUses > 1024) {
       throw ArgumentError.value(maxUses, 'maxUses', 'Use count must be 1-1024.');
     }
+    if (ttl < const Duration(seconds: 1) ||
+        ttl > const Duration(minutes: 5)) {
+      throw ArgumentError.value(
+        ttl,
+        'ttl',
+        'Capability lifetime must be between 1 second and 5 minutes.',
+      );
+    }
     _counter++;
     final digest = await stateDigest();
     final nonce = _randomBytes(16);
+    final issuedAt = _clock().toUtc().microsecondsSinceEpoch;
+    final expiresAt = issuedAt + ttl.inMicroseconds;
     final material = utf8.encode(
-      '${action.name}\u001f$resource\u001f${_state.epoch}\u001f$_counter\u001f$digest',
+      '${action.name}\u001f$resource\u001f${_state.epoch}\u001f$_counter\u001f$issuedAt\u001f$expiresAt\u001f$digest',
     );
     final idMac = await _hmac.calculateMac(
       <int>[...nonce, ...material],
@@ -134,6 +148,8 @@ final class NazaSecurityKernel {
       stateDigest: digest,
       maxUses: maxUses,
       issuedMonotonicCounter: _counter,
+      issuedAtMicros: issuedAt,
+      expiresAtMicros: expiresAt,
     );
     _leases[id] = lease;
     return lease;
@@ -146,16 +162,38 @@ final class NazaSecurityKernel {
   }) async {
     final current = _leases[lease.id];
     if (!identical(current, lease) || lease.revoked) {
-      throw const NazaSecurityException('capability_invalid', 'Capability is unknown or revoked.');
+      throw const NazaSecurityException(
+        'capability_invalid',
+        'Capability is unknown or revoked.',
+      );
+    }
+    final now = _clock().toUtc().microsecondsSinceEpoch;
+    if (now > lease.expiresAtMicros) {
+      lease.revoke();
+      _leases.remove(lease.id);
+      throw const NazaSecurityException(
+        'capability_expired',
+        'Capability authorization has expired; authenticate again.',
+      );
     }
     if (lease.exhausted) {
-      throw const NazaSecurityException('capability_exhausted', 'Capability use budget is exhausted.');
+      throw const NazaSecurityException(
+        'capability_exhausted',
+        'Capability use budget is exhausted.',
+      );
     }
     if (lease.action != action || lease.resource != resource) {
-      throw const NazaSecurityException('capability_scope', 'Capability does not authorize this operation.');
+      throw const NazaSecurityException(
+        'capability_scope',
+        'Capability does not authorize this operation.',
+      );
     }
-    if (lease.issuedEpoch != _state.epoch || lease.stateDigest != await stateDigest()) {
-      throw const NazaSecurityException('capability_stale', 'Capability was issued under a previous security state.');
+    if (lease.issuedEpoch != _state.epoch ||
+        lease.stateDigest != await stateDigest()) {
+      throw const NazaSecurityException(
+        'capability_stale',
+        'Capability was issued under a previous security state.',
+      );
     }
     lease._uses++;
     if (lease.exhausted) {
@@ -164,10 +202,12 @@ final class NazaSecurityKernel {
     }
   }
 
-  /// Advances security state and revokes every outstanding capability.
   void transition(NazaSecurityState next) {
     if (next.epoch <= _state.epoch) {
-      throw const NazaSecurityException('epoch_rollback', 'Security epoch must increase monotonically.');
+      throw const NazaSecurityException(
+        'epoch_rollback',
+        'Security epoch must increase monotonically.',
+      );
     }
     _state = next;
     revokeAll();
@@ -186,9 +226,6 @@ final class NazaSecurityKernel {
   }
 }
 
-/// Forward-evolving audit chain. The current key authenticates the next event,
-/// then is replaced by a one-way derived successor. Compromise of a later key
-/// does not reconstruct already-erased predecessor keys.
 final class NazaForwardSecureAudit {
   NazaForwardSecureAudit({required List<int> initialKey})
     : _key = Uint8List.fromList(initialKey);
@@ -218,7 +255,10 @@ final class NazaForwardSecureAudit {
       'sequence': sequence,
     };
     final encoded = utf8.encode(_canonicalJson(body));
-    final mac = await _hmac.calculateMac(encoded, secretKey: SecretKey(_key));
+    final mac = await _hmac.calculateMac(
+      encoded,
+      secretKey: SecretKey(_key),
+    );
     final macText = base64UrlEncode(mac.bytes).replaceAll('=', '');
     final entry = NazaAuditEntry(
       sequence: sequence,
@@ -248,8 +288,9 @@ final class NazaForwardSecureAudit {
   }
 
   Future<String> _entryDigest(NazaAuditEntry entry) async {
-    final digest = Sha256();
-    final hash = await digest.hash(utf8.encode(_canonicalJson(entry.toCanonicalMap())));
+    final hash = await Sha256().hash(
+      utf8.encode(_canonicalJson(entry.toCanonicalMap())),
+    );
     return base64UrlEncode(hash.bytes).replaceAll('=', '');
   }
 }
@@ -281,8 +322,6 @@ final class NazaAuditEntry {
   };
 }
 
-/// Tracks the highest observed epoch in a separate device key store. This is a
-/// rollback-detection signal, not a claim of a hardware monotonic counter.
 final class NazaRollbackGuard {
   NazaRollbackGuard(this._store, {required this.storageKey});
 
@@ -294,7 +333,10 @@ final class NazaRollbackGuard {
     if (raw == null || raw.isEmpty) return 0;
     final value = int.tryParse(raw);
     if (value == null || value < 0) {
-      throw const NazaSecurityException('rollback_state_corrupt', 'Stored rollback state is malformed.');
+      throw const NazaSecurityException(
+        'rollback_state_corrupt',
+        'Stored rollback state is malformed.',
+      );
     }
     return value;
   }
@@ -312,7 +354,10 @@ final class NazaRollbackGuard {
   Future<void> commit(int epoch) async {
     final current = await minimumEpoch();
     if (epoch < current) {
-      throw const NazaSecurityException('epoch_rollback', 'Rollback guard cannot move backwards.');
+      throw const NazaSecurityException(
+        'epoch_rollback',
+        'Rollback guard cannot move backwards.',
+      );
     }
     await _store.write(storageKey, epoch.toString());
   }
@@ -352,8 +397,14 @@ Object? _canonicalize(Object? value) {
       for (final key in keys) key: _canonicalize(value[key]),
     };
   }
-  if (value is List) return value.map<Object?>((item) => _canonicalize(item)).toList(growable: false);
-  if (value is num || value is bool || value is String || value == null) return value;
+  if (value is List) {
+    return value
+        .map<Object?>((item) => _canonicalize(item))
+        .toList(growable: false);
+  }
+  if (value is num || value is bool || value is String || value == null) {
+    return value;
+  }
   return value.toString();
 }
 
@@ -361,7 +412,9 @@ String _canonicalJson(Object? value) => jsonEncode(_canonicalize(value));
 
 Uint8List _randomBytes(int length) {
   final random = math.Random.secure();
-  return Uint8List.fromList(List<int>.generate(length, (_) => random.nextInt(256)));
+  return Uint8List.fromList(
+    List<int>.generate(length, (_) => random.nextInt(256)),
+  );
 }
 
 void _zero(List<int>? bytes) {
