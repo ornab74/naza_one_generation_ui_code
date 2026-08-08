@@ -60,7 +60,7 @@ void main() {
       containsPair('value', 1),
     );
     expect(
-      exported.keys.where((key) => key.namespace == 'security.kernel'),
+      exported.keys.where((key) => key.namespace.startsWith('security.')),
       isEmpty,
     );
 
@@ -134,6 +134,49 @@ void main() {
     expect(vault.isUnlocked, isFalse);
   });
 
+  test('forged lower rollback floor fails authentication', () async {
+    await controller.create(password: 'correct-password');
+    final rotateLease = await controller.authorizeWithPassword(
+      password: 'correct-password',
+      action: NazaPrivilegedAction.rotateKeys,
+    );
+    await controller.rotateDataKeyAuthorized(rotateLease);
+    expect(controller.securityEpoch, greaterThan(1));
+    await controller.lock();
+
+    final headerFile = File('${directory.path}/naza_one_vault.header.json');
+    final header = Map<String, Object?>.from(
+      jsonDecode(await headerFile.readAsString()) as Map,
+    );
+    final vaultId = header['vaultId'].toString();
+    await secureStore.write(
+      'naza-security-highest-epoch-v2-$vaultId',
+      jsonEncode(<String, Object?>{
+        'format': 'naza-authenticated-rollback-v1',
+        'epoch': 0,
+        'mac': 'attacker-forged-mac',
+      }),
+    );
+
+    vault = NazaSecureDatabase.forTesting(
+      directory,
+      deviceKeyStore: secureStore,
+    );
+    controller = _controller(vault, secureStore);
+
+    await expectLater(
+      controller.unlock('correct-password'),
+      throwsA(
+        isA<NazaSecurityException>().having(
+          (error) => error.code,
+          'code',
+          'rollback_state_authentication',
+        ),
+      ),
+    );
+    expect(vault.isUnlocked, isFalse);
+  });
+
   test('tampered encrypted security metadata fails closed', () async {
     await controller.create(password: 'correct-password');
     await controller.lock();
@@ -142,9 +185,6 @@ void main() {
     final bytes = await database.readAsBytes();
     expect(bytes, isNotEmpty);
 
-    // The controller's reserved state is authenticated by the underlying vault.
-    // This test modifies the header-level vault identity instead, which must fail
-    // before a hardened session can be attached.
     final headerFile = File('${directory.path}/naza_one_vault.header.json');
     final header = Map<String, Object?>.from(
       jsonDecode(await headerFile.readAsString()) as Map,
