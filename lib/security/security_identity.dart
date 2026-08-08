@@ -71,7 +71,7 @@ final class NazaSecurityIdentityDeriver {
   }) async {
     model.validate();
     _validateRecoveryState(recovery);
-    trustPolicy.validate();
+    _validateTrustPolicy(trustPolicy);
 
     final modelIdentity = await _digestMap(<String, Object?>{
       'kind': 'model-attestation',
@@ -88,7 +88,7 @@ final class NazaSecurityIdentityDeriver {
       'enrolledAt': recovery.enrolledAt?.toUtc().toIso8601String() ?? '',
       'lastVerifiedAt': recovery.lastVerifiedAt?.toUtc().toIso8601String() ?? '',
     });
-    final trustIdentity = await trustPolicy.identity();
+    final trustIdentity = trustPolicy.identity();
 
     return NazaSecurityIdentitySnapshot(
       modelIdentity: modelIdentity,
@@ -119,6 +119,24 @@ final class NazaSecurityIdentityDeriver {
           'Enrolled recovery state is missing its authenticated identity metadata.',
         );
       }
+    }
+  }
+
+  void _validateTrustPolicy(NazaPqTrustPolicy policy) {
+    if (policy.generation < policy.minimumGeneration ||
+        policy.minimumGeneration < 2 ||
+        !policy.requireHybridKem ||
+        !policy.requirePqSignature ||
+        !policy.requireClassicalSignature ||
+        policy.minimumKem != 'ML-KEM-1024' ||
+        policy.minimumPqSignature != 'ML-DSA-87' ||
+        !policy.allowedKems.contains('ML-KEM-1024') ||
+        !policy.allowedPqSignatures.contains('ML-DSA-87') ||
+        !policy.allowedClassicalSignatures.contains('Ed25519')) {
+      throw const NazaSecurityIdentityException(
+        'trust_policy_downgrade',
+        'Hardened mode requires the maximum hybrid post-quantum trust policy.',
+      );
     }
   }
 
