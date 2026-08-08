@@ -100,6 +100,27 @@ void main() {
         runtimeIdentity: 'litert-lm/test-runtime',
         backendIdentity: 'cpu-test-backend',
       ),
+      throwsA(isA<NazaSecurityIdentityException>()),
+    );
+  });
+
+  test('model replacement after runtime start removes privileged authority', () async {
+    await runtime.create(
+      password: 'runtime-password',
+      model: model,
+      recovery: NazaPostQuantumRecoveryState.defaults(),
+    );
+
+    // Preserve length so the defense must reach the digest check rather than
+    // relying only on a cheap file-size mismatch.
+    final replacement = List<int>.filled(model.modelBytes, 0x41);
+    await modelFile.writeAsBytes(replacement, flush: true);
+
+    await expectLater(
+      runtime.authorizeWithPassword(
+        password: 'runtime-password',
+        action: NazaPrivilegedAction.exportVault,
+      ),
       throwsA(
         isA<NazaSecurityIdentityException>().having(
           (error) => error.code,
