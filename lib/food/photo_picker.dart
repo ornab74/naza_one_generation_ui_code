@@ -10,7 +10,7 @@ import 'package:image_picker/image_picker.dart' as image_picker;
 import 'config.dart';
 import 'models.dart';
 
-enum FoodPhotoSource { camera, gallery }
+enum FoodPhotoSource { camera, gallery, files }
 
 enum FoodPhotoPickOutcome { selected, cancelled, unavailable, failed }
 
@@ -56,12 +56,14 @@ final class FoodPhotoPickResult {
       outcome == FoodPhotoPickOutcome.selected && image != null;
 }
 
-/// Acquires one food photo and converts it to a bounded, metadata-free PNG.
+/// Acquires one food/scanner photo and converts it to a bounded,
+/// metadata-free PNG.
 ///
-/// Mobile camera and gallery acquisition use `image_picker`. Desktop gallery
-/// acquisition uses `file_selector`; camera capture is intentionally reported
-/// as unavailable on desktop. Supplying [acquirer] bypasses native acquisition
-/// while retaining all byte limits, decoding, resizing, and PNG normalization.
+/// Camera and gallery acquisition on mobile use `image_picker`. Explicit
+/// `files` selection uses the OS document/file picker on every supported
+/// platform, including Android. Desktop gallery and files both use
+/// `file_selector`. Every path still passes through the same decode, size,
+/// dimension and metadata-stripping normalization boundary.
 final class FoodPhotoPicker {
   FoodPhotoPicker({
     this.acquirer,
@@ -70,11 +72,10 @@ final class FoodPhotoPicker {
     Future<file_selector.XFile?> Function()? desktopFilePicker,
   }) : _platform = platform ?? _detectPlatform(),
        _mobilePicker = mobilePicker ?? image_picker.ImagePicker(),
-       _desktopFilePicker = desktopFilePicker ?? _openDesktopImage;
+       _desktopFilePicker = desktopFilePicker ?? _openImageFile;
 
   static final FoodPhotoPicker instance = FoodPhotoPicker();
 
-  /// Optional native-acquisition replacement used by deterministic tests.
   final FoodPhotoAcquirer? acquirer;
   final FoodPhotoPlatform _platform;
   final image_picker.ImagePicker _mobilePicker;
@@ -86,6 +87,10 @@ final class FoodPhotoPicker {
 
   Future<FoodPhotoPickResult> pickGallery() {
     return pick(FoodPhotoSource.gallery);
+  }
+
+  Future<FoodPhotoPickResult> pickFiles() {
+    return pick(FoodPhotoSource.files);
   }
 
   Future<FoodPhotoPickResult> pick(FoodPhotoSource source) async {
@@ -102,14 +107,12 @@ final class FoodPhotoPicker {
         );
       }
 
-      // Never mutate memory owned by an injected acquirer. The working copy is
-      // cleared after the EXIF-free normalized image has been produced.
       workingBytes = Uint8List.fromList(acquired.bytes);
       final image = await _normalize(workingBytes, acquired.name);
       return FoodPhotoPickResult.selected(image);
     } on MissingPluginException {
       return const FoodPhotoPickResult.unavailable(
-        'Photo capture is unavailable in this build. Fully restart or rebuild the app to register the native picker.',
+        'Photo selection is unavailable in this build. Fully restart or rebuild the app to register the native picker.',
       );
     } on UnsupportedError catch (error) {
       return FoodPhotoPickResult.unavailable(_friendlyError(error));
@@ -130,14 +133,17 @@ final class FoodPhotoPicker {
   Future<FoodPhotoSourceData?> _acquire(FoodPhotoSource source) async {
     switch (_platform) {
       case FoodPhotoPlatform.mobile:
+        if (source == FoodPhotoSource.files) {
+          return _acquireSystemFile();
+        }
         return _acquireMobile(source);
       case FoodPhotoPlatform.desktop:
         if (source == FoodPhotoSource.camera) {
           throw UnsupportedError(
-            'Camera capture is available on Android and iOS. On desktop, choose an existing food photo.',
+            'Camera capture is available on Android and iOS. On desktop, choose an existing scanner photo.',
           );
         }
-        return _acquireDesktopGallery();
+        return _acquireSystemFile();
       case FoodPhotoPlatform.unsupported:
         throw UnsupportedError(
           'Photo selection is unavailable on this platform.',
@@ -164,7 +170,7 @@ final class FoodPhotoPicker {
     );
   }
 
-  Future<FoodPhotoSourceData?> _acquireDesktopGallery() async {
+  Future<FoodPhotoSourceData?> _acquireSystemFile() async {
     final picked = await _desktopFilePicker();
     if (picked == null) return null;
     final length = await picked.length();
@@ -175,11 +181,11 @@ final class FoodPhotoPicker {
     );
   }
 
-  static Future<file_selector.XFile?> _openDesktopImage() {
+  static Future<file_selector.XFile?> _openImageFile() {
     return file_selector.openFile(
       acceptedTypeGroups: const <file_selector.XTypeGroup>[
         file_selector.XTypeGroup(
-          label: 'Food photos',
+          label: 'Scanner photos',
           extensions: <String>['jpg', 'jpeg', 'png', 'webp'],
         ),
       ],
@@ -282,7 +288,7 @@ final class FoodPhotoPicker {
     final dot = leaf.lastIndexOf('.');
     final rawStem = dot > 0 ? leaf.substring(0, dot) : leaf;
     final stem = rawStem.replaceAll(RegExp(r'[^A-Za-z0-9._ -]'), '_').trim();
-    return '${stem.isEmpty ? 'food-photo' : stem}.png';
+    return '${stem.isEmpty ? 'scanner-photo' : stem}.png';
   }
 
   static bool _isUnavailablePlatformError(PlatformException error) {
@@ -307,9 +313,13 @@ final class FoodPhotoPicker {
       return 'Photo-library access was denied. Allow photo access in system settings, then try again.';
     }
     if (_isUnavailablePlatformError(error)) {
-      return source == FoodPhotoSource.camera
-          ? 'No usable camera is available on this device.'
-          : 'The system photo picker is unavailable on this device.';
+      return switch (source) {
+        FoodPhotoSource.camera => 'No usable camera is available on this device.',
+        FoodPhotoSource.gallery =>
+          'The system photo-library picker is unavailable on this device.',
+        FoodPhotoSource.files =>
+          'The system file picker is unavailable on this device.',
+      };
     }
     final detail = error.message?.trim();
     return detail == null || detail.isEmpty
