@@ -43,6 +43,37 @@ void main() {
     );
   });
 
+  test('unused capability expires after its fresh-auth window', () async {
+    var now = DateTime.utc(2026, 8, 8, 3);
+    final kernel = NazaSecurityKernel(
+      capabilityKey: Uint8List.fromList(List<int>.filled(32, 11)),
+      initialState: state(11),
+      clock: () => now,
+    );
+    final lease = await kernel.issueLease(
+      action: NazaPrivilegedAction.changeRecovery,
+      resource: 'recovery',
+      ttl: const Duration(seconds: 30),
+    );
+
+    now = now.add(const Duration(seconds: 31));
+
+    await expectLater(
+      kernel.consumeLease(
+        lease,
+        action: NazaPrivilegedAction.changeRecovery,
+        resource: 'recovery',
+      ),
+      throwsA(
+        isA<NazaSecurityException>().having(
+          (error) => error.code,
+          'code',
+          'capability_expired',
+        ),
+      ),
+    );
+  });
+
   test('capability is invalidated when security state changes', () async {
     final kernel = NazaSecurityKernel(
       capabilityKey: Uint8List.fromList(List<int>.filled(32, 7)),
@@ -145,6 +176,9 @@ void main() {
       initialState: state(1, model: 'model-b'),
     );
 
-    expect(await firstKernel.stateDigest(), isNot(await secondKernel.stateDigest()));
+    expect(
+      await firstKernel.stateDigest(),
+      isNot(await secondKernel.stateDigest()),
+    );
   });
 }
