@@ -51,9 +51,6 @@ abstract interface class NazaKeyGuardian {
   Future<void> revokeRoot(NazaKeyHandle handle);
 }
 
-/// Portable guardian backed by [NazaDeviceKeyStore]. Durable roots are loaded
-/// only long enough to derive short-lived children and are overwritten on a
-/// best-effort basis. This provider does not claim hardware non-exportability.
 final class NazaSecureStoreKeyGuardian implements NazaKeyGuardian {
   NazaSecureStoreKeyGuardian(this._store);
 
@@ -94,14 +91,7 @@ final class NazaSecureStoreKeyGuardian implements NazaKeyGuardian {
     required String label,
     required Map<String, Object?> context,
   }) async {
-    if (handle.exportable ||
-        handle.protection != NazaGuardianProtection.platformSecureStore ||
-        !handle.id.startsWith('$_guardianFormat/')) {
-      throw const NazaKeyGuardianException(
-        'invalid_handle',
-        'The guardian key handle is not valid for this provider.',
-      );
-    }
+    _validateHandle(handle);
     if (label.isEmpty || label.length > 128) {
       throw ArgumentError.value(label, 'label', 'Invalid derivation label.');
     }
@@ -135,13 +125,31 @@ final class NazaSecureStoreKeyGuardian implements NazaKeyGuardian {
 
   @override
   Future<void> revokeRoot(NazaKeyHandle handle) async {
-    if (!handle.id.startsWith('$_guardianFormat/')) {
+    _validateHandle(handle);
+    await _store.delete(_storageKey(handle.id));
+  }
+
+  void _validateHandle(NazaKeyHandle handle) {
+    final expectedSuffix = '/${handle.purpose.name}';
+    if (handle.exportable ||
+        handle.protection != NazaGuardianProtection.platformSecureStore ||
+        !handle.id.startsWith('$_guardianFormat/') ||
+        !handle.id.endsWith(expectedSuffix)) {
       throw const NazaKeyGuardianException(
         'invalid_handle',
-        'The guardian key handle is not valid for this provider.',
+        'The guardian key handle is not valid for this provider or purpose.',
       );
     }
-    await _store.delete(_storageKey(handle.id));
+    final components = handle.id.split('/');
+    if (components.length != 3 ||
+        components[0] != _guardianFormat ||
+        components[2] != handle.purpose.name) {
+      throw const NazaKeyGuardianException(
+        'invalid_handle',
+        'The guardian key handle identity is malformed.',
+      );
+    }
+    _validateVaultId(components[1]);
   }
 
   Uint8List _decodeRoot(String encoded) {
