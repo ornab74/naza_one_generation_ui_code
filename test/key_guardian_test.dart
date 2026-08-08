@@ -66,6 +66,36 @@ void main() {
     expect(capKey, isNot(auditKey));
   });
 
+  test('forged purpose-confusion handle is rejected', () async {
+    final store = NazaMemoryDeviceKeyStore();
+    final guardian = NazaSecureStoreKeyGuardian(store);
+    final capability = await guardian.ensureRoot(
+      vaultId: 'abcdefghijklmnop',
+      purpose: NazaGuardianPurpose.capabilityRoot,
+    );
+    final forged = NazaKeyHandle(
+      id: capability.id,
+      purpose: NazaGuardianPurpose.auditRoot,
+      protection: capability.protection,
+      exportable: false,
+    );
+
+    await expectLater(
+      guardian.deriveEphemeralSecret(
+        handle: forged,
+        label: 'session',
+        context: const {'epoch': 1},
+      ),
+      throwsA(
+        isA<NazaKeyGuardianException>().having(
+          (error) => error.code,
+          'code',
+          'invalid_handle',
+        ),
+      ),
+    );
+  });
+
   test('revoked guardian root fails future derivation', () async {
     final store = NazaMemoryDeviceKeyStore();
     final guardian = NazaSecureStoreKeyGuardian(store);
