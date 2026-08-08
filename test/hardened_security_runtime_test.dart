@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/security/hardened_security_runtime.dart';
 import 'package:naza_one/security/key_guardian.dart';
@@ -14,20 +16,33 @@ void main() {
   late NazaMemoryDeviceKeyStore secureStore;
   late NazaSecureDatabase vault;
   late NazaHardenedSecurityRuntime runtime;
-
-  const model = NazaVerifiedModelIdentity(
-    modelSha256:
-        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    tokenizerSha256:
-        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    runtimeIdentity: 'litert-lm/test-runtime',
-    backendIdentity: 'cpu-test-backend',
-    policySha256:
-        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-  );
+  late File modelFile;
+  late File tokenizerFile;
+  late List<int> policyBytes;
+  late NazaVerifiedModelIdentity model;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('naza-hardened-runtime-');
+    modelFile = File('${directory.path}/model.bin');
+    tokenizerFile = File('${directory.path}/tokenizer.bin');
+    final modelBytes = utf8.encode('verified-model-bytes-v1');
+    final tokenizerBytes = utf8.encode('verified-tokenizer-bytes-v1');
+    policyBytes = utf8.encode('verified-policy-bytes-v1');
+    await modelFile.writeAsBytes(modelBytes, flush: true);
+    await tokenizerFile.writeAsBytes(tokenizerBytes, flush: true);
+    model = await const NazaModelFileAttestor().attest(
+      modelFile: modelFile,
+      tokenizerFile: tokenizerFile,
+      policyBytes: policyBytes,
+      expectedModelSha256: crypto.sha256.convert(modelBytes).toString(),
+      expectedTokenizerSha256: crypto.sha256.convert(tokenizerBytes).toString(),
+      expectedPolicySha256: crypto.sha256.convert(policyBytes).toString(),
+      expectedModelBytes: modelBytes.length,
+      expectedTokenizerBytes: tokenizerBytes.length,
+      runtimeIdentity: 'litert-lm/test-runtime',
+      backendIdentity: 'cpu-test-backend',
+    );
+
     secureStore = NazaMemoryDeviceKeyStore();
     vault = NazaSecureDatabase.forTesting(
       directory,
@@ -49,7 +64,7 @@ void main() {
     }
   });
 
-  test('derives stable identities from structured model and recovery state', () async {
+  test('derives stable identities from byte-verified model and recovery state', () async {
     final recovery = NazaPostQuantumRecoveryState.defaults();
     final deriver = const NazaSecurityIdentityDeriver();
 
@@ -71,24 +86,27 @@ void main() {
     expect(first.recoveryIdentity, isNotEmpty);
   });
 
-  test('rejects malformed model attestation digests', () async {
-    const malformed = NazaVerifiedModelIdentity(
-      modelSha256: 'not-a-sha256',
-      tokenizerSha256:
-          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      runtimeIdentity: 'runtime',
-      backendIdentity: 'backend',
-      policySha256:
-          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-    );
+  test('model substitution fails attestation before identity minting', () async {
+    await modelFile.writeAsString('attacker-substituted-model', flush: true);
 
     await expectLater(
-      const NazaSecurityIdentityDeriver().derive(
-        model: malformed,
-        recovery: NazaPostQuantumRecoveryState.defaults(),
-        trustPolicy: NazaPqTrustPolicy.maximum(),
+      const NazaModelFileAttestor().attest(
+        modelFile: modelFile,
+        tokenizerFile: tokenizerFile,
+        policyBytes: policyBytes,
+        expectedModelSha256: model.modelSha256,
+        expectedTokenizerSha256: model.tokenizerSha256,
+        expectedPolicySha256: model.policySha256,
+        runtimeIdentity: 'litert-lm/test-runtime',
+        backendIdentity: 'cpu-test-backend',
       ),
-      throwsA(isA<NazaSecurityIdentityException>()),
+      throwsA(
+        isA<NazaSecurityIdentityException>().having(
+          (error) => error.code,
+          'code',
+          'model_digest_mismatch',
+        ),
+      ),
     );
   });
 
