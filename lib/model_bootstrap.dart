@@ -465,7 +465,7 @@ final class NazaVerifiedModelDownloader {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw NazaModelSourceUnavailable(
           uri,
-          'HTTP ${response.statusCode} ${response.reasonPhrase ?? ''}'.trim(),
+          'HTTP ${response.statusCode} ${response.reasonPhrase}'.trim(),
         );
       }
 
