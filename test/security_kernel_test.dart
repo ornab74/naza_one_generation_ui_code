@@ -43,12 +43,12 @@ void main() {
     );
   });
 
-  test('unused capability expires after its fresh-auth window', () async {
-    var now = DateTime.utc(2026, 8, 8, 3);
+  test('unused capability expires on monotonic time', () async {
+    var monotonicMicros = 0;
     final kernel = NazaSecurityKernel(
       capabilityKey: Uint8List.fromList(List<int>.filled(32, 11)),
       initialState: state(11),
-      clock: () => now,
+      monotonicMicros: () => monotonicMicros,
     );
     final lease = await kernel.issueLease(
       action: NazaPrivilegedAction.changeRecovery,
@@ -56,7 +56,7 @@ void main() {
       ttl: const Duration(seconds: 30),
     );
 
-    now = now.add(const Duration(seconds: 31));
+    monotonicMicros += const Duration(seconds: 31).inMicroseconds;
 
     await expectLater(
       kernel.consumeLease(
