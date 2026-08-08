@@ -9,8 +9,10 @@ import 'secure_database.dart';
 import 'security_kernel.dart';
 
 const _securityStateNamespace = 'security.kernel';
-const _securityStateKey = 'state-v1';
-const _securityStateFormat = 'naza-security-state-v1';
+const _securityStateKey = 'state-v2';
+const _securityStateFormat = 'naza-security-state-v2';
+const _legacySecurityStateKey = 'state-v1';
+const _legacySecurityStateFormat = 'naza-security-state-v1';
 const _rollbackKeyPrefix = 'naza-security-highest-epoch-v2';
 
 final class NazaHardenedVaultController {
@@ -294,37 +296,43 @@ final class NazaHardenedVaultController {
       label: 'rollback-floor-authentication',
       context: <String, Object?>{'vaultId': snapshot.vaultId},
     );
+    final rollbackStorageKey = '$_rollbackKeyPrefix-${snapshot.vaultId}';
     final guard = NazaAuthenticatedRollbackGuard(
       counter,
-      storageKey: '$_rollbackKeyPrefix-${snapshot.vaultId}',
+      storageKey: rollbackStorageKey,
       authenticationKey: rollbackKey,
     );
     _zero(rollbackKey);
 
     try {
-      final minimumEpoch = await guard.minimumEpoch();
-      final rawState = await vault.readJson(
+      final protectedRollbackRaw = await secureStore.read(rollbackStorageKey);
+      final currentRaw = await vault.readJson(
         _securityStateNamespace,
         _securityStateKey,
       );
+      final legacyRaw = currentRaw == null
+          ? await vault.readJson(_securityStateNamespace, _legacySecurityStateKey)
+          : null;
+
       int epoch;
-      if (rawState == null) {
-        if (!allowMigration || minimumEpoch > 0) {
-          throw const NazaSecurityException(
-            'rollback_state_missing',
-            'Protected rollback state exists but the encrypted vault security state is missing.',
-          );
-        }
-        epoch = math.max(1, snapshot.headerGeneration);
-        await _writeSecurityMetadata(
-          epoch: epoch,
-          headerGeneration: snapshot.headerGeneration,
-        );
-      } else {
+      var migration = false;
+      if (currentRaw != null) {
         final state = _parseSecurityMetadata(
-          rawState,
+          currentRaw,
           expectedVaultId: snapshot.vaultId,
         );
+        if (!state.rollbackProtected) {
+          throw const NazaSecurityException(
+            'rollback_state_unprotected',
+            'Hardened security state unexpectedly lacks rollback protection.',
+          );
+        }
+        if (protectedRollbackRaw == null || protectedRollbackRaw.isEmpty) {
+          throw const NazaSecurityException(
+            'rollback_state_missing',
+            'An established hardened vault is missing its protected rollback state.',
+          );
+        }
         epoch = state.epoch;
         if (state.headerGeneration > snapshot.headerGeneration) {
           throw const NazaSecurityException(
@@ -332,9 +340,48 @@ final class NazaHardenedVaultController {
             'The vault header generation is older than the encrypted security state.',
           );
         }
+      } else if (legacyRaw != null) {
+        if (!allowMigration) {
+          throw const NazaSecurityException(
+            'security_migration_required',
+            'Legacy hardened state requires an authenticated migration.',
+          );
+        }
+        final state = _parseLegacySecurityMetadata(
+          legacyRaw,
+          expectedVaultId: snapshot.vaultId,
+        );
+        epoch = state.epoch;
+        migration = true;
+      } else {
+        if (!allowMigration) {
+          throw const NazaSecurityException(
+            'security_state_missing',
+            'Encrypted security state is missing.',
+          );
+        }
+        epoch = math.max(1, snapshot.headerGeneration);
+        migration = true;
       }
 
-      await guard.verify(epoch);
+      if (!migration) {
+        await guard.verify(epoch);
+      } else {
+        // Migration is allowed only when no authenticated v2 floor exists. If
+        // one exists but the encrypted v2 state disappeared, treat that as a
+        // rollback/deletion event instead of silently rebuilding protection.
+        if (protectedRollbackRaw != null && protectedRollbackRaw.isNotEmpty) {
+          throw const NazaSecurityException(
+            'security_state_missing',
+            'Protected rollback state exists but encrypted v2 security state is missing.',
+          );
+        }
+        await _writeSecurityMetadata(
+          epoch: epoch,
+          headerGeneration: snapshot.headerGeneration,
+        );
+      }
+
       final nextKernel = await _createEpochKernel(snapshot.vaultId, epoch);
       final auditSeed = _randomBytes(32);
       try {
@@ -346,6 +393,9 @@ final class NazaHardenedVaultController {
         _rollbackGuard = guard;
         _securityEpoch = epoch;
         await guard.commit(epoch);
+        if (migration && legacyRaw != null) {
+          await vault.delete(_securityStateNamespace, _legacySecurityStateKey);
+        }
       } finally {
         _zero(auditSeed);
       }
@@ -447,6 +497,7 @@ final class NazaHardenedVaultController {
         'vaultId': _vaultId ?? '',
         'epoch': epoch,
         'headerGeneration': headerGeneration,
+        'rollbackProtected': true,
         'updatedAt': DateTime.now().toUtc().toIso8601String(),
       },
     );
@@ -466,6 +517,7 @@ final class NazaHardenedVaultController {
     final vaultId = raw['vaultId']?.toString() ?? '';
     final epoch = _positiveInt(raw['epoch']);
     final headerGeneration = _positiveInt(raw['headerGeneration']);
+    final rollbackProtected = raw['rollbackProtected'] == true;
     if (format != _securityStateFormat ||
         vaultId != expectedVaultId ||
         epoch == null ||
@@ -478,6 +530,34 @@ final class NazaHardenedVaultController {
     return _VaultSecurityMetadata(
       epoch: epoch,
       headerGeneration: headerGeneration,
+      rollbackProtected: rollbackProtected,
+    );
+  }
+
+  _VaultSecurityMetadata _parseLegacySecurityMetadata(
+    Object raw, {
+    required String expectedVaultId,
+  }) {
+    if (raw is! Map ||
+        raw['format']?.toString() != _legacySecurityStateFormat ||
+        raw['vaultId']?.toString() != expectedVaultId) {
+      throw const NazaSecurityException(
+        'legacy_security_state_corrupt',
+        'Legacy encrypted security state failed validation.',
+      );
+    }
+    final epoch = _positiveInt(raw['epoch']);
+    final headerGeneration = _positiveInt(raw['headerGeneration']);
+    if (epoch == null || headerGeneration == null) {
+      throw const NazaSecurityException(
+        'legacy_security_state_corrupt',
+        'Legacy encrypted security state is malformed.',
+      );
+    }
+    return _VaultSecurityMetadata(
+      epoch: epoch,
+      headerGeneration: headerGeneration,
+      rollbackProtected: false,
     );
   }
 
@@ -605,10 +685,12 @@ final class _VaultHeaderSnapshot {
 final class _VaultSecurityMetadata {
   final int epoch;
   final int headerGeneration;
+  final bool rollbackProtected;
 
   const _VaultSecurityMetadata({
     required this.epoch,
     required this.headerGeneration,
+    required this.rollbackProtected,
   });
 }
 
