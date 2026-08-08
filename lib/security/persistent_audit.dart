@@ -9,7 +9,6 @@ import 'secure_database.dart';
 const _auditFormat = 'naza-persistent-audit-v1';
 const _auditNamespace = 'security.audit';
 const _auditCheckpointPrefix = 'naza-audit-checkpoint-v1';
-const _auditRootPrefix = 'naza-audit-root-v1';
 
 final class NazaPersistentAuditEntry {
   final int sequence;
@@ -188,9 +187,11 @@ final class NazaPersistentForwardAudit {
       digest: digest,
     );
 
-    // Persist entry first. If the process dies here, startup can validate and
-    // adopt exactly this one next entry using the still-current checkpoint key.
-    await vault.writeJson(_auditNamespace, _entryKey(nextSequence), entry.toJson());
+    await vault.writeJson(
+      _auditNamespace,
+      _entryKey(nextSequence),
+      entry.toJson(),
+    );
 
     final nextKey = await _ratchet(key, nextSequence);
     final oldKey = _ratchetKey;
@@ -200,7 +201,6 @@ final class NazaPersistentForwardAudit {
     try {
       await _persistCheckpoint();
     } catch (_) {
-      // Restore in-memory checkpoint so retry/restart semantics remain correct.
       _zero(_ratchetKey);
       _ratchetKey = oldKey;
       _sequence = nextSequence - 1;
