@@ -1,11 +1,5 @@
 import 'package:dart_ipfs/dart_ipfs.dart';
 
-/// Reproducible UnixFS settings used both when publishing and when locally
-/// attaching the verified model to a low-resource Kubo filestore.
-///
-/// Keep these values identical to the options used for the original IPFS
-/// upload. A different chunker, CID version, leaf format, or DAG layout creates
-/// a different root CID even when the model bytes are identical.
 class ModelSeedProfile {
   const ModelSeedProfile({
     this.cidVersion = 1,
@@ -23,111 +17,111 @@ class ModelSeedProfile {
 
   void validate() {
     if (cidVersion != 1) {
-      throw const ModelManifestException(
-        'Low-resource no-copy seeding requires CIDv1.',
-      );
+      throw const ModelManifestException('Low-resource seeding requires CIDv1.');
     }
     if (hashFunction != 'sha2-256') {
-      throw const ModelManifestException(
-        'Only sha2-256 IPFS blocks are supported for model seeding.',
-      );
+      throw const ModelManifestException('Only sha2-256 IPFS blocks are supported.');
     }
     if (!RegExp(r'^size-[1-9][0-9]{3,7}$').hasMatch(chunker)) {
       throw const ModelManifestException('Unsafe or unsupported IPFS chunker.');
     }
     if (!rawLeaves) {
-      throw const ModelManifestException(
-        'No-copy filestore seeding requires raw UnixFS leaves.',
-      );
+      throw const ModelManifestException('No-copy filestore seeding requires raw UnixFS leaves.');
     }
   }
 
   List<String> get kuboAddArguments => <String>[
-    '--cid-version=$cidVersion',
-    '--hash=$hashFunction',
-    '--chunker=$chunker',
-    '--raw-leaves=$rawLeaves',
-    '--trickle=$trickle',
-  ];
-
-  String get publishingCommandArguments => kuboAddArguments.join(' ');
+        '--cid-version=$cidVersion',
+        '--hash=$hashFunction',
+        '--chunker=$chunker',
+        '--raw-leaves=$rawLeaves',
+        '--trickle=$trickle',
+      ];
 }
 
-/// Immutable, security-sensitive metadata for one downloadable model.
-///
-/// Replace [cid] and [sha256] only after the final model file has been added to
-/// IPFS. Never publish a CID without independently calculating the SHA-256
-/// digest of the exact same file.
+class ModelPartManifest {
+  const ModelPartManifest({
+    required this.index,
+    required this.name,
+    required this.sizeBytes,
+    required this.sha256,
+    required this.cid,
+  });
+
+  final int index;
+  final String name;
+  final int sizeBytes;
+  final String sha256;
+  final String cid;
+
+  void validate() {
+    if (index < 0) {
+      throw const ModelManifestException('Part index must be non-negative.');
+    }
+    if (!_safeFileName(name)) {
+      throw ModelManifestException('Unsafe model part filename: $name');
+    }
+    if (sizeBytes <= 0) {
+      throw ModelManifestException('Invalid model part size: $name');
+    }
+    if (!_isSha256(sha256)) {
+      throw ModelManifestException('Invalid SHA-256 for model part: $name');
+    }
+    _validateCid(cid, label: 'model part');
+  }
+}
+
 class ModelManifest {
   const ModelManifest({
     required this.fileName,
-    required this.cid,
+    required this.manifestCid,
+    required this.manifestSigningKeySha256,
     required this.sha256,
-    this.expectedBytes,
+    required this.expectedBytes,
+    required this.expectedParts,
     this.gatewayHosts = const <String>[
       'ipfs.io',
-      'cloudflare-ipfs.com',
       'dweb.link',
+      'cloudflare-ipfs.com',
     ],
     this.seedProfile = const ModelSeedProfile(),
   });
 
   final String fileName;
-  final String cid;
+  final String manifestCid;
+  final String manifestSigningKeySha256;
   final String sha256;
-  final int? expectedBytes;
+  final int expectedBytes;
+  final List<ModelPartManifest> expectedParts;
   final List<String> gatewayHosts;
   final ModelSeedProfile seedProfile;
 
   bool get isConfigured =>
-      cid.isNotEmpty &&
+      manifestCid.isNotEmpty &&
+      manifestSigningKeySha256.isNotEmpty &&
       sha256.isNotEmpty &&
-      !cid.startsWith('REPLACE_') &&
-      !sha256.startsWith('REPLACE_');
+      expectedBytes > 0 &&
+      expectedParts.isNotEmpty &&
+      !manifestCid.startsWith('REPLACE_');
 
   void validate() {
     if (!isConfigured) {
-      throw const ModelManifestException(
-        'Model download is not configured yet.',
-      );
+      throw const ModelManifestException('Model download is not configured yet.');
     }
-
-    if (fileName.isEmpty ||
-        fileName.contains('/') ||
-        fileName.contains(r'\') ||
-        fileName == '.' ||
-        fileName == '..') {
+    if (!_safeFileName(fileName)) {
       throw const ModelManifestException('Unsafe model file name.');
     }
-
-    final normalizedHash = sha256.toLowerCase();
-    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(normalizedHash)) {
-      throw const ModelManifestException(
-        'SHA-256 must contain exactly 64 hexadecimal characters.',
-      );
+    if (!_isSha256(sha256)) {
+      throw const ModelManifestException('Model SHA-256 must be 64 hexadecimal characters.');
     }
-
-    try {
-      final decoded = CID.decode(cid);
-      if (decoded.encode() != cid && !cid.startsWith('Qm')) {
-        throw const ModelManifestException('CID is not canonical.');
-      }
-    } on ModelManifestException {
-      rethrow;
-    } catch (_) {
-      throw const ModelManifestException('Invalid IPFS CID.');
+    if (!_isSha256(manifestSigningKeySha256)) {
+      throw const ModelManifestException('Manifest signing-key fingerprint is invalid.');
     }
-
-    if (expectedBytes != null && expectedBytes! <= 0) {
-      throw const ModelManifestException(
-        'Expected model size must be greater than zero.',
-      );
-    }
+    _validateCid(manifestCid, label: 'manifest');
 
     if (gatewayHosts.isEmpty) {
-      throw const ModelManifestException('At least one gateway is required.');
+      throw const ModelManifestException('At least one HTTPS gateway is required.');
     }
-
     for (final host in gatewayHosts) {
       if (!RegExp(r'^[a-z0-9.-]+$').hasMatch(host) ||
           host.startsWith('.') ||
@@ -136,18 +130,67 @@ class ModelManifest {
       }
     }
 
+    var bytes = 0;
+    for (var i = 0; i < expectedParts.length; i++) {
+      final part = expectedParts[i];
+      part.validate();
+      if (part.index != i) {
+        throw const ModelManifestException('Model part indexes must be contiguous and ordered.');
+      }
+      bytes += part.sizeBytes;
+    }
+    if (bytes != expectedBytes) {
+      throw ModelManifestException(
+        'Part byte total $bytes does not match expected model size $expectedBytes.',
+      );
+    }
+
     seedProfile.validate();
   }
 
-  Iterable<Uri> get gatewayUris sync* {
+  Iterable<Uri> gatewayUrisForCid(String cid) sync* {
     validate();
+    _validateCid(cid, label: 'download');
+    for (final host in gatewayHosts) {
+      yield Uri(scheme: 'https', host: host, pathSegments: <String>['ipfs', cid]);
+    }
+  }
+
+  Iterable<Uri> manifestFileUris(String name) sync* {
+    validate();
+    if (!_safeFileName(name)) {
+      throw ModelManifestException('Unsafe manifest filename: $name');
+    }
     for (final host in gatewayHosts) {
       yield Uri(
         scheme: 'https',
         host: host,
-        pathSegments: <String>['ipfs', cid],
+        pathSegments: <String>['ipfs', manifestCid, name],
       );
     }
+  }
+}
+
+bool _safeFileName(String value) =>
+    value.isNotEmpty &&
+    !value.contains('/') &&
+    !value.contains(r'\\') &&
+    value != '.' &&
+    value != '..';
+
+bool _isSha256(String value) =>
+    RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(value);
+
+void _validateCid(String value, {required String label}) {
+  try {
+    final decoded = CID.decode(value);
+    if (decoded.encode() != value && !value.startsWith('Qm')) {
+      throw ModelManifestException('$label CID is not canonical.');
+    }
+  } on ModelManifestException {
+    rethrow;
+  } catch (_) {
+    throw ModelManifestException('Invalid $label IPFS CID.');
   }
 }
 
@@ -160,26 +203,34 @@ class ModelManifestException implements Exception {
   String toString() => message;
 }
 
-/// Configure this after uploading the exact model file to IPFS.
-///
-/// 1. Replace [cid] with the immutable IPFS CID.
-/// 2. Replace [sha256] with the independently calculated SHA-256.
-/// 3. Set [expectedBytes] to the exact byte count when known.
-/// 4. Upload with the exact [seedProfile] settings so every seeder recreates
-///    the same UnixFS root CID without copying the model into a second store.
-///
-/// Until then, the boot screen safely allows the app to continue without
-/// attempting a download.
 const primaryModelManifest = ModelManifest(
   fileName: 'gemma-4-E2B-it.litertlm',
-  cid: 'REPLACE_WITH_IPFS_CID',
-  sha256: 'REPLACE_WITH_64_CHARACTER_SHA256',
-  expectedBytes: null,
-  seedProfile: ModelSeedProfile(
-    cidVersion: 1,
-    hashFunction: 'sha2-256',
-    chunker: 'size-262144',
-    rawLeaves: true,
-    trickle: false,
-  ),
+  manifestCid: 'bafybeieddw3q33xyvreaycv3dwiu6o36yvpfkpphtrh2laiflkzf7izjdq',
+  manifestSigningKeySha256:
+      'fc5d1367b9f18a34b0980ae8605bdbf4da5e6a376346a1706e9417ec8638ecdb',
+  sha256: 'ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42',
+  expectedBytes: 2583085056,
+  expectedParts: <ModelPartManifest>[
+    ModelPartManifest(
+      index: 0,
+      name: 'gemma-4-E2B-it.litertlm.part-00.bin',
+      sizeBytes: 861028352,
+      sha256: 'b4ba4432650a1d767736b4139d9d94ab0ebb2e084a9c1fcca3824e691b4cb995',
+      cid: 'bafybeiax5zuvour7ukmssodnaiowp6ija7t2tqzghlqnikakpcafhknpty',
+    ),
+    ModelPartManifest(
+      index: 1,
+      name: 'gemma-4-E2B-it.litertlm.part-01.bin',
+      sizeBytes: 861028352,
+      sha256: '5f27ca28d693292298ce9bff48c641458af2994466cc1809576380b947861bc8',
+      cid: 'bafybeid7wk63zk76jno5rqovfbl2boekhdfhphvomvb4ztfs2oj5oasqm4',
+    ),
+    ModelPartManifest(
+      index: 2,
+      name: 'gemma-4-E2B-it.litertlm.part-02.bin',
+      sizeBytes: 861028352,
+      sha256: '00e9d3b99151f41afe9cbc2e99cd3d684b62d67238859285ec89d1cf5a94c2f3',
+      cid: 'bafybeiav2gawt4c2lwz3kj52zjdyw5gtvvrpmrfisyeahhndiuzbiaeckm',
+    ),
+  ],
 );

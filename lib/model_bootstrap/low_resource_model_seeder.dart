@@ -32,12 +32,6 @@ class ModelSeedStatus {
   bool get isActive => state == ModelSeedState.seeding;
 }
 
-/// Runs a Kubo IPFS node with intentionally conservative resource limits.
-///
-/// `dart_ipfs` remains responsible for CID parsing in the manifest. Kubo is
-/// used for the actual multi-gigabyte seed because its filestore can reference
-/// the already-verified model in place. This avoids making a second full model
-/// copy and avoids buffering the entire file in Dart memory.
 class LowResourceModelSeeder {
   LowResourceModelSeeder({
     this.enabled = true,
@@ -79,13 +73,11 @@ class LowResourceModelSeeder {
         ),
       );
     }
-
     if (!_supportsSubprocesses) {
       return _emit(
         const ModelSeedStatus(
           state: ModelSeedState.unsupported,
-          message:
-              'This platform cannot launch the bounded Kubo seed process.',
+          message: 'This platform cannot launch the bounded Kubo seed process.',
         ),
       );
     }
@@ -99,14 +91,29 @@ class LowResourceModelSeeder {
         ),
       );
     }
+    if (model.parts.length != manifest.expectedParts.length) {
+      return _emit(
+        const ModelSeedStatus(
+          state: ModelSeedState.unavailable,
+          message: 'Verified IPFS part files are not cached, so seeding is skipped.',
+        ),
+      );
+    }
+    if (!await model.manifestDirectory.exists()) {
+      return _emit(
+        const ModelSeedStatus(
+          state: ModelSeedState.unavailable,
+          message: 'The verified signed-manifest bundle is not cached, so seeding is skipped.',
+        ),
+      );
+    }
 
     final executable = await _findKuboExecutable();
     if (executable == null) {
       return _emit(
         const ModelSeedStatus(
           state: ModelSeedState.unavailable,
-          message:
-              'Kubo was not found. The model remains verified but is not being seeded.',
+          message: 'Kubo was not found. The model remains verified but is not being seeded.',
         ),
       );
     }
@@ -126,9 +133,8 @@ class LowResourceModelSeeder {
       await _repoDirectory!.create(recursive: true);
 
       final environment = _environment;
-      if (!await File(
-        '${_repoDirectory!.path}${Platform.pathSeparator}config',
-      ).exists()) {
+      final config = File('${_repoDirectory!.path}${Platform.pathSeparator}config');
+      if (!await config.exists()) {
         await _runChecked(
           executable,
           const <String>['init', '--profile=lowpower'],
@@ -148,22 +154,11 @@ class LowResourceModelSeeder {
       _emit(
         const ModelSeedStatus(
           state: ModelSeedState.attaching,
-          message: 'Attaching the verified model without duplicating it.',
+          message: 'Attaching the three verified IPFS model parts without copying them.',
         ),
       );
-
-      final cid = await _attachModel(
-        executable: executable,
-        model: model,
-        manifest: manifest,
-        environment: environment,
-      );
-      if (cid != manifest.cid) {
-        throw ModelSeederException(
-          'Local UnixFS CID $cid does not match manifest CID ${manifest.cid}. '
-          'Use the exact publishing options documented for this app.',
-        );
-      }
+      await _attachParts(executable, model, manifest, environment);
+      await _attachManifestDirectory(executable, model, manifest, environment);
 
       _emit(
         const ModelSeedStatus(
@@ -184,8 +179,7 @@ class LowResourceModelSeeder {
       return _emit(
         const ModelSeedStatus(
           state: ModelSeedState.seeding,
-          message:
-              'Seeding at low power: one CPU thread, bounded memory, and at most eight connections.',
+          message: 'Seeding the verified model parts and signed manifest at low power.',
         ),
       );
     } catch (error) {
@@ -224,12 +218,14 @@ class LowResourceModelSeeder {
   }
 
   Map<String, String> get _environment => <String, String>{
-    ...Platform.environment,
-    'IPFS_PATH': _repoDirectory!.path,
-    'GOMAXPROCS': '1',
-    'GOMEMLIMIT': goMemoryLimit,
-    'GOGC': '50',
-  };
+        ...Platform.environment,
+        'IPFS_PATH': _repoDirectory!.path,
+        'GOMAXPROCS': '1',
+        'GOMEMLIMIT': goMemoryLimit,
+        'GOGC': '50',
+        'IPFS_TELEMETRY': 'off',
+        'DO_NOT_TRACK': '1',
+      };
 
   Future<String?> _findKuboExecutable() async {
     final override = executableOverride;
@@ -263,53 +259,16 @@ class LowResourceModelSeeder {
   ) async {
     final lowWater = maxConnections <= 2 ? 1 : maxConnections ~/ 2;
     final commands = <List<String>>[
-      const <String>[
-        'config',
-        '--json',
-        'Experimental.FilestoreEnabled',
-        'true',
-      ],
-      const <String>[
-        'config',
-        '--json',
-        'Experimental.UrlstoreEnabled',
-        'false',
-      ],
-      <String>[
-        'config',
-        '--json',
-        'Swarm.ConnMgr.LowWater',
-        '$lowWater',
-      ],
-      <String>[
-        'config',
-        '--json',
-        'Swarm.ConnMgr.HighWater',
-        '$maxConnections',
-      ],
-      const <String>[
-        'config',
-        'Swarm.ConnMgr.GracePeriod',
-        '2m',
-      ],
-      const <String>[
-        'config',
-        '--json',
-        'Discovery.MDNS.Enabled',
-        'false',
-      ],
-      const <String>[
-        'config',
-        '--json',
-        'Swarm.DisableBandwidthMetrics',
-        'true',
-      ],
-      const <String>[
-        'config',
-        '--json',
-        'Reprovider.Interval',
-        '"12h"',
-      ],
+      const <String>['config', '--json', 'Experimental.FilestoreEnabled', 'true'],
+      const <String>['config', '--json', 'Experimental.UrlstoreEnabled', 'false'],
+      <String>['config', '--json', 'Swarm.ConnMgr.LowWater', '$lowWater'],
+      <String>['config', '--json', 'Swarm.ConnMgr.HighWater', '$maxConnections'],
+      const <String>['config', 'Swarm.ConnMgr.GracePeriod', '2m'],
+      const <String>['config', '--json', 'Discovery.MDNS.Enabled', 'false'],
+      const <String>['config', '--json', 'Swarm.DisableBandwidthMetrics', 'true'],
+      const <String>['config', '--json', 'Provide.Enabled', 'true'],
+      const <String>['config', 'Provide.Strategy', 'pinned'],
+      const <String>['config', 'Plugins.Plugins.telemetry.Config.Mode', 'off'],
     ];
 
     for (final command in commands) {
@@ -317,29 +276,71 @@ class LowResourceModelSeeder {
     }
   }
 
-  Future<String> _attachModel({
-    required String executable,
-    required VerifiedModel model,
-    required ModelManifest manifest,
-    required Map<String, String> environment,
-  }) async {
-    final args = <String>[
-      'add',
-      '--quiet',
-      '--pin=true',
-      '--nocopy',
-      ...manifest.seedProfile.kuboAddArguments,
-      model.file.absolute.path,
-    ];
+  Future<void> _attachParts(
+    String executable,
+    VerifiedModel model,
+    ModelManifest manifest,
+    Map<String, String> environment,
+  ) async {
+    for (var i = 0; i < model.parts.length; i++) {
+      final part = model.parts[i];
+      final expected = manifest.expectedParts[i];
+      if (part.manifest.cid != expected.cid || part.manifest.sha256 != expected.sha256) {
+        throw ModelSeederException('Cached part $i does not match the pinned distribution metadata.');
+      }
 
+      final result = await _runChecked(
+        executable,
+        <String>[
+          'add',
+          '--quiet',
+          '--pin=true',
+          '--nocopy',
+          ...manifest.seedProfile.kuboAddArguments,
+          part.file.absolute.path,
+        ],
+        environment,
+        timeout: const Duration(minutes: 20),
+      );
+      final cid = _lastCid(result.stdout.toString());
+      if (cid != expected.cid) {
+        throw ModelSeederException(
+          'Local part CID $cid does not match pinned CID ${expected.cid}.',
+        );
+      }
+    }
+  }
+
+  Future<void> _attachManifestDirectory(
+    String executable,
+    VerifiedModel model,
+    ModelManifest manifest,
+    Map<String, String> environment,
+  ) async {
     final result = await _runChecked(
       executable,
-      args,
+      <String>[
+        'add',
+        '--quiet',
+        '--recursive',
+        '--pin=true',
+        ...manifest.seedProfile.kuboAddArguments,
+        model.manifestDirectory.absolute.path,
+      ],
       environment,
-      timeout: const Duration(minutes: 20),
+      timeout: const Duration(minutes: 2),
     );
+    final cid = _lastCid(result.stdout.toString());
+    if (cid != manifest.manifestCid) {
+      throw ModelSeederException(
+        'Local manifest CID $cid does not match pinned manifest CID ${manifest.manifestCid}.',
+      );
+    }
+  }
+
+  String _lastCid(String stdout) {
     final lines = const LineSplitter()
-        .convert(result.stdout.toString().trim())
+        .convert(stdout.trim())
         .where((line) => line.trim().isNotEmpty)
         .toList();
     if (lines.isEmpty) {
@@ -361,9 +362,7 @@ class LowResourceModelSeeder {
       runInShell: false,
     ).timeout(timeout);
     if (result.exitCode != 0) {
-      throw ModelSeederException(
-        '${arguments.join(' ')} failed: ${result.stderr}',
-      );
+      throw ModelSeederException('${arguments.join(' ')} failed: ${result.stderr}');
     }
     return result;
   }
@@ -381,9 +380,8 @@ class LowResourceModelSeeder {
         runInShell: false,
       ).timeout(const Duration(seconds: 15));
     } catch (_) {
-      // Configuration keys can vary between Kubo releases. Core safeguards
-      // still remain enforced by GOMAXPROCS, GOMEMLIMIT, lowpower profile, and
-      // the connection-manager bounds that are supported by stable releases.
+      // Optional Kubo tuning keys vary by release. The process limits remain
+      // enforced through GOMAXPROCS/GOMEMLIMIT and the supported core config.
     }
   }
 

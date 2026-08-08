@@ -44,15 +44,6 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
       _seedStatus = null;
     });
 
-    if (!primaryModelManifest.isConfigured) {
-      setState(() {
-        _error =
-            'Secure model download is ready, but its CID and SHA-256 have not '
-            'been configured yet.';
-      });
-      return;
-    }
-
     try {
       final model = await _downloader.ensureModel(
         manifest: primaryModelManifest,
@@ -75,7 +66,6 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
         manifest: primaryModelManifest,
       );
       if (mounted) setState(() => _seedStatus = seedStatus);
-
       await _launch();
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
@@ -91,8 +81,6 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
   @override
   void dispose() {
     _downloader.close();
-    // The seeder is intentionally owned by main.dart rather than this boot
-    // screen so replacing the root app does not stop an active seed session.
     super.dispose();
   }
 
@@ -132,19 +120,13 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
                         const Text(
                           'Naza One Secure Model Setup',
                           textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 25,
-                            fontWeight: FontWeight.w800,
-                          ),
+                          style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
                         ),
                         const SizedBox(height: 10),
                         Text(
                           _statusText,
                           textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Color(0xFFB8CFC6),
-                            height: 1.45,
-                          ),
+                          style: const TextStyle(color: Color(0xFFB8CFC6), height: 1.45),
                         ),
                         const SizedBox(height: 24),
                         LinearProgressIndicator(
@@ -185,12 +167,11 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
                             runSpacing: 12,
                             alignment: WrapAlignment.center,
                             children: <Widget>[
-                              if (primaryModelManifest.isConfigured)
-                                FilledButton.icon(
-                                  onPressed: _bootstrap,
-                                  icon: const Icon(Icons.refresh),
-                                  label: const Text('Retry securely'),
-                                ),
+                              FilledButton.icon(
+                                onPressed: _bootstrap,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Retry securely'),
+                              ),
                               OutlinedButton.icon(
                                 onPressed: _launch,
                                 icon: const Icon(Icons.arrow_forward),
@@ -201,13 +182,9 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
                         ],
                         const SizedBox(height: 22),
                         const Text(
-                          'HTTPS gateways • immutable IPFS CID • SHA-256 '
-                          'verification • no-copy low-power seeding',
+                          'Signed manifest • pinned key fingerprint • 3 immutable IPFS parts • SHA-256 verification',
                           textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Color(0xFF638579),
-                            fontSize: 11,
-                          ),
+                          style: TextStyle(color: Color(0xFF638579), fontSize: 11),
                         ),
                       ],
                     ),
@@ -228,13 +205,19 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
     if (seedStatus != null) return seedStatus.message;
     switch (_progress.phase) {
       case ModelDownloadPhase.checking:
-        return 'Checking the local model and its manifest values.';
+        return 'Checking the local model and pinned distribution identity.';
+      case ModelDownloadPhase.fetchingManifest:
+        return 'Fetching the immutable signed IPFS manifest bundle.';
+      case ModelDownloadPhase.verifyingManifest:
+        return 'Verifying the Ed25519 signature and pinned public-key fingerprint.';
       case ModelDownloadPhase.downloading:
-        return 'Downloading the model from an approved IPFS gateway.';
+        return 'Downloading and verifying the three immutable IPFS model parts.';
+      case ModelDownloadPhase.reassembling:
+        return 'Reassembling the verified parts in manifest order.';
       case ModelDownloadPhase.verifying:
-        return 'Verifying the complete file before installation.';
+        return 'Verifying the complete model SHA-256 before installation.';
       case ModelDownloadPhase.ready:
-        return 'The model passed integrity verification.';
+        return 'The model passed signed-manifest and full-file verification.';
     }
   }
 
@@ -242,12 +225,9 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
     final seedStatus = _seedStatus;
     if (seedStatus != null) {
       return switch (seedStatus.state) {
-        ModelSeedState.seeding =>
-          '1 CPU thread • 256 MiB memory target • 8 connections max',
-        ModelSeedState.unavailable =>
-          'Install Kubo to enable desktop seeding; the app still runs normally.',
-        ModelSeedState.unsupported =>
-          'Seeding is available on desktop platforms with Kubo.',
+        ModelSeedState.seeding => '1 CPU thread • 256 MiB memory target • 8 connections max',
+        ModelSeedState.unavailable => 'Kubo or cached seed parts unavailable; verified model still runs normally.',
+        ModelSeedState.unsupported => 'Seeding is available on desktop platforms with Kubo.',
         _ => seedStatus.state.name.toUpperCase(),
       };
     }
@@ -255,11 +235,15 @@ class _ModelBootstrapGateState extends State<ModelBootstrapGate> {
     final host = _progress.gatewayHost;
     final received = _formatBytes(_progress.receivedBytes);
     final total = _progress.totalBytes;
+    final part = _progress.partIndex;
+    final partCount = _progress.partCount;
+    final partText = part != null && partCount != null ? ' • part $part/$partCount' : '';
     if (host != null) {
       return total == null
-          ? '$host  •  $received'
-          : '$host  •  $received / ${_formatBytes(total)}';
+          ? '$host • $received$partText'
+          : '$host • $received / ${_formatBytes(total)}$partText';
     }
+    if (total != null) return '$received / ${_formatBytes(total)}$partText';
     return _progress.phase.name.toUpperCase();
   }
 

@@ -1,66 +1,90 @@
 # Secure IPFS model bootstrap and low-resource seeding
 
-Naza One now starts behind a model bootstrap gate. The original application lives unchanged in `lib/naza_app.dart`; `lib/main.dart` verifies the model, optionally starts bounded desktop seeding, and then hands control to the app.
+PR #10 is wired to the production IPFS objects published for `gemma-4-E2B-it.litertlm`. The app no longer has placeholder CIDs.
 
-## Configure and publish the model
+## Pinned production identity
 
-Edit `lib/model_bootstrap/model_manifest.dart`:
+The app pins all of the values needed to reject substituted content:
 
-1. Calculate SHA-256 and the exact byte count of the final model.
-2. Add the file to IPFS with the exact UnixFS options in `seedProfile`.
-3. Put the resulting root CID in `primaryModelManifest.cid`.
-4. Put the independent 64-character SHA-256 in `primaryModelManifest.sha256`.
-5. Set `expectedBytes` to the exact file size.
-6. Keep only gateways you trust in `gatewayHosts`.
+- Model: `gemma-4-E2B-it.litertlm`
+- Model bytes: `2583085056`
+- Model SHA-256: `ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42`
+- Signed public-manifest directory CID: `bafybeieddw3q33xyvreaycv3dwiu6o36yvpfkpphtrh2laiflkzf7izjdq`
+- Manifest Ed25519 public-key DER SHA-256: `fc5d1367b9f18a34b0980ae8605bdbf4da5e6a376346a1706e9417ec8638ecdb`
 
-The current reproducible publishing command is:
+Model parts:
+
+| Index | Bytes | SHA-256 | CID |
+| --- | ---: | --- | --- |
+| 0 | 861028352 | `b4ba4432650a1d767736b4139d9d94ab0ebb2e084a9c1fcca3824e691b4cb995` | `bafybeiax5zuvour7ukmssodnaiowp6ija7t2tqzghlqnikakpcafhknpty` |
+| 1 | 861028352 | `5f27ca28d693292298ce9bff48c641458af2994466cc1809576380b947861bc8` | `bafybeid7wk63zk76jno5rqovfbl2boekhdfhphvomvb4ztfs2oj5oasqm4` |
+| 2 | 861028352 | `00e9d3b99151f41afe9cbc2e99cd3d684b62d67238859285ec89d1cf5a94c2f3` | `bafybeiav2gawt4c2lwz3kj52zjdyw5gtvvrpmrfisyeahhndiuzbiaeckm` |
+
+The private Ed25519 manifest-signing key stays on the publisher and must never be committed to this repository. Only the public key, signature, key fingerprint, manifest and immutable CIDs are distributable.
+
+## Boot verification chain
+
+1. Fetch `model-manifest.json`, `model-manifest.sig`, `manifest-public-key.pem`, and `public-key.sha256` through the pinned manifest directory CID.
+2. Reject redirects and non-HTTPS sources.
+3. Hash the DER public key and require the app-pinned fingerprint.
+4. Verify the Ed25519 signature over the exact manifest JSON bytes.
+5. Require the signed model identity and every signed part record to exactly match the values pinned in the application.
+6. Download the three immutable IPFS part CIDs.
+7. Verify the exact byte count and SHA-256 of every part.
+8. Concatenate parts in index order.
+9. Verify the final 2,583,085,056-byte model against the pinned full-file SHA-256.
+10. Atomically install the completed `.litertlm` file.
+
+A compromised or misbehaving public gateway therefore cannot silently substitute a different model, manifest, public key, signature, part, or byte count.
+
+## Publisher node
+
+The production publisher setup was validated with Kubo 0.43.0 / repo v18. The RPC API and HTTP gateway stay loopback-only; only the libp2p swarm port is exposed. This is deliberate: clients use content-addressed IPFS retrieval rather than receiving administrative access to the publisher node.
+
+The working provider settings are the Kubo 0.43 `Provide` configuration:
 
 ```bash
-sha256sum gemma-4-E2B-it.litertlm
-wc -c < gemma-4-E2B-it.litertlm
+ipfs config --json Provide.Enabled true
+ipfs config Provide.Strategy pinned
+ipfs config --json Discovery.MDNS.Enabled false
+```
+
+Do **not** restore `Reprovider.Strategy` or `Reprovider.Interval`. Those keys are deprecated in Kubo 0.43 / repo v18 and caused the publisher container to restart until the config was migrated.
+
+The publisher pins and explicitly provides the three model part CIDs plus the signed manifest directory CID. A second independent node can pin the exact same four CIDs later for provider redundancy without changing any application metadata.
+
+## Desktop low-resource seeding
+
+Desktop builds with a local `ipfs`/Kubo executable can become additional providers after the model has been securely downloaded. Mobile platforms continue without launching a Kubo subprocess.
+
+The seeder:
+
+- uses the Kubo `lowpower` profile;
+- sets `GOMAXPROCS=1`;
+- sets `GOMEMLIMIT=256MiB`;
+- sets `GOGC=50`;
+- disables telemetry through environment/config where supported;
+- limits the connection manager to eight peers (low-water four);
+- disables mDNS and bandwidth metrics where supported;
+- uses `Provide.Enabled=true` and `Provide.Strategy=pinned`;
+- enables the filestore and attaches the three already-verified part files with `--nocopy`;
+- rejects each attachment unless Kubo reproduces the exact published part CID;
+- adds the small signed-manifest directory and rejects it unless Kubo reproduces the exact manifest CID.
+
+Because the published model is intentionally split into three IPFS files, desktop seeding retains those verified part files in addition to the assembled model. Kubo itself does not make another full content copy because the part payloads are attached through the no-copy filestore.
+
+## Reproducing the published layout
+
+The model parts were created from the verified full model as three equal 861,028,352-byte files. Each was added with CIDv1 and raw leaves. The deterministic profile used by the app matches Kubo's published layout:
+
+```bash
 ipfs add \
   --cid-version=1 \
   --hash=sha2-256 \
   --chunker=size-262144 \
   --raw-leaves=true \
   --trickle=false \
-  gemma-4-E2B-it.litertlm
+  PART_FILE
 ```
 
-Do not change those IPFS layout options after publishing. Different chunking or UnixFS settings produce a different root CID even when the model bytes are identical.
-
-## Download security
-
-- Only allowlisted HTTPS gateways are contacted.
-- Redirects are rejected.
-- Downloads use a `.part` staging file.
-- Declared and actual byte counts are checked.
-- SHA-256 is compared before installation.
-- A verified file is atomically renamed into `verified_models`.
-- Bad, partial, oversized, or mismatched files are deleted.
-- Existing cached models are re-verified on startup.
-- Until configured, the boot screen lets users continue without downloading.
-
-`dart_ipfs` supplies canonical CID parsing and validation. Gateway transport is streamed with `HttpClient`, so large models are not buffered wholly in memory.
-
-## Low-resource seeding
-
-Desktop builds can seed the verified model through a locally installed Kubo executable named `ipfs` or `kubo`. Mobile builds and systems without Kubo simply continue into the app without seeding.
-
-The seeder deliberately does not call `dart_ipfs.addFileStream` for the multi-gigabyte model because that package currently assembles the stream in memory. Instead, it uses Kubo's no-copy filestore and references the already verified file in place.
-
-Default limits:
-
-- Kubo `lowpower` profile.
-- `GOMAXPROCS=1`, limiting Go execution to one logical CPU at a time.
-- `GOMEMLIMIT=256MiB`, a Go runtime memory target rather than an absolute operating-system cap.
-- `GOGC=50`, favoring earlier garbage collection.
-- Eight swarm connections maximum, with a low-water target of four.
-- mDNS disabled.
-- bandwidth metrics disabled.
-- provider announcements reduced to a 12-hour interval where supported.
-- no second full-size copy of the model; only IPFS metadata and references are stored.
-
-The first no-copy attachment still has to read and hash the full model once to reproduce the UnixFS CID. It is single-thread bounded but can take time on slower devices. Subsequent starts reuse the filestore metadata.
-
-Seeding never bypasses model verification. The locally reproduced IPFS root CID must exactly match the manifest CID or the seed process is rejected. Kubo configuration keys vary slightly between releases, so optional tuning keys are best-effort; the one-thread and Go memory settings are always passed directly to the Kubo process.
+The public manifest directory was signed with Ed25519 and added recursively with CIDv1/raw leaves. Keep the signing key offline/private and republish a new immutable manifest CID whenever model metadata changes.
