@@ -7,9 +7,11 @@ import 'package:cryptography/cryptography.dart';
 import 'post_quantum_export.dart';
 import 'pq_trust_policy.dart';
 
-/// Model identity produced only after [NazaModelFileAttestor] verifies the
-/// actual model, tokenizer, and policy bytes. The constructor is private so a
-/// caller cannot turn arbitrary 64-character strings into trusted identity.
+/// Identity minted only after hashing actual model/tokenizer/policy bytes.
+///
+/// The source paths are retained privately so hardened runtime entry and
+/// privileged operations can re-verify the artifacts, closing the common
+/// "verify once, replace later" trust gap.
 final class NazaVerifiedModelIdentity {
   final String modelSha256;
   final String tokenizerSha256;
@@ -18,6 +20,8 @@ final class NazaVerifiedModelIdentity {
   final String policySha256;
   final int modelBytes;
   final int tokenizerBytes;
+  final String _modelPath;
+  final String _tokenizerPath;
 
   const NazaVerifiedModelIdentity._({
     required this.modelSha256,
@@ -27,7 +31,10 @@ final class NazaVerifiedModelIdentity {
     required this.policySha256,
     required this.modelBytes,
     required this.tokenizerBytes,
-  });
+    required String modelPath,
+    required String tokenizerPath,
+  }) : _modelPath = modelPath,
+       _tokenizerPath = tokenizerPath;
 
   void validate() {
     _requireHexDigest(modelSha256, 'modelSha256');
@@ -45,6 +52,55 @@ final class NazaVerifiedModelIdentity {
         'Verified model identity requires non-empty model and tokenizer artifacts.',
       );
     }
+    if (_modelPath.isEmpty || _tokenizerPath.isEmpty) {
+      throw const NazaSecurityIdentityException(
+        'model_identity_path',
+        'Verified model identity lost its source artifact binding.',
+      );
+    }
+  }
+
+  /// Re-hashes the bound files and verifies exact byte lengths. Hardened code
+  /// should call this immediately before opening a model for inference and
+  /// before security-sensitive operations that depend on model identity.
+  Future<void> reverifyArtifacts() async {
+    validate();
+    final modelFile = File(_modelPath);
+    final tokenizerFile = File(_tokenizerPath);
+    if (!await modelFile.exists() || !await tokenizerFile.exists()) {
+      throw const NazaSecurityIdentityException(
+        'model_artifact_missing',
+        'The previously attested model or tokenizer artifact is missing.',
+      );
+    }
+    final modelStat = await modelFile.stat();
+    final tokenizerStat = await tokenizerFile.stat();
+    if (modelStat.size != modelBytes) {
+      throw const NazaSecurityIdentityException(
+        'model_size_mismatch',
+        'The model artifact changed after attestation.',
+      );
+    }
+    if (tokenizerStat.size != tokenizerBytes) {
+      throw const NazaSecurityIdentityException(
+        'tokenizer_size_mismatch',
+        'The tokenizer artifact changed after attestation.',
+      );
+    }
+    final modelDigest = await _sha256File(modelFile);
+    final tokenizerDigest = await _sha256File(tokenizerFile);
+    _requireDigestMatch(
+      actual: modelDigest,
+      expected: modelSha256,
+      code: 'model_digest_mismatch',
+      message: 'The model bytes changed after attestation.',
+    );
+    _requireDigestMatch(
+      actual: tokenizerDigest,
+      expected: tokenizerSha256,
+      code: 'tokenizer_digest_mismatch',
+      message: 'The tokenizer bytes changed after attestation.',
+    );
   }
 
   Map<String, Object?> toCanonicalMap() {
@@ -61,9 +117,6 @@ final class NazaVerifiedModelIdentity {
   }
 }
 
-/// Verifies model trust against bytes on disk before minting a trusted model
-/// identity. Hashing is streaming, so multi-gigabyte model files are not copied
-/// into the Dart heap as one giant buffer.
 final class NazaModelFileAttestor {
   const NazaModelFileAttestor();
 
@@ -123,8 +176,8 @@ final class NazaModelFileAttestor {
       );
     }
 
-    final modelDigest = await _hashFile(modelFile);
-    final tokenizerDigest = await _hashFile(tokenizerFile);
+    final modelDigest = await _sha256File(modelFile);
+    final tokenizerDigest = await _sha256File(tokenizerFile);
     final policyDigest = crypto.sha256.convert(policyBytes).toString();
 
     _requireDigestMatch(
@@ -154,12 +207,9 @@ final class NazaModelFileAttestor {
       policySha256: policyDigest,
       modelBytes: modelStat.size,
       tokenizerBytes: tokenizerStat.size,
+      modelPath: modelFile.absolute.path,
+      tokenizerPath: tokenizerFile.absolute.path,
     );
-  }
-
-  Future<String> _hashFile(File file) async {
-    final digest = await crypto.sha256.bind(file.openRead()).first;
-    return digest.toString();
   }
 }
 
@@ -175,8 +225,6 @@ final class NazaSecurityIdentitySnapshot {
   });
 }
 
-/// Derives security-kernel identities from byte-verified model state, recovery
-/// state, and the enforced PQ policy.
 final class NazaSecurityIdentityDeriver {
   const NazaSecurityIdentityDeriver();
 
@@ -274,15 +322,31 @@ final class NazaSecurityIdentityException implements Exception {
   String toString() => 'NazaSecurityIdentityException($code): $message';
 }
 
+Future<String> _sha256File(File file) async {
+  final digest = await crypto.sha256.bind(file.openRead()).first;
+  return digest.toString();
+}
+
 void _requireDigestMatch({
   required String actual,
   required String expected,
   required String code,
   required String message,
 }) {
-  if (actual.toLowerCase() != expected.toLowerCase()) {
+  if (!_constantTimeHexEquals(actual, expected)) {
     throw NazaSecurityIdentityException(code, message);
   }
+}
+
+bool _constantTimeHexEquals(String a, String b) {
+  final aa = ascii.encode(a.toLowerCase());
+  final bb = ascii.encode(b.toLowerCase());
+  var difference = aa.length ^ bb.length;
+  final length = aa.length < bb.length ? aa.length : bb.length;
+  for (var index = 0; index < length; index++) {
+    difference |= aa[index] ^ bb[index];
+  }
+  return difference == 0;
 }
 
 void _requireHexDigest(String value, String label) {
