@@ -31,9 +31,15 @@ final class NazaVerifiedModelIdentity {
     required this.policySha256,
     required this.modelBytes,
     required this.tokenizerBytes,
-    required this._modelPath,
-    required this._tokenizerPath,
-  });
+    required String modelPath,
+    required String tokenizerPath,
+  }) :
+       // Private source bindings intentionally keep public constructor names
+       // while retaining private fields for runtime re-verification.
+       // ignore: prefer_initializing_formals
+       _modelPath = modelPath,
+       // ignore: prefer_initializing_formals
+       _tokenizerPath = tokenizerPath;
 
   void validate() {
     _requireHexDigest(modelSha256, 'modelSha256');
@@ -206,8 +212,8 @@ final class NazaModelFileAttestor {
       policySha256: policyDigest,
       modelBytes: modelStat.size,
       tokenizerBytes: tokenizerStat.size,
-      _modelPath: modelFile.absolute.path,
-      _tokenizerPath: tokenizerFile.absolute.path,
+      modelPath: modelFile.absolute.path,
+      tokenizerPath: tokenizerFile.absolute.path,
     );
   }
 }
