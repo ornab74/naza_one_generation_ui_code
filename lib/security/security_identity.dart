@@ -31,10 +31,9 @@ final class NazaVerifiedModelIdentity {
     required this.policySha256,
     required this.modelBytes,
     required this.tokenizerBytes,
-    required String modelPath,
-    required String tokenizerPath,
-  }) : _modelPath = modelPath,
-       _tokenizerPath = tokenizerPath;
+    required this._modelPath,
+    required this._tokenizerPath,
+  });
 
   void validate() {
     _requireHexDigest(modelSha256, 'modelSha256');
@@ -207,8 +206,8 @@ final class NazaModelFileAttestor {
       policySha256: policyDigest,
       modelBytes: modelStat.size,
       tokenizerBytes: tokenizerStat.size,
-      modelPath: modelFile.absolute.path,
-      tokenizerPath: tokenizerFile.absolute.path,
+      _modelPath: modelFile.absolute.path,
+      _tokenizerPath: tokenizerFile.absolute.path,
     );
   }
 }
