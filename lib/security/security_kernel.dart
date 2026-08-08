@@ -48,8 +48,7 @@ enum NazaPrivilegedAction {
 }
 
 /// Single-purpose bearer capability bound to security state, use budget, and a
-/// short authorization lifetime. An unused lease therefore cannot remain valid
-/// indefinitely after the fresh-auth event that created it.
+/// short authorization lifetime measured by a session-monotonic clock.
 final class NazaCapabilityLease {
   final String id;
   final NazaPrivilegedAction action;
@@ -87,14 +86,14 @@ final class NazaSecurityKernel {
   NazaSecurityKernel({
     required List<int> capabilityKey,
     required NazaSecurityState initialState,
-    DateTime Function()? clock,
+    int Function()? monotonicMicros,
   }) : _capabilityKey = Uint8List.fromList(capabilityKey),
        _state = initialState,
-       _clock = clock ?? DateTime.now;
+       _monotonicMicros = monotonicMicros ?? _newMonotonicClock();
 
   final Uint8List _capabilityKey;
   final Hmac _hmac = Hmac.sha256();
-  final DateTime Function() _clock;
+  final int Function() _monotonicMicros;
   NazaSecurityState _state;
   int _counter = 0;
   final Map<String, NazaCapabilityLease> _leases = <String, NazaCapabilityLease>{};
@@ -130,7 +129,7 @@ final class NazaSecurityKernel {
     _counter++;
     final digest = await stateDigest();
     final nonce = _randomBytes(16);
-    final issuedAt = _clock().toUtc().microsecondsSinceEpoch;
+    final issuedAt = _monotonicMicros();
     final expiresAt = issuedAt + ttl.inMicroseconds;
     final material = utf8.encode(
       '${action.name}\u001f$resource\u001f${_state.epoch}\u001f$_counter\u001f$issuedAt\u001f$expiresAt\u001f$digest',
@@ -167,7 +166,7 @@ final class NazaSecurityKernel {
         'Capability is unknown or revoked.',
       );
     }
-    final now = _clock().toUtc().microsecondsSinceEpoch;
+    final now = _monotonicMicros();
     if (now > lease.expiresAtMicros) {
       lease.revoke();
       _leases.remove(lease.id);
@@ -322,6 +321,8 @@ final class NazaAuditEntry {
   };
 }
 
+/// Legacy/simple counter guard retained for low-level tests and non-hardened
+/// consumers. Hardened vaults use NazaAuthenticatedRollbackGuard instead.
 final class NazaRollbackGuard {
   NazaRollbackGuard(this._store, {required this.storageKey});
 
@@ -415,6 +416,11 @@ Uint8List _randomBytes(int length) {
   return Uint8List.fromList(
     List<int>.generate(length, (_) => random.nextInt(256)),
   );
+}
+
+int Function() _newMonotonicClock() {
+  final stopwatch = Stopwatch()..start();
+  return () => stopwatch.elapsedMicroseconds;
 }
 
 void _zero(List<int>? bytes) {
