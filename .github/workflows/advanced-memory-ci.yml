@@ -44,7 +44,7 @@ jobs:
               raise SystemExit(f'Expected modern non-Windows bridge 1.3.1, got {resolved}')
           PY
 
-      - name: Analyze new modules
+      - name: Analyze advanced modules
         run: >-
           flutter analyze --no-pub
           lib/memory/embedded_vector_store.dart
@@ -53,10 +53,14 @@ jobs:
           lib/chat/history_drawer.dart
           lib/onboarding/first_run_onboarding.dart
           test/embedded_vector_store_test.dart
+          test/local_memory_service_test.dart
           test/advanced_chat_features_test.dart
 
-      - name: Run embedded memory tests
+      - name: Run embedded vector-store tests
         run: flutter test --no-pub test/embedded_vector_store_test.dart
+
+      - name: Run encrypted memory-service tests
+        run: flutter test --no-pub test/local_memory_service_test.dart
 
       - name: Run advanced chat feature tests
         run: flutter test --no-pub test/advanced_chat_features_test.dart
@@ -79,20 +83,7 @@ jobs:
 
       - name: Verify Windows bridge, native bundle and no-cache mitigation
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $marker = Get-Content '.dart_tool/naza_windows_litertlm_patch.json' -Raw | ConvertFrom-Json
-          if ($marker.flutter_gemma_litertlm -ne '1.0.2') { throw "Bridge mismatch: $($marker.flutter_gemma_litertlm)" }
-          if ($marker.litert_lm_native -ne '0.13.1-a') { throw "Native mismatch: $($marker.litert_lm_native)" }
-          if ($marker.windows_gpu_cache -ne ':nocache') { throw "GPU cache mitigation missing: $($marker.windows_gpu_cache)" }
-
-          $engine = Get-Content '.dart_tool/naza_windows_litertlm/lib/src/litert_lm_engine.dart' -Raw
-          if ($engine -notmatch "cacheDir = ':nocache'") { throw 'Patched engine does not force :nocache.' }
-
-          $hook = Get-Content '.dart_tool/naza_windows_litertlm/hook/build.dart' -Raw
-          if ($hook -notmatch "version:\s*'0\.13\.1-a'") { throw 'Patched package does not bundle LiteRT-LM 0.13.1-a.' }
-
-          Write-Host 'Verified Windows compatibility path: bridge 1.0.2 / native 0.13.1-a / GPU cache :nocache.'
+        run: ./tool/check_windows_litertlm.ps1 -RequirePrepared
 
       - name: Analyze Windows sources
         run: flutter analyze --no-pub
