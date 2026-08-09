@@ -14,7 +14,7 @@ env:
 
 jobs:
   validate:
-    name: Analyze and focused tests
+    name: Linux modern runtime + focused tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +25,24 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Fetch dependencies
+      - name: Fetch modern dependencies
         run: flutter pub get
+
+      - name: Verify non-Windows modern LiteRT-LM bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path('pubspec.lock').read_text()
+          m = re.search(r'^  flutter_gemma_litertlm:\n(?:.*\n)*?    version: "([^"]+)"', text, re.M)
+          if not m:
+              raise SystemExit('flutter_gemma_litertlm missing from pubspec.lock')
+          resolved = m.group(1)
+          print('Linux resolved flutter_gemma_litertlm:', resolved)
+          if resolved != '1.3.1':
+              raise SystemExit(f'Expected modern non-Windows bridge 1.3.1, got {resolved}')
+          PY
 
       - name: Analyze new modules
         run: >-
@@ -44,3 +60,45 @@ jobs:
 
       - name: Run advanced chat feature tests
         run: flutter test --no-pub test/advanced_chat_features_test.dart
+
+  windows-compat:
+    name: Windows 0.13.1-a GPU compatibility build
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Prepare isolated Windows LiteRT-LM runtime
+        shell: pwsh
+        run: ./tool/prepare_windows_litertlm.ps1
+
+      - name: Verify Windows bridge, native bundle and no-cache mitigation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $marker = Get-Content '.dart_tool/naza_windows_litertlm_patch.json' -Raw | ConvertFrom-Json
+          if ($marker.flutter_gemma_litertlm -ne '1.0.2') { throw "Bridge mismatch: $($marker.flutter_gemma_litertlm)" }
+          if ($marker.litert_lm_native -ne '0.13.1-a') { throw "Native mismatch: $($marker.litert_lm_native)" }
+          if ($marker.windows_gpu_cache -ne ':nocache') { throw "GPU cache mitigation missing: $($marker.windows_gpu_cache)" }
+
+          $engine = Get-Content '.dart_tool/naza_windows_litertlm/lib/src/litert_lm_engine.dart' -Raw
+          if ($engine -notmatch "cacheDir = ':nocache'") { throw 'Patched engine does not force :nocache.' }
+
+          $hook = Get-Content '.dart_tool/naza_windows_litertlm/hook/build.dart' -Raw
+          if ($hook -notmatch "version:\s*'0\.13\.1-a'") { throw 'Patched package does not bundle LiteRT-LM 0.13.1-a.' }
+
+          Write-Host 'Verified Windows compatibility path: bridge 1.0.2 / native 0.13.1-a / GPU cache :nocache.'
+
+      - name: Analyze Windows sources
+        run: flutter analyze --no-pub
+
+      - name: Run regression tests on Windows
+        run: flutter test --no-pub
+
+      - name: Build Windows release
+        run: flutter build windows --release --no-pub
