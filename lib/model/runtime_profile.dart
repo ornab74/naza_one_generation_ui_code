@@ -1,9 +1,8 @@
 import 'dart:io';
 
 /// Runtime/backend telemetry that lets the UI distinguish a real GPU session
-/// from an automatic CPU fallback. This is intentionally independent of
-/// flutter_gemma APIs so it works with both the modern bridge and the Windows
-/// compatibility bridge.
+/// from an automatic CPU fallback. This stays independent of flutter_gemma
+/// APIs so diagnostics continue to work while native runtimes are iterated.
 enum NazaInferenceBackend { unknown, cpu, gpu, npu }
 
 enum NazaBackendAttemptState {
@@ -20,6 +19,7 @@ final class NazaLiteRtRuntimeProfile {
     required this.dartBridge,
     required this.nativeRuntime,
     required this.windowsGpuNoCache,
+    required this.windowsSerializedWeightUpload,
     required this.requestedBackend,
     required this.actualBackend,
     required this.attemptState,
@@ -31,17 +31,19 @@ final class NazaLiteRtRuntimeProfile {
   final String dartBridge;
   final String nativeRuntime;
   final bool windowsGpuNoCache;
+  final bool windowsSerializedWeightUpload;
   final NazaInferenceBackend requestedBackend;
   final NazaInferenceBackend actualBackend;
   final NazaBackendAttemptState attemptState;
   final String? adapter;
   final String? failureReason;
 
-  bool get isWindowsCompatibilityRuntime =>
+  bool get isModernWindowsRepairRuntime =>
       platform == 'windows' &&
-      dartBridge == '1.0.2' &&
-      nativeRuntime == '0.13.1-a' &&
-      windowsGpuNoCache;
+      dartBridge == NazaRuntimeTelemetry.modernDartBridge &&
+      nativeRuntime == NazaRuntimeTelemetry.windowsNativeRuntime &&
+      windowsGpuNoCache &&
+      windowsSerializedWeightUpload;
 
   bool get gpuConfirmed =>
       actualBackend == NazaInferenceBackend.gpu &&
@@ -52,6 +54,12 @@ final class NazaLiteRtRuntimeProfile {
       actualBackend == NazaInferenceBackend.cpu &&
       attemptState == NazaBackendAttemptState.fellBack;
 
+  bool get strictGpuViolation => NazaRuntimeTelemetry.strictGpuRequested &&
+      requestedBackend == NazaInferenceBackend.gpu &&
+      !gpuConfirmed &&
+      (attemptState == NazaBackendAttemptState.fellBack ||
+          attemptState == NazaBackendAttemptState.failed);
+
   String get compactLabel {
     if (gpuConfirmed) {
       final adapterName = adapter?.trim();
@@ -59,6 +67,7 @@ final class NazaLiteRtRuntimeProfile {
           ? 'GPU active'
           : 'GPU active · $adapterName';
     }
+    if (strictGpuViolation) return 'STRICT GPU TEST FAILED';
     if (cpuFallback) return 'CPU fallback';
     if (attemptState == NazaBackendAttemptState.initializing) {
       return '${requestedBackend.name.toUpperCase()} initializing';
@@ -76,6 +85,7 @@ final class NazaLiteRtRuntimeProfile {
         'dartBridge': dartBridge,
         'nativeRuntime': nativeRuntime,
         'windowsGpuNoCache': windowsGpuNoCache,
+        'windowsSerializedWeightUpload': windowsSerializedWeightUpload,
         'requestedBackend': requestedBackend.name,
         'actualBackend': actualBackend.name,
         'attemptState': attemptState.name,
@@ -83,6 +93,8 @@ final class NazaLiteRtRuntimeProfile {
         'failureReason': failureReason,
         'gpuConfirmed': gpuConfirmed,
         'cpuFallback': cpuFallback,
+        'strictGpuRequested': NazaRuntimeTelemetry.strictGpuRequested,
+        'strictGpuViolation': strictGpuViolation,
       };
 }
 
@@ -95,8 +107,19 @@ final class NazaRuntimeTelemetry {
   static final NazaRuntimeTelemetry instance = NazaRuntimeTelemetry._();
 
   static const String modernDartBridge = '1.3.1';
-  static const String windowsDartBridge = '1.0.2';
-  static const String windowsNativeRuntime = '0.13.1-a';
+  static const String windowsNativeRuntime = '0.16.0-dev+nvidia-webgpu-upload';
+  static const String strictGpuEnvironmentVariable = 'NAZA_GPU_STRICT';
+
+  /// Strict mode is intentionally opt-in for development/validation builds.
+  /// Production keeps graceful fallback; RTX validation can explicitly reject
+  /// a CPU fallback so a fast CPU response cannot be mistaken for GPU success.
+  static bool get strictGpuRequested {
+    if (!Platform.isWindows) return false;
+    final raw = Platform.environment[strictGpuEnvironmentVariable]
+        ?.trim()
+        .toLowerCase();
+    return raw == '1' || raw == 'true' || raw == 'yes' || raw == 'on';
+  }
 
   NazaLiteRtRuntimeProfile _profile = _initialProfile();
   final List<void Function(NazaLiteRtRuntimeProfile)> _listeners =
@@ -163,6 +186,18 @@ final class NazaRuntimeTelemetry {
     );
   }
 
+  /// Call this at the point where a normal build would accept CPU fallback.
+  /// It throws only when the developer explicitly launched with
+  /// NAZA_GPU_STRICT=1 and the requested GPU is not actually active.
+  void enforceStrictGpu({String context = 'LiteRT-LM initialization'}) {
+    if (!_profile.strictGpuViolation) return;
+    throw StateError(
+      '$context: strict GPU validation requested but LiteRT-LM did not keep '
+      'the GPU backend active. Actual=${_profile.actualBackend.name}; '
+      'reason=${_profile.failureReason ?? 'not reported'}.',
+    );
+  }
+
   void reset() => _set(_initialProfile());
 
   void _set(NazaLiteRtRuntimeProfile value) {
@@ -185,6 +220,8 @@ final class NazaRuntimeTelemetry {
         dartBridge: _profile.dartBridge,
         nativeRuntime: _profile.nativeRuntime,
         windowsGpuNoCache: _profile.windowsGpuNoCache,
+        windowsSerializedWeightUpload:
+            _profile.windowsSerializedWeightUpload,
         requestedBackend: requestedBackend ?? _profile.requestedBackend,
         actualBackend: actualBackend ?? _profile.actualBackend,
         attemptState: attemptState ?? _profile.attemptState,
@@ -196,9 +233,10 @@ final class NazaRuntimeTelemetry {
     final windows = Platform.isWindows;
     return NazaLiteRtRuntimeProfile(
       platform: Platform.operatingSystem,
-      dartBridge: windows ? windowsDartBridge : modernDartBridge,
-      nativeRuntime: windows ? windowsNativeRuntime : 'modern',
+      dartBridge: modernDartBridge,
+      nativeRuntime: windows ? windowsNativeRuntime : 'published-modern',
       windowsGpuNoCache: windows,
+      windowsSerializedWeightUpload: windows,
       requestedBackend: NazaInferenceBackend.unknown,
       actualBackend: NazaInferenceBackend.unknown,
       attemptState: NazaBackendAttemptState.idle,
@@ -207,7 +245,6 @@ final class NazaRuntimeTelemetry {
 
   static String _sanitizeFailure(Object error) {
     var value = error.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
-    // Avoid surfacing huge native stack traces or paths in the UI telemetry.
     if (value.length > 320) value = '${value.substring(0, 317)}...';
     return value;
   }
