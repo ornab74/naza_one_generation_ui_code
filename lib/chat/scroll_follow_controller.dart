@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/widgets.dart';
 
