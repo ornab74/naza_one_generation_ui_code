@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Guarded, idempotent integration patches for NAZA One's large main.dart.
 
-This script intentionally refuses to write if an expected legacy shape is
-missing or duplicated. It lets CI make surgical edits to the monolithic app
-shell without replacing the entire ~800 KB file through an API call.
+Every edit asserts the exact legacy shape before writing. CI applies this to a
+throw-away checkout first; the resulting main.dart is reviewed and analyzed
+before any branch replacement is made.
 """
 from __future__ import annotations
 
@@ -43,22 +43,18 @@ def main() -> None:
     text = MAIN.read_text(encoding="utf-8")
     original = text
 
-    # Make the new subsystems available to the app shell. Keeping them as
-    # separate modules preserves testability and keeps main.dart from growing.
+    # Only import modules this first integration slice uses. Other advanced
+    # services remain independently tested until their shell hooks are added.
     anchor = "import 'security/secure_database.dart';\n"
     imports = (
         "import 'security/secure_database.dart';\n"
         "import 'chat/history_drawer.dart';\n"
         "import 'chat/scroll_follow_controller.dart';\n"
-        "import 'memory/local_memory_service.dart';\n"
-        "import 'onboarding/first_run_onboarding.dart';\n"
     )
-    text = replace_exact(text, anchor, imports, label="advanced subsystem imports")
+    text = replace_exact(text, anchor, imports, label="chat subsystem imports")
 
-    # The vault used to force a newly-created user into Settings. That made the
-    # first screen feel like configuration instead of a chat product. The new
-    # onboarding gate owns first-run model/help flow; unlocked app navigation
-    # should therefore default to Chat.
+    # Chat-first startup. First-run model/help onboarding will become the only
+    # intentional startup gate; vault creation must not throw users into Settings.
     text = replace_regex(
         text,
         r"^\s*bool _openPostQuantumSetup = false;\n",
@@ -67,7 +63,7 @@ def main() -> None:
     )
     text = replace_regex(
         text,
-        r"(?P<indent>\s*)_openPostQuantumSetup = true;\n",
+        r"\s*_openPostQuantumSetup = true;\n",
         "",
         label="remove Settings-first assignment",
     )
@@ -76,6 +72,88 @@ def main() -> None:
         r"return NazaStableHome\(\n\s*initialPanel:\n\s*_openPostQuantumSetup \? NazaPanel\.settings : NazaPanel\.chat,\n\s*\);",
         "return const NazaStableHome(initialPanel: NazaPanel.chat);",
         label="route unlocked app to Chat",
+    )
+
+    # Replace the raw controller with the reader-aware auto-follow controller.
+    text = replace_exact(
+        text,
+        "  final ScrollController _scrollController = ScrollController();\n",
+        "  final NazaChatScrollFollowController _scrollFollow =\n"
+        "      NazaChatScrollFollowController();\n"
+        "  ScrollController get _scrollController => _scrollFollow.controller;\n",
+        label="reader-aware scroll controller",
+    )
+    text = replace_exact(
+        text,
+        "  DateTime _lastScrollRequestAt = DateTime.fromMillisecondsSinceEpoch(0);\n",
+        "",
+        label="remove legacy scroll throttle timestamp",
+    )
+    text = replace_exact(
+        text,
+        "    _scrollController.dispose();\n",
+        "    _scrollFollow.dispose();\n",
+        label="dispose scroll-follow controller",
+    )
+
+    legacy_scroll_method = """  void _scrollToBottom({bool force = false}) {
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastScrollRequestAt) <
+            const Duration(milliseconds: 240)) {
+      return;
+    }
+    _lastScrollRequestAt = now;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    });
+  }
+"""
+    new_scroll_method = """  void _scrollToBottom({bool force = false}) {
+    if (force) {
+      _scrollFollow.armForConversationTail();
+      return;
+    }
+    _scrollFollow.onStreamPaint();
+  }
+"""
+    text = replace_exact(
+        text,
+        legacy_scroll_method,
+        new_scroll_method,
+        label="streaming reader scroll policy",
+    )
+
+    # A new request may intentionally arm the tail, but generation completion
+    # must never re-arm it after the reader deliberately scrolled upward.
+    text = replace_exact(
+        text,
+        "    _scrollToBottom(force: true);\n    if (focusComposerWhenDone) {\n",
+        "    _scrollToBottom();\n    if (focusComposerWhenDone) {\n",
+        label="preserve reader position after primary response",
+    )
+    text = replace_exact(
+        text,
+        "      _continuationText = finalText;\n    });\n    _scrollToBottom(force: true);\n  }\n\n  void _newThread() {\n",
+        "      _continuationText = finalText;\n    });\n    _scrollToBottom();\n  }\n\n  void _newThread() {\n",
+        label="preserve reader position after continuation",
+    )
+
+    # History gets a useful compact fallback immediately. A later integration
+    # slice persists local-model-generated titles through encrypted metadata.
+    legacy_title = """          final title = firstPrompt.isEmpty
+              ? 'Untitled conversation'
+              : firstPrompt.length <= 72
+              ? firstPrompt
+              : '${firstPrompt.substring(0, 72).trimRight()}…';
+"""
+    text = replace_exact(
+        text,
+        legacy_title,
+        "          final title = NazaConversationTitlePolicy.fallback(firstPrompt);\n",
+        label="compact conversation fallback titles",
     )
 
     if text == original:
