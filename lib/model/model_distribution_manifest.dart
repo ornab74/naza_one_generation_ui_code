@@ -8,6 +8,7 @@ enum NazaDistributionPlane {
   pinataIpfsPart,
   publicIpfsPart,
   browserIpfsPart,
+  runtimeMirror,
 }
 
 final class NazaDistributionSource {
@@ -25,7 +26,7 @@ final class NazaDistributionSource {
   final int? partIndex;
   final double trustWeight;
 
-  bool get isFullObject => plane == NazaDistributionPlane.canonicalFull;
+  bool get isFullObject => partIndex == null;
 
   String get originKey {
     final port = uri.hasPort ? ':${uri.port}' : '';
@@ -46,18 +47,34 @@ final class NazaDistributionPart {
     required this.index,
     required this.name,
     required this.cid,
+    required this.expectedBytes,
+    required this.expectedSha256,
     required this.sources,
   });
 
   final int index;
   final String name;
   final String cid;
+  final int expectedBytes;
+  final String expectedSha256;
   final List<NazaDistributionSource> sources;
+
+  NazaDistributionPart copyWithSources(List<NazaDistributionSource> value) =>
+      NazaDistributionPart(
+        index: index,
+        name: name,
+        cid: cid,
+        expectedBytes: expectedBytes,
+        expectedSha256: expectedSha256,
+        sources: List<NazaDistributionSource>.unmodifiable(value),
+      );
 
   Map<String, Object?> toJson() => <String, Object?>{
         'index': index,
         'name': name,
         'cid': cid,
+        'expectedBytes': expectedBytes,
+        'expectedSha256': expectedSha256.toLowerCase(),
         'sources': sources.map((source) => source.toJson()).toList(),
       };
 }
@@ -83,33 +100,66 @@ final class NazaIpfsPeerHint {
       };
 }
 
-/// Immutable distribution topology for the bundled Gemma 4 E2B LiteRT-LM
-/// model. The HTTPS downloader consumes the gateway/release sources directly.
-/// The peer hints are retained as provenance for a future native Bitswap
-/// transport; they are deliberately not treated as HTTP endpoints.
+/// Immutable distribution identity plus transport locations for the bundled
+/// Gemma 4 E2B LiteRT-LM model.
+///
+/// Bytes, hashes, revision and CIDs are compiled into the application. Runtime
+/// mirror discovery may add HTTPS transport locations but cannot replace any
+/// of these immutable identity fields.
 final class NazaModelDistributionManifest {
   const NazaModelDistributionManifest({
     required this.modelFileName,
     required this.expectedSha256,
+    required this.expectedBytes,
     required this.revision,
     required this.fullSources,
     required this.parts,
     required this.ipfsPeerHints,
+    required this.runtimeCatalogUri,
   });
 
   final String modelFileName;
   final String expectedSha256;
+  final int expectedBytes;
   final String revision;
   final List<NazaDistributionSource> fullSources;
   final List<NazaDistributionPart> parts;
   final List<NazaIpfsPeerHint> ipfsPeerHints;
+  final Uri runtimeCatalogUri;
+
+  NazaModelDistributionManifest copyWithSources({
+    required List<NazaDistributionSource> fullSources,
+    required List<List<NazaDistributionSource>> partSources,
+  }) {
+    if (partSources.length != parts.length) {
+      throw ArgumentError('Runtime mirror part-source count does not match manifest.');
+    }
+    return NazaModelDistributionManifest(
+      modelFileName: modelFileName,
+      expectedSha256: expectedSha256,
+      expectedBytes: expectedBytes,
+      revision: revision,
+      fullSources: List<NazaDistributionSource>.unmodifiable(fullSources),
+      parts: List<NazaDistributionPart>.unmodifiable(<NazaDistributionPart>[
+        for (var i = 0; i < parts.length; i++)
+          parts[i].copyWithSources(partSources[i]),
+      ]),
+      ipfsPeerHints: ipfsPeerHints,
+      runtimeCatalogUri: runtimeCatalogUri,
+    );
+  }
 
   static final NazaModelDistributionManifest gemma4E2b =
       NazaModelDistributionManifest(
     modelFileName: 'gemma-4-E2B-it.litertlm',
     expectedSha256:
         'ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42',
+    expectedBytes: 2583085056,
     revision: '7fa1d78473894f7e736a21d920c3aa80f950c0db',
+    runtimeCatalogUri: Uri.parse(
+      'https://raw.githubusercontent.com/ornab74/'
+      'naza_one_generation_ui_code/main/mirrors.md',
+    ),
     fullSources: <NazaDistributionSource>[
       NazaDistributionSource(
         id: 'hf-immutable-full',
@@ -126,14 +176,20 @@ final class NazaModelDistributionManifest {
       _part(
         index: 0,
         cid: 'bafybeiax5zuvour7ukmssodnaiowp6ija7t2tqzghlqnikakpcafhknpty',
+        expectedSha256:
+            'b4ba4432650a1d767736b4139d9d94ab0ebb2e084a9c1fcca3824e691b4cb995',
       ),
       _part(
         index: 1,
         cid: 'bafybeid7wk63zk76jno5rqovfbl2boekhdfhphvomvb4ztfs2oj5oasqm4',
+        expectedSha256:
+            '5f27ca28d693292298ce9bff48c641458af2994466cc1809576380b947861bc8',
       ),
       _part(
         index: 2,
         cid: 'bafybeiav2gawt4c2lwz3kj52zjdyw5gtvvrpmrfisyeahhndiuzbiaeckm',
+        expectedSha256:
+            '00e9d3b99151f41afe9cbc2e99cd3d684b62d67238859285ec89d1cf5a94c2f3',
       ),
     ],
     ipfsPeerHints: const <NazaIpfsPeerHint>[
@@ -156,13 +212,19 @@ final class NazaModelDistributionManifest {
     ],
   );
 
-  static NazaDistributionPart _part({required int index, required String cid}) {
+  static NazaDistributionPart _part({
+    required int index,
+    required String cid,
+    required String expectedSha256,
+  }) {
     final suffix = index.toString().padLeft(2, '0');
     final name = 'gemma-4-E2B-it.litertlm.part$suffix.bin';
     return NazaDistributionPart(
       index: index,
       name: name,
       cid: cid,
+      expectedBytes: 861028352,
+      expectedSha256: expectedSha256,
       sources: <NazaDistributionSource>[
         NazaDistributionSource(
           id: 'github-part-$suffix',
@@ -207,12 +269,14 @@ final class NazaModelDistributionManifest {
     required int chunkBytes,
   }) {
     final canonical = jsonEncode(<String, Object?>{
-      'schema': 'naza-model-distribution-v2',
+      'schema': 'naza-model-distribution-v3',
       'file': modelFileName,
       'sha256': expectedSha256.toLowerCase(),
+      'expectedBytes': expectedBytes,
       'revision': revision,
       'totalBytes': totalBytes,
       'partSizes': partSizes,
+      'partHashes': parts.map((part) => part.expectedSha256).toList(),
       'chunkBytes': chunkBytes,
       'fullSources': fullSources.map((source) => source.toJson()).toList(),
       'parts': parts.map((part) => part.toJson()).toList(),
