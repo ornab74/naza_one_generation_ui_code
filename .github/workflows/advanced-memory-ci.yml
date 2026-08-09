@@ -54,6 +54,8 @@ jobs:
           lib/chat/history_metadata_repository.dart
           lib/chat/advanced_chat_coordinator.dart
           lib/model/runtime_profile.dart
+          lib/model/model_distribution_manifest.dart
+          lib/model/multiplane_model_downloader.dart
           lib/onboarding/first_run_onboarding.dart
           lib/onboarding/onboarding_state.dart
           test/embedded_vector_store_test.dart
@@ -62,6 +64,7 @@ jobs:
           test/advanced_chat_coordinator_test.dart
           test/runtime_profile_test.dart
           test/advanced_chat_features_test.dart
+          test/model_distribution_manifest_test.dart
 
       - name: Run embedded vector-store tests
         run: flutter test --no-pub test/embedded_vector_store_test.dart
@@ -80,6 +83,9 @@ jobs:
 
       - name: Run advanced chat feature tests
         run: flutter test --no-pub test/advanced_chat_features_test.dart
+
+      - name: Run model distribution manifest tests
+        run: flutter test --no-pub test/model_distribution_manifest_test.dart
 
   windows-modern-api:
     name: Windows modern 1.3.1 API compile
