@@ -6,7 +6,7 @@ import '../model/runtime_profile.dart';
 /// It deliberately does not infer GPU use from throughput; callers update the
 /// telemetry only after model initialization succeeds or falls back.
 final class NazaRuntimeBackendCard extends StatefulWidget {
-  const NazaRuntimeBackendCard({
+  NazaRuntimeBackendCard({
     super.key,
     NazaRuntimeTelemetry? telemetry,
   }) : telemetry = telemetry ?? NazaRuntimeTelemetry.instance;
