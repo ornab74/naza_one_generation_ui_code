@@ -51,9 +51,11 @@ jobs:
           lib/memory/local_memory_service.dart
           lib/chat/scroll_follow_controller.dart
           lib/chat/history_drawer.dart
+          lib/model/runtime_profile.dart
           lib/onboarding/first_run_onboarding.dart
           test/embedded_vector_store_test.dart
           test/local_memory_service_test.dart
+          test/runtime_profile_test.dart
           test/advanced_chat_features_test.dart
 
       - name: Run embedded vector-store tests
@@ -61,6 +63,9 @@ jobs:
 
       - name: Run encrypted memory-service tests
         run: flutter test --no-pub test/local_memory_service_test.dart
+
+      - name: Run runtime telemetry tests
+        run: flutter test --no-pub test/runtime_profile_test.dart
 
       - name: Run advanced chat feature tests
         run: flutter test --no-pub test/advanced_chat_features_test.dart
