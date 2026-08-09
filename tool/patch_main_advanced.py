@@ -50,11 +50,10 @@ def main() -> None:
         "import 'chat/scroll_follow_controller.dart';\n"
         "import 'model/model_distribution_manifest.dart';\n"
         "import 'model/multiplane_model_downloader.dart';\n"
+        "import 'model/runtime_mirror_catalog.dart';\n"
     )
     text = replace_exact(text, anchor, imports, label="advanced subsystem imports")
 
-    # Chat-first startup. Preserve the current NazaStableHome constructor and
-    # vision picker; only remove the legacy one-time Settings redirect.
     text = replace_regex(
         text,
         r"^\s*bool _openPostQuantumSetup = false;\n",
@@ -76,7 +75,6 @@ def main() -> None:
         label="route unlocked app to Chat",
     )
 
-    # Replace the raw controller with the reader-aware auto-follow controller.
     text = replace_exact(
         text,
         "  final ScrollController _scrollController = ScrollController();\n",
@@ -128,8 +126,6 @@ def main() -> None:
         label="streaming reader scroll policy",
     )
 
-    # A new request may intentionally arm the tail, but generation completion
-    # must never re-arm it after the reader deliberately scrolled upward.
     text = replace_exact(
         text,
         "    _scrollToBottom(force: true);\n    if (focusComposerWhenDone) {\n",
@@ -156,15 +152,16 @@ def main() -> None:
         label="compact conversation fallback titles",
     )
 
-    # Replace the single-host sequential model GET with the bounded multi-plane
-    # downloader. NazaSecureModelStore retains its existing target path,
-    # attestation checks and final immutable SHA-256 trust boundary.
     downloader_method = r'''  static Future<void> _downloadVerified(
     File target, {
     void Function(int progress, String phase)? onProgress,
   }) async {
+    onProgress?.call(1, 'loading secure mirror catalog');
+    final distribution = await NazaRuntimeMirrorCatalog.resolve(
+      NazaModelDistributionManifest.gemma4E2b,
+    );
     final downloader = NazaMultiplaneModelDownloader(
-      manifest: NazaModelDistributionManifest.gemma4E2b,
+      manifest: distribution,
     );
     try {
       await downloader.download(
@@ -181,7 +178,7 @@ def main() -> None:
           final mib = snapshot.bytesPerSecond / (1024 * 1024);
           final provider = snapshot.fastestProvider;
           final phase = switch (snapshot.stage) {
-            NazaDownloadStage.probing => 'loading secure mirror catalog',
+            NazaDownloadStage.probing => 'validating model distribution topology',
             NazaDownloadStage.allocating => 'preparing resumable model download',
             NazaDownloadStage.downloading =>
               'multi-provider download ${mib.toStringAsFixed(1)} MiB/s'
