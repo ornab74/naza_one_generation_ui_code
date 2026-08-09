@@ -1,10 +1,14 @@
 export 'app.dart';
 
+import 'package:flutter/widgets.dart';
+
 import 'app.dart' as app;
 import 'onboarding/boot_coordinator.dart';
 import 'security/secure_database.dart';
 
 Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
   // Existing legacy encrypted-data installs still enter the original vault
   // gate once so its authenticated migration/recovery machinery can import and
   // verify old records before cleanup. Fresh/current vaults use the new
