@@ -3,9 +3,6 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
-/// Lightweight view model for the history drawer. Raw transcript ownership
-/// stays with the existing encrypted history store; this model represents only
-/// display/search metadata and stable thread identifiers.
 final class NazaHistoryEntry {
   const NazaHistoryEntry({
     required this.threadId,
@@ -42,9 +39,6 @@ final class NazaHistoryEntry {
       );
 }
 
-/// Generates compact fallback titles without invoking a second model request.
-/// The app can replace this with the local Gemma callback after a completed
-/// response; the fallback keeps history useful while the model is unavailable.
 final class NazaConversationTitlePolicy {
   const NazaConversationTitlePolicy._();
 
@@ -56,7 +50,8 @@ final class NazaConversationTitlePolicy {
         .trim();
     if (cleaned.isEmpty) return 'New conversation';
 
-    final words = cleaned.split(' ')
+    final words = cleaned
+        .split(' ')
         .where((word) => word.length > 1)
         .where((word) => !_stop.contains(word.toLowerCase()))
         .take(6)
@@ -68,10 +63,10 @@ final class NazaConversationTitlePolicy {
 
   static String sanitizeModelTitle(String generated, String fallbackText) {
     var title = generated
-        .replaceAll(RegExp(r'^[\s"\'`#*-]+|[\s"\'`#*.-]+$'), '')
+        .replaceAll(RegExp(r'''^[\s"'`#*-]+|[\s"'`#*.-]+$'''), '')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
-    final words = title.split(' ').where((w) => w.isNotEmpty).toList();
+    final words = title.split(' ').where((word) => word.isNotEmpty).toList();
     if (title.isEmpty || words.length > 8 || title.length > 72) {
       return fallback(fallbackText);
     }
@@ -90,10 +85,6 @@ typedef NazaGenerateConversationTitle = Future<String> Function({
   required String assistantText,
 });
 
-/// Coordinates once-per-thread local-model title generation. It never blocks
-/// the assistant response; callers invoke it after the primary generation has
-/// completed and persist the returned metadata through their existing history
-/// layer.
 final class NazaConversationTitleCoordinator {
   NazaConversationTitleCoordinator({required this.generateTitle});
 
@@ -171,10 +162,8 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final filtered = _filteredEntries(widget.entries, _query);
-    final grouped = _group(filtered);
+    final scheme = Theme.of(context).colorScheme;
+    final groups = _group(_filteredEntries(widget.entries, _query));
 
     return Material(
       color: Colors.transparent,
@@ -203,15 +192,35 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
                 child: Column(
                   children: <Widget>[
                     _header(context),
-                    _searchField(context),
+                    _searchBar(context),
                     Expanded(
-                      child: filtered.isEmpty
-                          ? _empty(context)
-                          : ListView.builder(
+                      child: groups.isEmpty
+                          ? Center(
+                              child: Text(
+                                _query.isEmpty
+                                    ? 'Your conversations will appear here.'
+                                    : 'No conversations match “$_query”.',
+                              ),
+                            )
+                          : ListView(
                               padding: const EdgeInsets.fromLTRB(10, 8, 10, 20),
-                              itemCount: _flattenCount(grouped),
-                              itemBuilder: (context, index) =>
-                                  _buildFlattened(context, grouped, index),
+                              children: <Widget>[
+                                for (final group in groups) ...<Widget>[
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(8, 13, 8, 6),
+                                    child: Text(
+                                      group.key,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 0.7,
+                                        color: scheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ),
+                                  for (final entry in group.value) _entryTile(context, entry),
+                                ],
+                              ],
                             ),
                     ),
                   ],
@@ -236,10 +245,7 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               gradient: LinearGradient(
-                colors: <Color>[
-                  scheme.primary.withValues(alpha: 0.92),
-                  scheme.tertiary.withValues(alpha: 0.78),
-                ],
+                colors: <Color>[scheme.primary, scheme.tertiary],
               ),
             ),
             child: const Icon(Icons.auto_awesome_rounded, size: 18),
@@ -254,64 +260,43 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
               ],
             ),
           ),
-          IconButton(tooltip: 'Close history', onPressed: widget.onClose, icon: const Icon(Icons.close_rounded)),
+          IconButton(
+            tooltip: 'Close history',
+            onPressed: widget.onClose,
+            icon: const Icon(Icons.close_rounded),
+          ),
         ],
       ),
     );
   }
 
-  Widget _searchField(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: TextField(
-              controller: _search,
-              onChanged: (value) => setState(() => _query = value),
-              decoration: InputDecoration(
-                hintText: 'Search past chats',
-                prefixIcon: const Icon(Icons.search_rounded, size: 19),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        onPressed: () {
-                          _search.clear();
-                          setState(() => _query = '');
-                        },
-                        icon: const Icon(Icons.clear_rounded, size: 18),
-                      ),
-                isDense: true,
-                filled: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(18),
-                  borderSide: BorderSide.none,
+  Widget _searchBar(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: TextField(
+                controller: _search,
+                onChanged: (value) => setState(() => _query = value),
+                decoration: InputDecoration(
+                  hintText: 'Search past chats',
+                  prefixIcon: const Icon(Icons.search_rounded, size: 19),
+                  isDense: true,
+                  filled: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    borderSide: BorderSide.none,
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 8),
-          FilledButton.tonalIcon(
-            onPressed: widget.onNewChat,
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text('New'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _empty(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(Icons.forum_outlined, size: 38, color: Theme.of(context).colorScheme.onSurfaceVariant),
-              const SizedBox(height: 12),
-              Text(_query.isEmpty ? 'Your conversations will appear here.' : 'No conversations match “$_query”.'),
-            ],
-          ),
+            const SizedBox(width: 8),
+            FilledButton.tonalIcon(
+              onPressed: widget.onNewChat,
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text('New'),
+            ),
+          ],
         ),
       );
 
@@ -373,13 +358,12 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
       tooltip: 'Conversation actions',
       iconSize: 19,
       onSelected: (action) async {
-        switch (action) {
-          case 'pin':
-            await widget.onTogglePinned?.call(entry.threadId, !entry.pinned);
-          case 'rename':
-            await _rename(context, entry);
-          case 'delete':
-            await widget.onDelete?.call(entry.threadId);
+        if (action == 'pin') {
+          await widget.onTogglePinned?.call(entry.threadId, !entry.pinned);
+        } else if (action == 'rename') {
+          await _rename(context, entry);
+        } else if (action == 'delete') {
+          await widget.onDelete?.call(entry.threadId);
         }
       },
       itemBuilder: (_) => <PopupMenuEntry<String>>[
@@ -402,45 +386,23 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
         content: TextField(controller: controller, autofocus: true, maxLength: 72),
         actions: <Widget>[
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Save')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Save'),
+          ),
         ],
       ),
     );
     controller.dispose();
-    if (value != null && value.isNotEmpty) await widget.onRename?.call(entry.threadId, value);
-  }
-
-  Widget _buildFlattened(
-    BuildContext context,
-    List<MapEntry<String, List<NazaHistoryEntry>>> groups,
-    int target,
-  ) {
-    var cursor = 0;
-    for (final group in groups) {
-      if (cursor == target) {
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(8, 13, 8, 6),
-          child: Text(
-            group.key,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.7,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-        );
-      }
-      cursor++;
-      for (final entry in group.value) {
-        if (cursor == target) return _entryTile(context, entry);
-        cursor++;
-      }
+    if (value != null && value.isNotEmpty) {
+      await widget.onRename?.call(entry.threadId, value);
     }
-    return const SizedBox.shrink();
   }
 
-  static List<NazaHistoryEntry> _filteredEntries(List<NazaHistoryEntry> input, String query) {
+  static List<NazaHistoryEntry> _filteredEntries(
+    List<NazaHistoryEntry> input,
+    String query,
+  ) {
     final needle = query.trim().toLowerCase();
     final entries = input.where((entry) {
       if (needle.isEmpty) return true;
@@ -454,7 +416,9 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
     return entries;
   }
 
-  static List<MapEntry<String, List<NazaHistoryEntry>>> _group(List<NazaHistoryEntry> entries) {
+  static List<MapEntry<String, List<NazaHistoryEntry>>> _group(
+    List<NazaHistoryEntry> entries,
+  ) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final groups = <String, List<NazaHistoryEntry>>{};
@@ -475,15 +439,19 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
                           : 'OLDER';
       groups.putIfAbsent(label, () => <NazaHistoryEntry>[]).add(entry);
     }
-    const order = <String>['PINNED', 'TODAY', 'YESTERDAY', 'PREVIOUS 7 DAYS', 'PREVIOUS 30 DAYS', 'OLDER'];
+    const order = <String>[
+      'PINNED',
+      'TODAY',
+      'YESTERDAY',
+      'PREVIOUS 7 DAYS',
+      'PREVIOUS 30 DAYS',
+      'OLDER',
+    ];
     return order
         .where(groups.containsKey)
-        .map((key) => MapEntry(key, groups[key]!))
+        .map((key) => MapEntry<String, List<NazaHistoryEntry>>(key, groups[key]!))
         .toList(growable: false);
   }
-
-  static int _flattenCount(List<MapEntry<String, List<NazaHistoryEntry>>> groups) =>
-      groups.fold<int>(0, (count, group) => count + 1 + group.value.length);
 
   static String _subtitle(NazaHistoryEntry entry) {
     final local = entry.updatedAt.toLocal();
@@ -492,6 +460,8 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
     final suffix = local.hour >= 12 ? 'PM' : 'AM';
     final preview = entry.preview.trim().replaceAll(RegExp(r'\s+'), ' ');
     final time = '$hour:$minute $suffix';
-    return preview.isEmpty ? '$time · ${entry.messageCount} messages' : '$time · $preview';
+    return preview.isEmpty
+        ? '$time · ${entry.messageCount} messages'
+        : '$time · $preview';
   }
 }
