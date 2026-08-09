@@ -23,11 +23,10 @@ final class NazaEmbeddedVectorStore {
     this.lshBits = 13,
     this.maxRecords = 2400,
     this.maxCandidates = 96,
-    int randomSeed = 0x4E415A41,
+    this._randomSeed = 0x4E415A41,
   }) : assert(dimensions > 0),
        assert(lshTables > 0),
-       assert(lshBits > 0 && lshBits <= 24),
-       _randomSeed = randomSeed {
+       assert(lshBits > 0 && lshBits <= 24) {
     _planes = _makePlanes();
   }
 
@@ -612,7 +611,9 @@ final class NazaVectorRecord {
 
   static Int8List _quantize(List<double> vector) {
     var maxAbs = 0.0;
-    for (final value in vector) maxAbs = math.max(maxAbs, value.abs());
+    for (final value in vector) {
+      maxAbs = math.max(maxAbs, value.abs());
+    }
     if (maxAbs <= 1e-18) return Int8List(vector.length);
     final scale = 127.0 / maxAbs;
     return Int8List.fromList(vector.map((v) => (v * scale).round().clamp(-127, 127)).toList(growable: false));
