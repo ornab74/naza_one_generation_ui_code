@@ -13,7 +13,11 @@ dependencies:
   crypto: ^3.0.6
   file_selector: ^1.1.0
   flutter_gemma: ^1.3.0
-  flutter_gemma_litertlm: ^1.1.0
+  # Keep Windows on the pre-regression LiteRT-LM Flutter bridge. 1.2.0+
+  # moved to LiteRT-LM v0.14.0 where Windows discrete GPU is an upstream
+  # known regression (google-ai-edge/LiteRT-LM#2957). Pin exactly so pub
+  # cannot float Windows builds onto the broken accelerator generation.
+  flutter_gemma_litertlm: 1.0.2
   flutter_secure_storage: ^10.3.1
   image_picker: ^1.2.3
   path_provider: ^2.1.6
