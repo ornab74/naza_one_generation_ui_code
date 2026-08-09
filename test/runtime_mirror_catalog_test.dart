@@ -38,13 +38,16 @@ void main() {
     expect(merged.expectedSha256, builtIn.expectedSha256);
     expect(merged.expectedBytes, builtIn.expectedBytes);
     expect(merged.parts[0].expectedSha256, builtIn.parts[0].expectedSha256);
-    expect(merged.parts[0].sources.any((source) => source.uri.toString() == mirror), isTrue);
+    expect(
+      merged.parts[0].sources.any((source) => source.uri.toString() == mirror),
+      isTrue,
+    );
   });
 
   test('tampered immutable model identity is rejected', () {
     final tampered = catalog().replaceFirst(
       builtIn.expectedSha256,
-      '0' * 64,
+      List<String>.filled(64, '0').join(),
     );
     expect(
       () => NazaRuntimeMirrorCatalog.parseAndMerge(builtIn, tampered),
