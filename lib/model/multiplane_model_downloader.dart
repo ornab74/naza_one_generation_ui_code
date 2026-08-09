@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -79,7 +80,6 @@ final class _PartLayout {
   final int partIndex;
   final int start;
   final int length;
-  int get endExclusive => start + length;
 }
 
 final class _Chunk {
@@ -117,9 +117,11 @@ final class _ProviderState {
       backoffUntil == null || DateTime.now().isAfter(backoffUntil!);
 
   double get effectiveScore {
-    final speed = ewmaBps <= 0 ? 1.0 : math.log(1 + ewmaBps / 1048576.0) + 1.0;
+    final speed = ewmaBps <= 0
+        ? 1.0
+        : math.log(1 + ewmaBps / (1024 * 1024)) + 1.0;
     final reliability = (successes + 1) / (successes + failures + 1);
-    final pressure = 1 / (1 + inFlight * 0.75);
+    final pressure = 1 / (1 + inFlight * 0.85);
     return score * speed * reliability * pressure;
   }
 
@@ -128,8 +130,8 @@ final class _ProviderState {
     failures = math.max(0, failures - 1);
     final seconds = math.max(elapsed.inMicroseconds / 1000000.0, 0.001);
     final bps = bytes / seconds;
-    ewmaBps = ewmaBps == 0 ? bps : ewmaBps * 0.72 + bps * 0.28;
-    score = math.min(8.0, score * 1.04 + 0.01);
+    ewmaBps = ewmaBps == 0 ? bps : ewmaBps * 0.74 + bps * 0.26;
+    score = math.min(8.0, score * 1.035 + 0.01);
     backoffUntil = null;
   }
 
@@ -141,44 +143,57 @@ final class _ProviderState {
   }
 }
 
+final class _TransferResult {
+  const _TransferResult({
+    required this.chunk,
+    required this.file,
+    required this.provider,
+    this.error,
+    this.stackTrace,
+  });
+
+  final _Chunk chunk;
+  final File file;
+  final _ProviderState? provider;
+  final Object? error;
+  final StackTrace? stackTrace;
+
+  bool get ok => error == null && provider != null;
+}
+
 final class _ResumeJournal {
   const _ResumeJournal({
     required this.fingerprint,
     required this.totalBytes,
     required this.chunkBytes,
-    required this.completed,
+    required this.committedPrefixChunks,
   });
 
   final String fingerprint;
   final int totalBytes;
   final int chunkBytes;
-  final Set<int> completed;
+  final int committedPrefixChunks;
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'schema': 'naza-model-download-journal-v1',
+        'schema': 'naza-model-download-journal-v2',
         'fingerprint': fingerprint,
         'totalBytes': totalBytes,
         'chunkBytes': chunkBytes,
-        'completed': completed.toList()..sort(),
+        'committedPrefixChunks': committedPrefixChunks,
       };
 
   static _ResumeJournal? decode(String text) {
     try {
       final raw = jsonDecode(text);
-      if (raw is! Map || raw['schema'] != 'naza-model-download-journal-v1') {
+      if (raw is! Map || raw['schema'] != 'naza-model-download-journal-v2') {
         return null;
       }
-      final completedRaw = raw['completed'];
-      if (completedRaw is! List) return null;
       return _ResumeJournal(
         fingerprint: raw['fingerprint']?.toString() ?? '',
         totalBytes: (raw['totalBytes'] as num?)?.toInt() ?? -1,
         chunkBytes: (raw['chunkBytes'] as num?)?.toInt() ?? -1,
-        completed: completedRaw
-            .whereType<num>()
-            .map((value) => value.toInt())
-            .where((value) => value >= 0)
-            .toSet(),
+        committedPrefixChunks:
+            (raw['committedPrefixChunks'] as num?)?.toInt() ?? -1,
       );
     } catch (_) {
       return null;
@@ -186,19 +201,24 @@ final class _ResumeJournal {
   }
 }
 
-/// Multi-plane, multi-provider downloader optimized for very large immutable
-/// model files. It behaves like a conservative HTTPS swarm:
+final class _ResumeState {
+  const _ResumeState({
+    required this.committedPrefixChunks,
+    required this.readyChunkIndexes,
+  });
+
+  final int committedPrefixChunks;
+  final Set<int> readyChunkIndexes;
+}
+
+/// A bounded, resumable, multi-provider HTTPS swarm for immutable model files.
 ///
-/// * full-object HTTP range source + independently hosted part replicas;
-/// * bounded adaptive concurrency rather than unbounded socket fan-out;
-/// * per-provider EWMA throughput/reliability scoring;
-/// * random-access chunk writes, so chunks complete out of order;
-/// * resumable chunk journal;
-/// * provider backoff and immediate failover;
-/// * end-to-end SHA-256 verification before atomic promotion.
-///
-/// It intentionally avoids retaining model chunks in memory. Each transfer
-/// buffers at most one network frame plus an optional small response list.
+/// The scheduler can fetch the same logical bytes from several independent
+/// planes (canonical full object, GitHub release parts, Pinata and public IPFS
+/// gateways). Chunks arrive out of order, but are committed to the staging file
+/// only when the contiguous prefix advances. This gives torrent-like parallel
+/// fetching without holding model chunks in RAM and without requiring unsafe
+/// random-write reopen semantics.
 final class NazaMultiplaneModelDownloader {
   NazaMultiplaneModelDownloader({
     required this.manifest,
@@ -221,6 +241,7 @@ final class NazaMultiplaneModelDownloader {
   final Map<String, HttpClient> _clients = <String, HttpClient>{};
   final Map<String, _ProviderState> _providers = <String, _ProviderState>{};
   final Map<String, int> _providerBytes = <String, int>{};
+  final Map<int, int> _chunkAttempts = <int, int>{};
   bool _closed = false;
 
   Future<NazaDownloadResult> download({
@@ -230,30 +251,32 @@ final class NazaMultiplaneModelDownloader {
     if (_closed) {
       throw const NazaModelDistributionException('Downloader is closed.');
     }
+
     final stopwatch = Stopwatch()..start();
     await target.parent.create(recursive: true);
-
     final topology = await _probeTopology(onProgress);
-    final partLayouts = topology.layouts;
+    final layouts = topology.layouts;
     final totalBytes = topology.totalBytes;
     if (totalBytes <= 0 || totalBytes > 8 * 1024 * 1024 * 1024) {
       throw NazaModelDistributionException(
-        'Invalid model size reported by distribution sources: $totalBytes.',
+        'Invalid model size reported by providers: $totalBytes bytes.',
       );
     }
 
-    final partSizes = partLayouts.map((layout) => layout.length).toList();
+    final chunks = _buildChunks(layouts);
+    final partSizes = layouts.map((layout) => layout.length).toList();
     final fingerprint = manifest.fingerprintFor(
       totalBytes: totalBytes,
       partSizes: partSizes,
       chunkBytes: chunkBytes,
     );
     final staging = File('${target.path}.multiplane.part');
-    final journalFile = File('${staging.path}.json');
-    final chunks = _buildChunks(partLayouts);
-    final completed = await _prepareResume(
+    final journal = File('${staging.path}.json');
+    final spool = Directory('${staging.path}.chunks');
+    final resume = await _prepareResume(
       staging: staging,
-      journalFile: journalFile,
+      journal: journal,
+      spool: spool,
       fingerprint: fingerprint,
       totalBytes: totalBytes,
       chunks: chunks,
@@ -261,32 +284,27 @@ final class NazaMultiplaneModelDownloader {
 
     onProgress?.call(NazaDownloadSnapshot(
       stage: NazaDownloadStage.allocating,
-      receivedBytes: _completedBytes(chunks, completed),
+      receivedBytes: _prefixBytes(chunks, resume.committedPrefixChunks),
       totalBytes: totalBytes,
       activeTransfers: 0,
-      completedChunks: completed.length,
+      completedChunks:
+          resume.committedPrefixChunks + resume.readyChunkIndexes.length,
       totalChunks: chunks.length,
       bytesPerSecond: 0,
       fastestProvider: null,
     ));
 
-    final random = await staging.open(mode: FileMode.write);
-    try {
-      await random.truncate(totalBytes);
-      await _downloadChunks(
-        random: random,
-        chunks: chunks,
-        completed: completed,
-        layouts: partLayouts,
-        journalFile: journalFile,
-        fingerprint: fingerprint,
-        totalBytes: totalBytes,
-        onProgress: onProgress,
-      );
-      await random.flush();
-    } finally {
-      await random.close();
-    }
+    await _downloadChunks(
+      staging: staging,
+      journal: journal,
+      spool: spool,
+      chunks: chunks,
+      layouts: layouts,
+      fingerprint: fingerprint,
+      totalBytes: totalBytes,
+      resume: resume,
+      onProgress: onProgress,
+    );
 
     onProgress?.call(NazaDownloadSnapshot(
       stage: NazaDownloadStage.verifying,
@@ -295,15 +313,15 @@ final class NazaMultiplaneModelDownloader {
       activeTransfers: 0,
       completedChunks: chunks.length,
       totalChunks: chunks.length,
-      bytesPerSecond: totalBytes / math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
+      bytesPerSecond: totalBytes /
+          math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
       fastestProvider: _fastestProvider(),
     ));
 
     final digest = await _sha256File(staging);
     final expected = manifest.expectedSha256.toLowerCase();
     if (digest != expected) {
-      await staging.delete().catchError((_) => staging);
-      await journalFile.delete().catchError((_) => journalFile);
+      await _discardResume(staging, journal, spool);
       throw NazaModelDistributionException(
         'Final model SHA-256 mismatch. Expected $expected, got $digest.',
       );
@@ -311,8 +329,10 @@ final class NazaMultiplaneModelDownloader {
 
     if (await target.exists()) await target.delete();
     await staging.rename(target.path);
-    if (await journalFile.exists()) await journalFile.delete();
+    if (await journal.exists()) await journal.delete();
+    if (await spool.exists()) await spool.delete(recursive: true);
     stopwatch.stop();
+
     onProgress?.call(NazaDownloadSnapshot(
       stage: NazaDownloadStage.complete,
       receivedBytes: totalBytes,
@@ -320,9 +340,11 @@ final class NazaMultiplaneModelDownloader {
       activeTransfers: 0,
       completedChunks: chunks.length,
       totalChunks: chunks.length,
-      bytesPerSecond: totalBytes / math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
+      bytesPerSecond: totalBytes /
+          math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
       fastestProvider: _fastestProvider(),
     ));
+
     return NazaDownloadResult(
       file: target,
       sha256: digest,
@@ -381,18 +403,15 @@ final class NazaMultiplaneModelDownloader {
 
     var offset = 0;
     final layouts = <_PartLayout>[];
-    for (var index = 0; index < partLengths.length; index++) {
+    for (var i = 0; i < partLengths.length; i++) {
       layouts.add(_PartLayout(
-        partIndex: index,
+        partIndex: i,
         start: offset,
-        length: partLengths[index],
+        length: partLengths[i],
       ));
-      offset += partLengths[index];
+      offset += partLengths[i];
     }
 
-    // The canonical source is independently probed as an integrity/topology
-    // cross-check. If it is temporarily unavailable, the replicated part plane
-    // can still proceed; final SHA-256 remains authoritative.
     for (final source in manifest.fullSources) {
       try {
         final full = await _probeLength(source.uri);
@@ -409,52 +428,56 @@ final class NazaMultiplaneModelDownloader {
         _providers[source.id]?.failure();
       }
     }
+
     return (layouts: layouts, totalBytes: offset);
   }
 
   Future<int> _probeLength(Uri uri) async {
     _validateUri(uri);
     final client = _clientFor(uri);
-    final request = await client.openUrl('HEAD', uri).timeout(requestTimeout);
+    try {
+      final request = await client.openUrl('HEAD', uri).timeout(requestTimeout);
+      request.followRedirects = true;
+      request.maxRedirects = 5;
+      final response = await request.close().timeout(requestTimeout);
+      try {
+        if (response.statusCode >= 200 && response.statusCode < 400) {
+          if (response.contentLength > 0) return response.contentLength;
+          final raw = response.headers.value(HttpHeaders.contentLengthHeader);
+          final parsed = int.tryParse(raw ?? '');
+          if (parsed != null && parsed > 0) return parsed;
+        }
+      } finally {
+        await response.drain<void>();
+      }
+    } catch (_) {}
+
+    final request = await client.getUrl(uri).timeout(requestTimeout);
     request.followRedirects = true;
     request.maxRedirects = 5;
+    request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     final response = await request.close().timeout(requestTimeout);
     try {
-      if (response.statusCode >= 200 && response.statusCode < 400) {
-        if (response.contentLength > 0) return response.contentLength;
-        final header = response.headers.value(HttpHeaders.contentLengthHeader);
-        final parsed = int.tryParse(header ?? '');
-        if (parsed != null && parsed > 0) return parsed;
-      }
-    } finally {
-      await response.drain<void>();
-    }
-
-    // Some gateways reject HEAD. A one-byte range request gives total size in
-    // Content-Range without downloading the object.
-    final rangeRequest = await client.getUrl(uri).timeout(requestTimeout);
-    rangeRequest.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
-    final rangeResponse = await rangeRequest.close().timeout(requestTimeout);
-    try {
-      if (rangeResponse.statusCode != HttpStatus.partialContent &&
-          rangeResponse.statusCode != HttpStatus.ok) {
+      if (response.statusCode != HttpStatus.partialContent &&
+          response.statusCode != HttpStatus.ok) {
         throw HttpException(
-          'Probe failed with HTTP ${rangeResponse.statusCode}.',
+          'Probe failed with HTTP ${response.statusCode}.',
           uri: uri,
         );
       }
-      final contentRange = rangeResponse.headers.value(HttpHeaders.contentRangeHeader);
-      if (contentRange != null) {
-        final match = RegExp(r'/([0-9]+)$').firstMatch(contentRange.trim());
-        final total = int.tryParse(match?.group(1) ?? '');
-        if (total != null && total > 0) return total;
+      final range = response.headers.value(HttpHeaders.contentRangeHeader);
+      if (range != null) {
+        final match = RegExp(r'/([0-9]+)$').firstMatch(range.trim());
+        final parsed = int.tryParse(match?.group(1) ?? '');
+        if (parsed != null && parsed > 0) return parsed;
       }
-      if (rangeResponse.statusCode == HttpStatus.ok && rangeResponse.contentLength > 0) {
-        return rangeResponse.contentLength;
+      if (response.statusCode == HttpStatus.ok && response.contentLength > 0) {
+        return response.contentLength;
       }
       throw HttpException('Provider did not expose object length.', uri: uri);
     } finally {
-      await rangeResponse.drain<void>();
+      await response.drain<void>();
     }
   }
 
@@ -462,7 +485,9 @@ final class NazaMultiplaneModelDownloader {
     final chunks = <_Chunk>[];
     var index = 0;
     for (final layout in layouts) {
-      for (var partOffset = 0; partOffset < layout.length; partOffset += chunkBytes) {
+      for (var partOffset = 0;
+          partOffset < layout.length;
+          partOffset += chunkBytes) {
         final length = math.min(chunkBytes, layout.length - partOffset);
         chunks.add(_Chunk(
           index: index++,
@@ -476,228 +501,315 @@ final class NazaMultiplaneModelDownloader {
     return chunks;
   }
 
-  Future<Set<int>> _prepareResume({
+  Future<_ResumeState> _prepareResume({
     required File staging,
-    required File journalFile,
+    required File journal,
+    required Directory spool,
     required String fingerprint,
     required int totalBytes,
     required List<_Chunk> chunks,
   }) async {
-    if (!await staging.exists() || !await journalFile.exists()) {
-      if (await staging.exists()) await staging.delete();
-      if (await journalFile.exists()) await journalFile.delete();
-      await staging.create(recursive: true);
-      return <int>{};
+    await spool.create(recursive: true);
+    var committedPrefix = 0;
+    var valid = false;
+
+    if (await staging.exists() && await journal.exists()) {
+      final decoded = _ResumeJournal.decode(await journal.readAsString());
+      if (decoded != null &&
+          decoded.fingerprint == fingerprint &&
+          decoded.totalBytes == totalBytes &&
+          decoded.chunkBytes == chunkBytes &&
+          decoded.committedPrefixChunks >= 0 &&
+          decoded.committedPrefixChunks <= chunks.length) {
+        final expectedLength = _prefixBytes(
+          chunks,
+          decoded.committedPrefixChunks,
+        );
+        final actualLength = await staging.length();
+        if (actualLength == expectedLength) {
+          committedPrefix = decoded.committedPrefixChunks;
+          valid = true;
+        }
+      }
     }
-    final journal = _ResumeJournal.decode(await journalFile.readAsString());
-    final length = await staging.length();
-    if (journal == null ||
-        journal.fingerprint != fingerprint ||
-        journal.totalBytes != totalBytes ||
-        journal.chunkBytes != chunkBytes ||
-        length != totalBytes) {
-      await staging.delete();
-      await journalFile.delete();
+
+    if (!valid) {
+      await _discardResume(staging, journal, spool);
       await staging.create(recursive: true);
-      return <int>{};
+      await spool.create(recursive: true);
+      committedPrefix = 0;
     }
-    return journal.completed.where((index) => index < chunks.length).toSet();
+
+    final ready = <int>{};
+    for (var i = committedPrefix; i < chunks.length; i++) {
+      final file = _chunkFile(spool, i);
+      if (!await file.exists()) continue;
+      if (await file.length() == chunks[i].length) {
+        ready.add(i);
+      } else {
+        await file.delete();
+      }
+    }
+
+    return _ResumeState(
+      committedPrefixChunks: committedPrefix,
+      readyChunkIndexes: ready,
+    );
   }
 
   Future<void> _downloadChunks({
-    required RandomAccessFile random,
+    required File staging,
+    required File journal,
+    required Directory spool,
     required List<_Chunk> chunks,
-    required Set<int> completed,
     required List<_PartLayout> layouts,
-    required File journalFile,
     required String fingerprint,
     required int totalBytes,
+    required _ResumeState resume,
     required NazaDownloadProgress? onProgress,
   }) async {
-    final pending = <_Chunk>[
-      for (final chunk in chunks)
-        if (!completed.contains(chunk.index)) chunk,
-    ];
-    var received = _completedBytes(chunks, completed);
-    var active = 0;
-    var targetConcurrency = math.min(maxConcurrency, math.max(minConcurrency, 4));
+    var committedPrefix = resume.committedPrefixChunks;
+    final ready = Set<int>.from(resume.readyChunkIndexes);
+    final pending = Queue<_Chunk>.from(
+      chunks.where(
+        (chunk) => chunk.index >= committedPrefix && !ready.contains(chunk.index),
+      ),
+    );
+    final active = <int, Future<_TransferResult>>{};
+    var targetConcurrency = math.min(
+      maxConcurrency,
+      math.max(minConcurrency, 4),
+    );
+    var networkReceived = _readyBytes(chunks, ready);
     final started = Stopwatch()..start();
-    var journalDirty = 0;
-    final writeLock = _AsyncLock();
-    final queueLock = _AsyncLock();
-    Object? fatal;
-    StackTrace? fatalStack;
+    final sink = staging.openWrite(mode: FileMode.writeOnlyAppend);
+
+    Future<void> persist() async {
+      final encoded = jsonEncode(_ResumeJournal(
+        fingerprint: fingerprint,
+        totalBytes: totalBytes,
+        chunkBytes: chunkBytes,
+        committedPrefixChunks: committedPrefix,
+      ).toJson());
+      final temp = File('${journal.path}.tmp');
+      await temp.writeAsString(encoded, flush: true);
+      if (await journal.exists()) await journal.delete();
+      await temp.rename(journal.path);
+    }
+
+    Future<void> commitContiguous() async {
+      var advanced = false;
+      while (committedPrefix < chunks.length) {
+        final chunk = chunks[committedPrefix];
+        final file = _chunkFile(spool, chunk.index);
+        if (!ready.contains(chunk.index) || !await file.exists()) break;
+        if (await file.length() != chunk.length) {
+          ready.remove(chunk.index);
+          await file.delete();
+          pending.addFirst(chunk);
+          break;
+        }
+        await sink.addStream(file.openRead());
+        ready.remove(chunk.index);
+        await file.delete();
+        committedPrefix++;
+        advanced = true;
+      }
+      if (advanced) {
+        await sink.flush();
+        await persist();
+      }
+    }
+
+    int deliveredBytes() =>
+        _prefixBytes(chunks, committedPrefix) + _readyBytes(chunks, ready);
 
     void publish() {
       onProgress?.call(NazaDownloadSnapshot(
         stage: NazaDownloadStage.downloading,
-        receivedBytes: received,
+        receivedBytes: deliveredBytes().clamp(0, totalBytes),
         totalBytes: totalBytes,
-        activeTransfers: active,
-        completedChunks: completed.length,
+        activeTransfers: active.length,
+        completedChunks: committedPrefix + ready.length,
         totalChunks: chunks.length,
-        bytesPerSecond: received / math.max(0.001, started.elapsedMilliseconds / 1000),
+        bytesPerSecond: networkReceived /
+            math.max(0.001, started.elapsedMilliseconds / 1000),
         fastestProvider: _fastestProvider(),
       ));
     }
 
-    Future<void> saveJournal({bool force = false}) async {
-      if (!force && journalDirty < 8) return;
-      journalDirty = 0;
-      final journal = _ResumeJournal(
-        fingerprint: fingerprint,
-        totalBytes: totalBytes,
-        chunkBytes: chunkBytes,
-        completed: Set<int>.from(completed),
-      );
-      final temp = File('${journalFile.path}.tmp');
-      await temp.writeAsString(jsonEncode(journal.toJson()), flush: true);
-      if (await journalFile.exists()) await journalFile.delete();
-      await temp.rename(journalFile.path);
-    }
-
-    Future<void> worker() async {
-      while (fatal == null) {
-        _Chunk? chunk;
-        await queueLock.run(() async {
-          if (pending.isNotEmpty) chunk = pending.removeAt(0);
-        });
-        if (chunk == null) return;
-        active++;
-        publish();
-        try {
-          final transfer = await _fetchChunk(chunk!, layouts);
-          await writeLock.run(() async {
-            await random.setPosition(chunk!.fileOffset);
-            await random.writeFrom(transfer.bytes);
-          });
-          completed.add(chunk!.index);
-          received += chunk!.length;
-          _providerBytes.update(
-            transfer.provider.source.id,
-            (value) => value + chunk!.length,
-            ifAbsent: () => chunk!.length,
+    try {
+      await commitContiguous();
+      while (committedPrefix < chunks.length) {
+        while (active.length < targetConcurrency && pending.isNotEmpty) {
+          final chunk = pending.removeFirst();
+          active[chunk.index] = _downloadChunkToSpool(
+            chunk: chunk,
+            layouts: layouts,
+            file: _chunkFile(spool, chunk.index),
           );
-          journalDirty++;
-          await saveJournal();
-          // Increase cautiously after successful work. This saturates healthy
-          // links without allowing a large phone/desktop socket explosion.
-          if (completed.length % 12 == 0 && targetConcurrency < maxConcurrency) {
+        }
+
+        if (active.isEmpty) {
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          for (var i = committedPrefix; i < chunks.length; i++) {
+            if (!ready.contains(i) &&
+                !active.containsKey(i) &&
+                !pending.any((chunk) => chunk.index == i)) {
+              pending.add(chunks[i]);
+            }
+          }
+          continue;
+        }
+
+        publish();
+        final result = await Future.any(active.values);
+        active.remove(result.chunk.index);
+        if (result.ok) {
+          ready.add(result.chunk.index);
+          networkReceived += result.chunk.length;
+          _providerBytes.update(
+            result.provider!.source.id,
+            (value) => value + result.chunk.length,
+            ifAbsent: () => result.chunk.length,
+          );
+          _chunkAttempts.remove(result.chunk.index);
+          await commitContiguous();
+          if ((committedPrefix + ready.length) % 16 == 0 &&
+              targetConcurrency < maxConcurrency) {
             targetConcurrency++;
           }
-        } catch (error, stack) {
-          // Requeue transient chunks. _fetchChunk tries all suitable providers
-          // first, so reaching this point means the current topology is not
-          // making progress. Keep one bounded retry round before failing.
+        } else {
           final attempts = _chunkAttempts.update(
-            chunk!.index,
+            result.chunk.index,
             (value) => value + 1,
             ifAbsent: () => 1,
           );
-          if (attempts <= 2) {
-            await queueLock.run(() async => pending.add(chunk!));
-            targetConcurrency = math.max(minConcurrency, targetConcurrency - 1);
-          } else {
-            fatal = error;
-            fatalStack = stack;
+          if (await result.file.exists()) await result.file.delete();
+          if (attempts > 3) {
+            Error.throwWithStackTrace(
+              result.error ??
+                  NazaModelDistributionException(
+                    'Chunk ${result.chunk.index} exhausted all providers.',
+                  ),
+              result.stackTrace ?? StackTrace.current,
+            );
           }
-        } finally {
-          active--;
-          publish();
+          pending.addLast(result.chunk);
+          targetConcurrency = math.max(minConcurrency, targetConcurrency - 1);
         }
+        publish();
       }
+      await sink.flush();
+      await persist();
+    } finally {
+      await sink.close();
     }
 
-    final workers = <Future<void>>[];
-    // Spawn maxConcurrency lightweight workers. A worker waits for a permit
-    // before network I/O; targetConcurrency is adjusted while the run proceeds.
-    final gate = _AdaptiveGate(() => targetConcurrency);
-    for (var i = 0; i < maxConcurrency; i++) {
-      workers.add(() async {
-        while (fatal == null) {
-          if (pending.isEmpty) return;
-          await gate.enter(active);
-          await worker();
-          return;
-        }
-      }());
-    }
-    await Future.wait(workers);
-    await saveJournal(force: true);
-    if (fatal != null) {
-      Error.throwWithStackTrace(fatal!, fatalStack ?? StackTrace.current);
-    }
-    if (completed.length != chunks.length) {
+    final stagingLength = await staging.length();
+    if (committedPrefix != chunks.length || stagingLength != totalBytes) {
       throw NazaModelDistributionException(
-        'Download ended with ${completed.length}/${chunks.length} chunks complete.',
+        'Download assembly incomplete: $committedPrefix/${chunks.length} '
+        'chunks, $stagingLength/$totalBytes bytes.',
       );
     }
   }
 
-  final Map<int, int> _chunkAttempts = <int, int>{};
+  Future<_TransferResult> _downloadChunkToSpool({
+    required _Chunk chunk,
+    required List<_PartLayout> layouts,
+    required File file,
+  }) async {
+    try {
+      final provider = await _fetchChunk(chunk, layouts, file);
+      return _TransferResult(
+        chunk: chunk,
+        file: file,
+        provider: provider,
+      );
+    } catch (error, stack) {
+      return _TransferResult(
+        chunk: chunk,
+        file: file,
+        provider: null,
+        error: error,
+        stackTrace: stack,
+      );
+    }
+  }
 
-  Future<({List<int> bytes, _ProviderState provider})> _fetchChunk(
+  Future<_ProviderState> _fetchChunk(
     _Chunk chunk,
     List<_PartLayout> layouts,
+    File output,
   ) async {
     final candidates = <_ProviderState>[];
-    // Canonical full-object source can satisfy every chunk by absolute range.
     for (final source in manifest.fullSources) {
       final state = _providers[source.id]!;
       if (state.available) candidates.add(state);
     }
-    // Part mirrors satisfy the same chunk by part-relative range.
-    final part = manifest.parts[chunk.partIndex];
-    for (final source in part.sources) {
+    for (final source in manifest.parts[chunk.partIndex].sources) {
       final state = _providers[source.id]!;
       if (state.available) candidates.add(state);
     }
+
     if (candidates.isEmpty) {
-      final soonest = _providers.values
+      final waits = _providers.values
           .map((state) => state.backoffUntil)
           .whereType<DateTime>()
-          .fold<DateTime?>(null, (best, value) =>
-              best == null || value.isBefore(best) ? value : best);
-      if (soonest != null) {
-        final wait = soonest.difference(DateTime.now());
-        if (wait > Duration.zero) await Future<void>.delayed(wait);
+          .map((time) => time.difference(DateTime.now()))
+          .where((duration) => duration > Duration.zero)
+          .toList();
+      if (waits.isNotEmpty) {
+        waits.sort();
+        await Future<void>.delayed(
+          waits.first > const Duration(seconds: 2)
+              ? const Duration(seconds: 2)
+              : waits.first,
+        );
       }
-      return _fetchChunk(chunk, layouts);
+      return _fetchChunk(chunk, layouts, output);
     }
-    candidates.sort((a, b) => b.effectiveScore.compareTo(a.effectiveScore));
 
+    candidates.sort((a, b) => b.effectiveScore.compareTo(a.effectiveScore));
     Object? lastError;
-    for (final provider in candidates.take(math.min(5, candidates.length))) {
+    for (final provider in candidates.take(math.min(6, candidates.length))) {
       provider.inFlight++;
       final watch = Stopwatch()..start();
       try {
         final absolute = provider.source.isFullObject;
         final start = absolute ? chunk.fileOffset : chunk.partOffset;
         final end = absolute ? chunk.fileEndInclusive : chunk.partEndInclusive;
-        final bytes = await _rangeGet(provider.source.uri, start, end);
-        if (bytes.length != chunk.length) {
-          throw NazaModelDistributionException(
-            '${provider.source.id} returned ${bytes.length} bytes for a '
-            '${chunk.length}-byte chunk.',
-          );
-        }
+        await _rangeGetToFile(
+          uri: provider.source.uri,
+          start: start,
+          end: end,
+          output: output,
+        );
         watch.stop();
-        provider.success(bytes.length, watch.elapsed);
-        return (bytes: bytes, provider: provider);
+        provider.success(chunk.length, watch.elapsed);
+        return provider;
       } catch (error) {
         watch.stop();
         lastError = error;
         provider.failure();
+        if (await output.exists()) await output.delete();
       } finally {
         provider.inFlight--;
       }
     }
+
     throw NazaModelDistributionException(
       'All providers failed for chunk ${chunk.index}: $lastError',
     );
   }
 
-  Future<List<int>> _rangeGet(Uri uri, int start, int end) async {
+  Future<void> _rangeGetToFile({
+    required Uri uri,
+    required int start,
+    required int end,
+    required File output,
+  }) async {
     _validateUri(uri);
     final request = await _clientFor(uri).getUrl(uri).timeout(requestTimeout);
     request.followRedirects = true;
@@ -705,32 +817,40 @@ final class NazaMultiplaneModelDownloader {
     request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
     request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     final response = await request.close().timeout(requestTimeout);
+    final expected = end - start + 1;
+
     if (response.statusCode != HttpStatus.partialContent &&
-        !(start == 0 && response.statusCode == HttpStatus.ok)) {
+        !(start == 0 &&
+            response.statusCode == HttpStatus.ok &&
+            response.contentLength == expected)) {
       await response.drain<void>();
       throw HttpException(
         'Range request failed with HTTP ${response.statusCode}.',
         uri: uri,
       );
     }
-    final expected = end - start + 1;
-    final builder = BytesBuilder(copy: false);
+
+    final sink = output.openWrite(mode: FileMode.writeOnly);
     var received = 0;
-    await for (final frame in response.timeout(requestTimeout)) {
-      received += frame.length;
-      if (received > expected) {
-        throw NazaModelDistributionException(
-          'Provider exceeded requested range ($received > $expected).',
-        );
+    try {
+      await for (final frame in response.timeout(requestTimeout)) {
+        received += frame.length;
+        if (received > expected) {
+          throw NazaModelDistributionException(
+            'Provider exceeded requested range ($received > $expected).',
+          );
+        }
+        sink.add(frame);
       }
-      builder.add(frame);
+      await sink.flush();
+    } finally {
+      await sink.close();
     }
-    if (received != expected) {
+    if (received != expected || await output.length() != expected) {
       throw NazaModelDistributionException(
         'Provider ended range at $received of $expected bytes.',
       );
     }
-    return builder.takeBytes();
   }
 
   HttpClient _clientFor(Uri uri) {
@@ -739,7 +859,7 @@ final class NazaMultiplaneModelDownloader {
       final client = HttpClient()
         ..connectionTimeout = connectionTimeout
         ..idleTimeout = const Duration(seconds: 20)
-        ..maxConnectionsPerHost = 4
+        ..maxConnectionsPerHost = 3
         ..autoUncompress = false;
       client.userAgent = 'NAZA-One/1 model-distribution-v2';
       return client;
@@ -748,35 +868,56 @@ final class NazaMultiplaneModelDownloader {
 
   static void _validateUri(Uri uri) {
     if (uri.scheme.toLowerCase() != 'https' || uri.host.trim().isEmpty) {
-      throw NazaModelDistributionException('Only HTTPS model sources are allowed: $uri');
+      throw NazaModelDistributionException(
+        'Only HTTPS model sources are allowed: $uri',
+      );
     }
     if (uri.userInfo.isNotEmpty || uri.fragment.isNotEmpty) {
       throw NazaModelDistributionException('Unsafe model source URI: $uri');
     }
   }
 
-  static int _completedBytes(List<_Chunk> chunks, Set<int> completed) => chunks
-      .where((chunk) => completed.contains(chunk.index))
-      .fold<int>(0, (sum, chunk) => sum + chunk.length);
+  static File _chunkFile(Directory spool, int index) =>
+      File('${spool.path}/chunk_${index.toString().padLeft(6, '0')}.bin');
+
+  static int _prefixBytes(List<_Chunk> chunks, int prefixChunks) {
+    var total = 0;
+    for (var i = 0; i < math.min(prefixChunks, chunks.length); i++) {
+      total += chunks[i].length;
+    }
+    return total;
+  }
+
+  static int _readyBytes(List<_Chunk> chunks, Set<int> ready) {
+    var total = 0;
+    for (final index in ready) {
+      if (index >= 0 && index < chunks.length) total += chunks[index].length;
+    }
+    return total;
+  }
 
   String? _fastestProvider() {
-    final states = _providers.values.where((state) => state.ewmaBps > 0).toList();
+    final states = _providers.values
+        .where((state) => state.ewmaBps > 0)
+        .toList(growable: false);
     if (states.isEmpty) return null;
     states.sort((a, b) => b.ewmaBps.compareTo(a.ewmaBps));
     return states.first.source.id;
   }
 
   static Future<String> _sha256File(File file) async {
-    final sink = crypto.AccumulatorSink<crypto.Digest>();
-    final input = crypto.sha256.startChunkedConversion(sink);
-    await for (final chunk in file.openRead()) {
-      input.add(chunk);
-    }
-    input.close();
-    if (sink.events.length != 1) {
-      throw const NazaModelDistributionException('SHA-256 finalization failed.');
-    }
-    return sink.events.single.toString().toLowerCase();
+    final digest = await crypto.sha256.bind(file.openRead()).first;
+    return digest.toString().toLowerCase();
+  }
+
+  static Future<void> _discardResume(
+    File staging,
+    File journal,
+    Directory spool,
+  ) async {
+    if (await staging.exists()) await staging.delete();
+    if (await journal.exists()) await journal.delete();
+    if (await spool.exists()) await spool.delete(recursive: true);
   }
 
   Future<void> close() async {
@@ -786,32 +927,5 @@ final class NazaMultiplaneModelDownloader {
       client.close(force: true);
     }
     _clients.clear();
-  }
-}
-
-final class _AsyncLock {
-  Future<void> _tail = Future<void>.value();
-
-  Future<T> run<T>(Future<T> Function() operation) {
-    final completer = Completer<T>();
-    _tail = _tail.then((_) async {
-      try {
-        completer.complete(await operation());
-      } catch (error, stack) {
-        completer.completeError(error, stack);
-      }
-    });
-    return completer.future;
-  }
-}
-
-final class _AdaptiveGate {
-  const _AdaptiveGate(this.limit);
-  final int Function() limit;
-
-  Future<void> enter(int active) async {
-    while (active >= limit()) {
-      await Future<void>.delayed(const Duration(milliseconds: 12));
-    }
   }
 }
