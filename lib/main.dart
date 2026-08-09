@@ -1,5 +1,5 @@
 export 'app.dart';
 
-import 'model_bootstrap.dart';
+import 'onboarding/boot_coordinator.dart';
 
-Future<void> main() => NazaModelBootstrap.launch();
+Future<void> main() => NazaBootCoordinator.launch();
