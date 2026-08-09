@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/widgets.dart';
 
 /// Controls chat auto-follow without fighting the reader.
@@ -37,8 +38,6 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Feed scroll notifications from a NotificationListener around the chat
-  /// list. User drag direction is the strongest signal for detaching.
   bool handleNotification(ScrollNotification notification) {
     if (_disposed || _programmaticMove || !controller.hasClients) return false;
 
@@ -54,8 +53,6 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
     return false;
   }
 
-  /// Called when streamed text changes height. Multiple token paints are
-  /// coalesced into one end-of-frame jump to avoid animation queues/jank.
   void onStreamPaint() {
     if (!_followTail || _disposed) return;
     _coalesce?.cancel();
@@ -64,8 +61,6 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
     });
   }
 
-  /// Explicit user action. This is the only path that forcibly re-enables tail
-  /// following when the reader is detached.
   Future<void> jumpToLatest() async {
     _setFollow(true);
     await scrollToLatest(animated: true);
@@ -94,8 +89,6 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
     }
   }
 
-  /// Useful after switching conversations or creating a new chat. It resets
-  /// reader intent but waits until layout has produced a scroll extent.
   void armForConversationTail() {
     _setFollow(true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
