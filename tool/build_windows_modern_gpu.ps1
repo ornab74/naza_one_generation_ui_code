@@ -9,7 +9,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-if (-not $IsWindows) { throw 'This script must run on Windows.' }
+$isWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+if (-not $isWindowsHost) { throw 'This script must run on Windows.' }
+
+# Windows PowerShell 5 does not define the automatic $IsWindows variable that
+# PowerShell 7 does. Define it for child scripts so the same command works in
+# either shell without requiring a second PowerShell installation.
+if (-not (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue)) {
+  Set-Variable -Name IsWindows -Value $true -Scope Global
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $repoRoot
@@ -20,12 +28,10 @@ $markerPath = Join-Path $repoRoot '.dart_tool\naza_windows_litertlm_provenance.j
 $releaseRoot = Join-Path $repoRoot 'build\windows\x64\runner\Release'
 $appExe = Join-Path $releaseRoot 'naza_one.exe'
 
-$prepareArgs = @('-ExecutionPolicy', 'Bypass', '-File', $prepare, '-LiteRtLmRef', $LiteRtLmRef)
-if ($SkipNativeBuild) { $prepareArgs += '-SkipNativeBuild' }
-
 Write-Host '=== NAZA One modern Windows GPU build ===' -ForegroundColor Green
-& powershell @prepareArgs
-if ($LASTEXITCODE -ne 0) { throw "Modern LiteRT-LM preparation failed with exit code $LASTEXITCODE" }
+$prepareParams = @{ LiteRtLmRef = $LiteRtLmRef }
+if ($SkipNativeBuild) { $prepareParams.SkipNativeBuild = $true }
+& $prepare @prepareParams
 
 if ($SkipNativeBuild -and -not (Test-Path $bundleRoot)) {
   throw 'SkipNativeBuild was requested but no previously-built modern bundle exists.'
@@ -87,7 +93,7 @@ if ($StrictGpu) {
   $env:NAZA_DESKTOP_GPU = '1'
   $env:NAZA_DESKTOP_CPU = '0'
   $env:NAZA_GPU_STRICT = '1'
-  Write-Host 'Strict GPU environment enabled: CPU fallback should be treated as test failure by app diagnostics.' -ForegroundColor Yellow
+  Write-Host 'Strict GPU environment enabled: CPU fallback is surfaced as a failed GPU validation in NAZA telemetry.' -ForegroundColor Yellow
 }
 
 if ($Launch) {
