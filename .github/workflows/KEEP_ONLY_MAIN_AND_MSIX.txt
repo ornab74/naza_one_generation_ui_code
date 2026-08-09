@@ -1,0 +1,1 @@
+Build Naza One and Build Microsoft Store MSIX are the only intended workflows on this branch.
