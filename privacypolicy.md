@@ -2,7 +2,7 @@
 
 **Effective date:** July 14, 2026
 
-**Last updated:** July 18, 2026
+**Last updated:** August 9, 2026
 
 Naza One (the “App”) is a local-first artificial intelligence assistant. This
 policy describes how the App processes, stores, and protects information. It
@@ -16,10 +16,12 @@ does not require an account and does not contain advertising, behavioral
 tracking, a developer-operated chat server, microphone features, or voice
 generation.
 
-The App connects to the internet to download its local AI model when a verified
-copy is not already available. Automatic Android cloud backup and
-device-to-device transfer are disabled for App-private data. You may still
-create and move an encrypted recovery export yourself.
+On a fresh install the App establishes encrypted local storage before model
+acquisition. The App connects to the internet to download its local AI model
+when a verified copy is not already available. Desktop users may instead select
+a local model file. Automatic Android cloud backup and device-to-device transfer
+are disabled for App-private data. You may still create and move an encrypted
+recovery export yourself.
 
 ## 2. Information you provide or create
 
@@ -51,25 +53,56 @@ you can revisit the food history or re-run an interrupted analysis. Chat image
 history may retain the selected file's name and dimensions. Images are not
 uploaded to a developer-operated service.
 
-### Passwords and recovery material
+### Startup password and recovery material
 
-The boot password is used locally to derive an encryption key with Argon2id. It
-is not stored or transmitted, and the developer cannot recover it. If you
-set up post-quantum recovery, only its public enrollment state is retained in
-the vault. The password-protected private recovery key kit and encrypted vault
+A startup password is **optional for new installs**. If you opt into “Require a
+password every time Naza One starts,” that password is used locally with
+Argon2id to derive an encryption key. It is not stored or transmitted, and the
+developer cannot recover it.
+
+If you leave the startup-password option unchecked, the vault is still
+encrypted. A random unlock secret is stored through the operating system's
+secure credential store instead. The App does not silently replace that secure
+storage with a plaintext key if the service is unavailable.
+
+If you set up post-quantum recovery, only its public enrollment state is retained
+in the vault. The password-protected private recovery key kit and encrypted vault
 backup are exported as separate local files. They remain local unless you
 choose to move, copy, or share them.
 
+### Desktop local-model preference
+
+On Windows, Linux, and macOS, you may choose a local `.litertlm` model file
+through the native file picker. Before the App accepts the file, it verifies the
+exact expected byte count and SHA-256 identity. The selected source path and
+model identity metadata are then stored as an encrypted vault record so the App
+can reuse that choice on later starts. The model bytes themselves are public
+model data and are not inserted into SQLite.
+
+The `NAZA_MODEL_PATH` environment variable remains available as a developer or
+administrator override. It does not bypass model-integrity verification.
+
 ## 3. Model downloads and network data
 
-The Gemma model is downloaded over HTTPS from a revision-pinned Hugging Face
-URL. The App verifies the artifact against a pinned SHA-256 digest before use.
-The request does not intentionally contain prompts, conversations, scanner
-entries, images, or generated responses.
+The Gemma model can be downloaded over HTTPS from an immutable Hugging Face
+revision or from approved GitHub/IPFS-gateway replicas described by the App's
+compiled distribution identity and optional validated runtime mirror catalog.
+The downloader may fetch different chunks from different approved transports.
 
-Hugging Face and its delivery providers may receive normal connection data,
-such as your IP address, request time, requested file, user-agent string, and
-network metadata, under their own policies.
+The App verifies the model against pinned size and SHA-256 values before use;
+the distribution also contains pinned identities for the model parts. Runtime
+mirror data may add transport locations but cannot redefine the expected model
+identity.
+
+Model-delivery requests do not intentionally contain prompts, conversations,
+scanner entries, images, generated responses, or encrypted user records.
+
+Hugging Face, GitHub, IPFS gateway operators, Pinata, content-delivery
+infrastructure, and other selected transport providers may receive normal
+connection data such as your IP address, request time, requested file/range,
+user-agent string, and network metadata under their own policies. A
+multi-provider download can therefore expose normal connection metadata to more
+than one delivery provider.
 
 The App has no analytics or crash-reporting SDK and does not automatically send
 local diagnostics to the developer. If you share a screenshot, error, log, or
@@ -78,32 +111,38 @@ issue report, its recipient receives the information you include.
 ## 4. Local storage and security
 
 The App stores data in its private support directory. User records, including
-history, memory, drafts, settings, and model-integrity attestations, are stored
-in SQLite with independently authenticated AES-256-GCM ciphertexts. Logical
-record identifiers are HMAC-derived rather than stored in plaintext.
+history, memory, drafts, settings, onboarding state, selected-model metadata,
+and model-integrity attestations, are stored in SQLite with independently
+authenticated AES-256-GCM ciphertexts. Logical record identifiers are
+HMAC-derived rather than stored in plaintext.
 
-By default, each fresh App process requires the boot password before the vault
-or the rest of the App is opened. The password derives a key-encryption key that
-unwraps a random vault-unlock key; that key unwraps versioned data-encryption
-keys. Password changes rewrap key material, while transactional key rotation
-re-encrypts records under a new data key.
+For new installations, the default unlock policy uses a random secret in the
+operating system secure credential store, so the App does not require an
+interactive password at each process start. This changes only the unlocking
+method; user records remain encrypted.
 
-You can opt out of the per-process password prompt. In that mode, a random
-unlock secret is stored in the operating system's secure credential store; the
-App does not silently fall back to a plaintext key when that service is
-unavailable.
+You may instead opt into a startup password. In password mode, Argon2id derives
+a key-encryption key that unwraps a random vault-unlock key; that key unwraps
+versioned data-encryption keys. Password changes rewrap key material, while
+transactional key rotation re-encrypts records under a new data key.
+
+Existing vaults retain their previously configured unlock policy. If the App
+detects older encrypted data awaiting migration, it routes that installation
+through the authenticated legacy migration path instead of silently replacing
+it during new onboarding.
 
 The SQLite file is protected at the record level, not encrypted page by page.
 Someone who obtains it may still infer database schema, approximate record
 count, ciphertext sizes, key-version identifiers, and update times. Downloaded
 model files and some non-secret runtime metadata are not AES-encrypted. Device
-compromise, malware, root or administrator access, keylogging, a modified App,
-or access while the vault is unlocked can defeat these protections.
+compromise, malware, root or administrator access, keylogging in password mode,
+a compromised secure credential store in passwordless mode, a modified App, or
+access while the vault is unlocked can defeat these protections.
 
-The App stores an encrypted trust attestation after a model artifact passes its
-SHA-256 check. An unchanged artifact can use that attestation instead of being
-hashed on every boot or message. A changed or unauthenticated artifact is
-verified again and rejected if it does not match.
+The App can store an encrypted trust attestation after a model artifact passes
+its SHA-256 check. An unchanged managed artifact may use that attestation to
+avoid unnecessary repeated full-file hashing. A changed or unauthenticated
+artifact is verified again and rejected if it does not match.
 
 No storage system is completely secure. Use a device screen lock, current
 security updates, and appropriate control over physical and administrative
@@ -111,20 +150,18 @@ access.
 
 ## 5. Encrypted backup and recovery
 
-Post-quantum recovery is enabled as the default recovery policy for new and
-migrated vaults, but it does not become ready until you complete setup and
-verify the exported files. The current format uses hybrid ML-KEM-1024 and
-X25519 key establishment, ML-DSA-87 backup-origin signatures, HKDF-SHA-512,
-AES-256-GCM, and an Argon2id-protected private recovery key kit. Creating a new
-backup therefore requires the separate kit and recovery password. Recovery is
-separate from normal local database unlock and does not transmit a backup. The
-App can still read its earlier combined ML-KEM-768 recovery format for
-compatibility.
+Post-quantum recovery uses a maximum hybrid profile for new enrollment. The
+current format uses hybrid ML-KEM-1024 and X25519 key establishment, ML-DSA-87
+backup-origin signatures, HKDF-SHA-512, AES-256-GCM, and an Argon2id-protected
+private recovery key kit. Creating a new backup therefore requires the separate
+kit and recovery password. Recovery is separate from normal local database
+unlock and does not transmit a backup. The App can still read its earlier
+combined ML-KEM-768 recovery format for compatibility.
 
 Recovery is useful only if the password-protected private recovery key kit is
 kept separately from the encrypted backup. Anyone who obtains both files and
-the recovery password may decrypt the exported content. Losing any required
-file or the password can make the backup unrecoverable.
+the recovery password may decrypt the exported content. Losing required
+recovery material can make the backup unrecoverable.
 
 ## 6. Information the App does not intentionally collect
 
@@ -146,11 +183,12 @@ Locally processed information is used to:
 
 - generate AI responses and scanner results;
 - maintain history and optional local memory;
-- restore drafts and preferences;
+- restore drafts, themes, onboarding state, and preferences;
 - process an image you deliberately capture or select;
 - maintain an encrypted fridge and bake-analysis history;
-- verify the downloaded model and maintain security state;
-- display local status, errors, and diagnostics;
+- remember a verified desktop model choice when you ask it to;
+- verify the downloaded or selected model and maintain security state;
+- display local status, transfer progress, errors, and diagnostics;
 - create an encrypted backup when you request one.
 
 ## 8. Sharing and third parties
@@ -160,8 +198,10 @@ handled in these limited circumstances:
 
 1. **At your direction.** You copy, export, post, or otherwise share content,
    diagnostics, recovery material, or an encrypted backup.
-2. **Model delivery.** Hugging Face and its infrastructure receive the network
-   request used to download the model.
+2. **Model delivery.** Approved model-delivery providers receive the network
+   requests used to obtain model bytes or ranges. Depending on the active
+   mirror set this may include Hugging Face, GitHub, Pinata, or other approved
+   IPFS gateway infrastructure.
 3. **Operating-system services.** The camera, system file or photo picker, and
    secure credential store operate under the platform provider's policies.
 4. **Legal and safety matters.** The developer may disclose information
@@ -185,9 +225,15 @@ from their private recovery material and passwords.
 
 Local data remains until it is deleted, overwritten, automatically trimmed,
 App storage is cleared, or the App is uninstalled. The model and settings may
-remain until App storage is cleared. User-exported recovery files remain where
-you placed them, and any older provider-managed copies follow the provider's
-retention rules.
+remain until App storage is cleared. Resumable model-download chunk files may
+remain temporarily while a model transfer is incomplete so a paused or
+interrupted download can continue later. Successfully assembled temporary
+chunks are removed as the model is committed or after successful completion.
+
+A desktop source-model file that you selected remains wherever you originally
+stored it. Clearing the encrypted preference does not delete that original file.
+User-exported recovery files remain where you placed them, and any older
+provider-managed copies follow the provider's retention rules.
 
 There is no App account to delete. Available controls may let you clear history
 or memory. To remove all active on-device data, clear Naza One's application
@@ -197,11 +243,15 @@ cannot be guaranteed.
 
 ## 11. Permissions
 
-- **Internet:** downloads the verified local AI model.
+- **Internet:** downloads the verified local AI model from approved delivery
+  transports.
 - **Camera (when you choose it):** captures a fridge or bake-completion image
   for local food analysis on supported mobile devices.
 - **Files or photos selected by you:** the system picker provides access only
-  to the item you choose, subject to platform behavior.
+  to the item you choose, subject to platform behavior. On desktop this can
+  include a `.litertlm` model file you explicitly select.
+- **Operating-system secure credential storage:** stores the random local unlock
+  secret when the default no-password startup mode is used.
 
 Text features do not require microphone access.
 
@@ -215,9 +265,10 @@ child intentionally shares.
 ## 13. Your choices and rights
 
 You can decide whether to retain local history or memory, capture or attach an
-image, require a boot password, complete recovery setup, export recovery
-material, or share content. Privacy law may also provide rights of access, correction,
-deletion, restriction, objection, or portability.
+image, require a startup password, choose a desktop model file, complete
+recovery setup, export recovery material, select a theme, or share content.
+Privacy law may also provide rights of access, correction, deletion,
+restriction, objection, or portability.
 
 Because primary user content remains on your device, the developer generally
 cannot access, correct, or delete it remotely. Use the App and platform storage
