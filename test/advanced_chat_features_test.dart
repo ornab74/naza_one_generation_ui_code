@@ -86,7 +86,10 @@ void main() {
 
     expect(find.text('You’re ready to chat'), findsOneWidget);
     expect(find.text('Smart Memory is on by default'), findsOneWidget);
-    await tester.tap(find.text('Open Chat'));
+    final openChat = find.text('Open Chat');
+    await tester.ensureVisible(openChat);
+    await tester.pumpAndSettle();
+    await tester.tap(openChat);
     await tester.pump();
     expect(completed, 1);
     state.dispose();
