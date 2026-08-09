@@ -3,9 +3,9 @@
 ## Scope
 
 Naza One is a local-first application. Its security design protects locally
-stored user records, detects tampering, gates access at fresh process startup,
-and verifies the large inference model without repeatedly hashing an unchanged
-artifact.
+stored user records, detects tampering, establishes the encrypted vault before
+model acquisition on fresh installs, and verifies the large inference model
+before it is trusted.
 
 This document describes application-layer controls. Platform sandboxing,
 full-disk encryption, secure credential storage, Flutter, LiteRT-LM, SQLite,
@@ -13,31 +13,58 @@ and the operating system remain part of the trusted computing base.
 
 ## Vault design
 
-The `naza-vault-v3` store uses SQLite as a ciphertext record container:
+The `naza-vault-v3` store uses SQLite as a ciphertext record container. Naza
+One now exposes two startup-unlock policies over the same encrypted vault:
 
-1. A boot password is processed by Argon2id to derive a key-encryption key
-   (KEK). The default policy requires at least 12 characters and uses a unique
-   salt, 64 MiB memory, three iterations, and one lane.
-2. The KEK authenticates and unwraps a random 256-bit vault-unlock key (VUK).
-3. The VUK authenticates and unwraps versioned random 256-bit data-encryption
+1. **Protected device unlock — default for new installs.** A random 256-bit
+   unlock secret is generated and stored through the operating system secure
+   credential store. The user is not asked for a startup password. Failure to
+   use the secure credential store is fail-closed; Naza does not silently save
+   an equivalent plaintext key.
+2. **Interactive boot password — opt in.** A password is processed by Argon2id
+   to derive the key-encryption key (KEK). The policy requires at least 12
+   characters and uses a unique salt, 64 MiB memory, three iterations, and one
+   lane.
+3. In either mode the resulting authentication key authenticates and unwraps a
+   random 256-bit vault-unlock key (VUK).
+4. The VUK authenticates and unwraps versioned random 256-bit data-encryption
    keys (DEKs).
-4. Each record value is independently sealed with AES-256-GCM and context-bound
-   associated data. Logical record identifiers are derived with HMAC-SHA-256
-   from an index key derived from the VUK.
+5. Each record value is independently sealed with AES-256-GCM and
+   context-bound associated data. Logical record identifiers are derived with
+   HMAC-SHA-256 from an index key derived from the VUK.
 
-The boot password is not stored. Keys are retained in process memory only while
-the vault is unlocked and are cleared on lock on a best-effort basis. Dart and
-the host operating system do not provide a guarantee that every historical
-copy has been scrubbed from memory.
+Encryption is therefore **not optional** merely because the first-run password
+checkbox is unchecked. The checkbox controls how the wrapping key is unlocked,
+not whether user records are encrypted.
 
-The vault defaults to requiring its password for each fresh App process, before
-the main UI or model workflow starts. If the user explicitly disables that
-gate, the KEK is replaced by a random secret held in the platform secure
-credential store. Setup and unlock fail closed if that store is unavailable.
+When password mode is enabled, the boot password is not stored. Keys are
+retained in process memory only while the vault is unlocked and are cleared on
+lock on a best-effort basis. Dart and the host operating system do not provide
+a guarantee that every historical copy has been scrubbed from memory.
+
+The first-run UI deliberately makes the interactive gate opt in with the
+checkbox **“Require a password every time Naza One starts.”** Existing vaults
+keep their previously selected unlock policy.
 
 The small vault header is outside SQLite so KDF parameters and wrapped keys can
 be read before unlock. It contains cryptographic metadata, not plaintext user
 records.
+
+## First-run security ordering
+
+Fresh/current installs use the following startup ordering:
+
+1. inspect/create/unlock encrypted storage;
+2. choose and verify a local model source;
+3. optional product/prompt guide;
+4. encrypted theme selection;
+5. initialize the selected local inference backend;
+6. enter Chat only after the local model is ready.
+
+An install containing legacy encrypted records is routed through the original
+authenticated migration gate before the new flow can create replacement state.
+This prevents the low-friction onboarding path from silently overwriting an
+older encrypted vault waiting to be migrated.
 
 ## Rotation and password changes
 
@@ -64,7 +91,7 @@ observable to someone who obtains the database and header:
 - approximate record count;
 - ciphertext and record-size patterns;
 - key-version identifiers and update times;
-- KDF parameters and wrapped-key envelopes.
+- KDF or secure-storage suite metadata and wrapped-key envelopes.
 
 Record names and values are authenticated ciphertext, but filesystem metadata,
 the downloaded model, and non-secret runtime files may also remain visible.
@@ -73,25 +100,45 @@ systems prevent a reliable secure-deletion guarantee.
 
 ## Model artifact trust
 
-The model downloader pins both the HTTPS artifact revision and its SHA-256
-digest. It hashes incoming bytes while writing a temporary file and promotes
-the file only after the digest matches.
+The model identity is compiled into the app: expected filename, immutable
+revision, exact byte count, part identities, and SHA-256 values. Transport
+location is not treated as model identity.
 
-After verification, an attestation for that installed artifact is stored as an
-encrypted vault record. Boot and message-send paths reuse the attestation for
-the same unchanged file, avoiding an expensive second hash. A changed file,
-missing or unauthenticated attestation, partial download, or digest mismatch
-invalidates trust and fails closed. The model itself is integrity-protected but
-not encrypted because it is public model data.
+The first-run multi-source downloader may obtain chunks from the immutable full
+object or approved GitHub/IPFS-gateway replicas. Completed chunks are spooled to
+disk for bounded-memory resume. Model parts and the final assembled artifact are
+verified before promotion into the managed model location.
+
+Desktop users may alternatively choose a local `.litertlm` file through the
+native picker. Its path is written to the encrypted vault only after exact size
+and SHA-256 verification. `NAZA_MODEL_PATH` remains an administrator/developer
+override, but it does not bypass integrity verification.
+
+After verification, an attestation for an installed artifact can be stored as
+an encrypted vault record. A changed file, missing or unauthenticated
+attestation, partial download, or digest mismatch invalidates trust and requires
+verification again. The model itself is integrity-protected but not encrypted
+because it is public model data.
+
+A runtime mirror catalog may add approved transport locations only when its
+immutable model identity matches the version compiled into the app. It cannot
+replace the expected model hash or part layout.
+
+## Download pause/resume boundary
+
+The onboarding transfer controller implements cooperative pause rather than a
+cosmetic UI state. It stops new chunk scheduling and applies back-pressure at
+stream checkpoints. Complete chunks remain in the on-disk resume spool. Pause
+does not revoke already-established network connections instantaneously; it
+prevents continued application consumption until resumed or cancelled.
 
 ## Default hybrid post-quantum recovery
 
 ML-KEM is used only where two separately held key components are meaningful:
 encrypted export and recovery. It is intentionally absent from password
-derivation and local vault unlock.
+derivation and ordinary local vault unlock.
 
-Recovery enrollment is default-on for every new and migrated vault. The v2
-profile uses separated private-key-kit and encrypted-backup artifacts:
+Recovery policy uses the maximum hybrid profile for new enrollment:
 
 - ML-KEM-1024 and ephemeral X25519 in a hybrid construction;
 - ML-DSA-87 origin signatures proving that v2 backups were authorized by the
@@ -116,8 +163,9 @@ This design protects against compromise of only one key-establishment
 primitive. It does not help if the backup and decrypted recovery key are on the
 same compromised device. Store the private key kit offline and separately from
 backup ciphertext, protect its password, and use the full verification action
-before relying on it. The pure-Dart provider is FIPS 203/204-aligned; the app
-does not claim FIPS 140 validation or resistance to every side-channel.
+before relying on it. The implementation uses FIPS 203/204-aligned primitives;
+the app does not claim FIPS 140 module validation or resistance to every
+side-channel.
 
 ## Threats outside the design
 
@@ -125,8 +173,10 @@ These controls do not protect against:
 
 - malware, root/administrator access, or a modified binary while the vault is
   unlocked;
-- password capture, weak or reused passwords, screen capture, or clipboard
+- password capture when password mode is enabled, screen capture, or clipboard
   monitoring;
+- compromise of the operating system secure credential store in default
+  passwordless mode;
 - vulnerabilities in the operating system, dependencies, hardware, or secure
   credential store;
 - intentionally exported plaintext or disclosure by another authorized user;
@@ -139,11 +189,14 @@ explicitly exclude application storage. Other operating systems, privileged
 backup tools, and full-device snapshots remain outside the app's control.
 
 No cryptographic design can recover a forgotten boot password without valid,
-separately retained recovery material.
+separately retained recovery material. Likewise, loss or corruption of required
+secure-storage state can make a passwordless vault inaccessible without valid
+recovery material.
 
 ## Development checks
 
-Before release, run:
+GitHub Actions are intentionally manual-only. Before release, run locally or
+manually dispatch CI for:
 
 ```bash
 flutter analyze
@@ -151,10 +204,12 @@ flutter test
 ```
 
 Security tests cover wrong-password rejection, ciphertext tampering, key
-rotation, device-key mode, encrypted recovery round trips, and malformed
-recovery material. Changes to vault formats, KDF policies, model attestations,
-or recovery formats require explicit migration and regression tests; do not
-silently fall back to defaults after authentication or parsing errors.
+rotation, device-key mode, encrypted recovery round trips, malformed recovery
+material, first-run password-default invariants, model distribution identity,
+and the cooperative transfer pause gate. Changes to vault formats, KDF policies,
+model attestations, model identities, or recovery formats require explicit
+migration and regression tests; do not silently fall back to defaults after
+authentication or parsing errors.
 
 ## Reporting a vulnerability
 
