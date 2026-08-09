@@ -2,16 +2,6 @@ name: Build Microsoft Store MSIX
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "pubspec.yaml"
-      - "pubspec.lock"
-      - "lib/**"
-      - "assets/**"
-      - "windows/**"
-      - "tool/prepare_windows_litertlm.ps1"
-      - ".github/workflows/windows-store-msix.yml"
 
 permissions:
   contents: read
@@ -160,5 +150,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Naza-One-Microsoft-Store-MSIX
+          retention-days: 3
           path: build/windows/**/*.msix
           if-no-files-found: error
