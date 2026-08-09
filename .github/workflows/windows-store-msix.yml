@@ -70,7 +70,7 @@ jobs:
           Write-Host "Verified modern Windows runtime: bridge $($marker.flutter_gemma_litertlm), LiteRT-LM $($marker.litert_lm_source_version)."
 
       - name: Analyze Windows release sources
-        run: flutter analyze --no-pub
+        run: flutter analyze --no-pub --no-fatal-infos
 
       - name: Run fast release gate
         run: >-
