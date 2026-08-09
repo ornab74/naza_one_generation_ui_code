@@ -1,0 +1,102 @@
+name: Windows Modern LiteRT-LM GPU Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      litert_lm_ref:
+        description: Pinned ornab74/LiteRT-LM commit to build
+        required: false
+        default: 6eeeb1d1195ee83f00e96da82ba1ed63e328063a
+  push:
+    branches:
+      - agent/advanced-memory-onboarding
+    paths:
+      - pubspec.yaml
+      - pubspec.lock
+      - tool/prepare_windows_litertlm.ps1
+      - tool/build_windows_modern_gpu.ps1
+      - tool/check_windows_litertlm.ps1
+      - lib/model/runtime_profile.dart
+      - .github/workflows/windows-modern-litertlm.yml
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.44.4"
+  DEFAULT_LITERT_LM_REF: 6eeeb1d1195ee83f00e96da82ba1ed63e328063a
+
+jobs:
+  build-modern-runtime:
+    name: LiteRT-LM 0.16 repaired Windows bundle
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout NAZA One
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Ensure Git LFS
+        shell: pwsh
+        run: |
+          git lfs version
+          git lfs install
+
+      - name: Install Bazelisk
+        shell: pwsh
+        run: |
+          choco install bazelisk -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Chocolatey Bazelisk install failed: $LASTEXITCODE" }
+          $bazelisk = Get-Command bazelisk -ErrorAction SilentlyContinue
+          if (-not $bazelisk) { throw 'bazelisk is not available after installation.' }
+          bazelisk version
+
+      - name: Resolve requested LiteRT-LM commit
+        id: runtime-ref
+        shell: pwsh
+        run: |
+          $ref = '${{ github.event.inputs.litert_lm_ref }}'
+          if ([string]::IsNullOrWhiteSpace($ref)) { $ref = '${{ env.DEFAULT_LITERT_LM_REF }}' }
+          if ($ref -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "LiteRT-LM ref must be a full 40-character commit SHA; got '$ref'."
+          }
+          "ref=$ref" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Building LiteRT-LM ref: $ref"
+
+      - name: Build modern repaired LiteRT-LM and NAZA Windows release
+        shell: pwsh
+        run: |
+          ./tool/build_windows_modern_gpu.ps1 -LiteRtLmRef '${{ steps.runtime-ref.outputs.ref }}'
+
+      - name: Verify modern runtime provenance and injected DLL hashes
+        shell: pwsh
+        run: |
+          ./tool/check_windows_litertlm.ps1 -RequirePrepared -RequireInjectedBuild
+
+      - name: Verify executable and runtime manifest
+        shell: pwsh
+        run: |
+          $release = 'build/windows/x64/runner/Release'
+          $exe = Join-Path $release 'naza_one.exe'
+          $manifest = Join-Path $release 'naza_litertlm_runtime.json'
+          if (-not (Test-Path $exe)) { throw "Missing Windows executable: $exe" }
+          if (-not (Test-Path $manifest)) { throw "Missing runtime manifest: $manifest" }
+          Write-Host "NAZA SHA256: $((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())"
+          Get-Content $manifest -Raw
+
+      - name: Upload repaired Windows app
+        uses: actions/upload-artifact@v4
+        with:
+          name: naza-one-windows-modern-litertlm-${{ steps.runtime-ref.outputs.ref }}
+          path: build/windows/x64/runner/Release/**
+          if-no-files-found: error
+          retention-days: 14
