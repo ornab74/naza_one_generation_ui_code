@@ -268,6 +268,9 @@ final class NazaModelDistributionManifest {
     required List<int> partSizes,
     required int chunkBytes,
   }) {
+    // Transport URLs are deliberately excluded: adding/removing a mirror must
+    // never invalidate a safe partial download. Only immutable identity and
+    // byte layout participate in resume compatibility.
     final canonical = jsonEncode(<String, Object?>{
       'schema': 'naza-model-distribution-v3',
       'file': modelFileName,
@@ -276,10 +279,16 @@ final class NazaModelDistributionManifest {
       'revision': revision,
       'totalBytes': totalBytes,
       'partSizes': partSizes,
-      'partHashes': parts.map((part) => part.expectedSha256).toList(),
+      'parts': <Map<String, Object?>>[
+        for (final part in parts)
+          <String, Object?>{
+            'index': part.index,
+            'cid': part.cid,
+            'bytes': part.expectedBytes,
+            'sha256': part.expectedSha256.toLowerCase(),
+          },
+      ],
       'chunkBytes': chunkBytes,
-      'fullSources': fullSources.map((source) => source.toJson()).toList(),
-      'parts': parts.map((part) => part.toJson()).toList(),
     });
     return crypto.sha256.convert(utf8.encode(canonical)).toString();
   }
