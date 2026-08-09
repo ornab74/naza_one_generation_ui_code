@@ -26,7 +26,7 @@ def replace_exact(text: str, old: str, new: str, *, label: str) -> str:
 
 
 def replace_regex(text: str, pattern: str, replacement: str, *, label: str) -> str:
-    compiled = re.compile(pattern, re.MULTILINE)
+    compiled = re.compile(pattern, re.MULTILINE | re.DOTALL)
     matches = list(compiled.finditer(text))
     if not matches:
         if replacement in text:
@@ -36,22 +36,22 @@ def replace_regex(text: str, pattern: str, replacement: str, *, label: str) -> s
     if len(matches) != 1:
         raise SystemExit(f"{label}: expected exactly one match, found {len(matches)}")
     print(f"[patch] {label}")
-    return compiled.sub(replacement, text, count=1)
+    return compiled.sub(lambda _: replacement, text, count=1)
 
 
 def main() -> None:
     text = MAIN.read_text(encoding="utf-8")
     original = text
 
-    # Only import modules this first integration slice uses. Other advanced
-    # services remain independently tested until their shell hooks are added.
     anchor = "import 'security/secure_database.dart';\n"
     imports = (
         "import 'security/secure_database.dart';\n"
         "import 'chat/history_drawer.dart';\n"
         "import 'chat/scroll_follow_controller.dart';\n"
+        "import 'model/model_distribution_manifest.dart';\n"
+        "import 'model/multiplane_model_downloader.dart';\n"
     )
-    text = replace_exact(text, anchor, imports, label="chat subsystem imports")
+    text = replace_exact(text, anchor, imports, label="advanced subsystem imports")
 
     # Chat-first startup. First-run model/help onboarding will become the only
     # intentional startup gate; vault creation must not throw users into Settings.
@@ -141,8 +141,6 @@ def main() -> None:
         label="preserve reader position after continuation",
     )
 
-    # History gets a useful compact fallback immediately. A later integration
-    # slice persists local-model-generated titles through encrypted metadata.
     legacy_title = """          final title = firstPrompt.isEmpty
               ? 'Untitled conversation'
               : firstPrompt.length <= 72
@@ -154,6 +152,56 @@ def main() -> None:
         legacy_title,
         "          final title = NazaConversationTitlePolicy.fallback(firstPrompt);\n",
         label="compact conversation fallback titles",
+    )
+
+    # Replace the single-host sequential model GET with the bounded multi-plane
+    # downloader. NazaSecureModelStore retains its existing target path,
+    # attestation checks and final immutable SHA-256 trust boundary.
+    downloader_method = r'''  static Future<void> _downloadVerified(
+    File target, {
+    void Function(int progress, String phase)? onProgress,
+  }) async {
+    final downloader = NazaMultiplaneModelDownloader(
+      manifest: NazaModelDistributionManifest.gemma4E2b,
+    );
+    try {
+      await downloader.download(
+        target: target,
+        onProgress: (snapshot) {
+          final mapped = switch (snapshot.stage) {
+            NazaDownloadStage.probing => 1,
+            NazaDownloadStage.allocating => 2,
+            NazaDownloadStage.downloading =>
+              (2 + snapshot.fraction * 92).round().clamp(2, 94),
+            NazaDownloadStage.verifying => 96,
+            NazaDownloadStage.complete => 99,
+          };
+          final mib = snapshot.bytesPerSecond / (1024 * 1024);
+          final provider = snapshot.fastestProvider;
+          final phase = switch (snapshot.stage) {
+            NazaDownloadStage.probing => 'probing redundant model providers',
+            NazaDownloadStage.allocating => 'preparing resumable model download',
+            NazaDownloadStage.downloading =>
+              'multi-provider download ${mib.toStringAsFixed(1)} MiB/s'
+                  '${provider == null ? '' : ' · $provider'}'
+                  ' · ${snapshot.activeTransfers} streams',
+            NazaDownloadStage.verifying => 'validating immutable model SHA-256',
+            NazaDownloadStage.complete => 'verified multi-provider model cached',
+          };
+          onProgress?.call(mapped, phase);
+        },
+      );
+    } finally {
+      await downloader.close();
+    }
+  }
+
+  static Future<HttpClientResponse> _openSecureGet'''
+    text = replace_regex(
+        text,
+        r"  static Future<void> _downloadVerified\(\n    File target, \{\n    void Function\(int progress, String phase\)\? onProgress,\n  \}\) async \{.*?\n  \}\n\n  static Future<HttpClientResponse> _openSecureGet",
+        downloader_method,
+        label="multi-plane verified model transport",
     )
 
     if text == original:
