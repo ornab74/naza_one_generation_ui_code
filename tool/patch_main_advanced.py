@@ -181,27 +181,29 @@ def main() -> None:
           final mib = snapshot.bytesPerSecond / (1024 * 1024);
           final provider = snapshot.fastestProvider;
           final phase = switch (snapshot.stage) {
-            NazaDownloadStage.probing => 'probing redundant model providers',
+            NazaDownloadStage.probing => 'loading secure mirror catalog',
             NazaDownloadStage.allocating => 'preparing resumable model download',
             NazaDownloadStage.downloading =>
               'multi-provider download ${mib.toStringAsFixed(1)} MiB/s'
                   '${provider == null ? '' : ' · $provider'}'
                   ' · ${snapshot.activeTransfers} streams',
-            NazaDownloadStage.verifying => 'validating immutable model SHA-256',
+            NazaDownloadStage.verifying => 'validating immutable model hashes',
             NazaDownloadStage.complete => 'verified multi-provider model cached',
           };
           onProgress?.call(mapped, phase);
         },
       );
+      await _trustModelFile(target);
+      onProgress?.call(100, 'verified model cached and attested');
     } finally {
       await downloader.close();
     }
   }
 
-  static Future<HttpClientResponse> _openSecureGet'''
+  static void _validateDownloadUri'''
     text = replace_regex(
         text,
-        r"  static Future<void> _downloadVerified\(\n    File target, \{\n    void Function\(int progress, String phase\)\? onProgress,\n  \}\) async \{.*?\n  \}\n\n  static Future<HttpClientResponse> _openSecureGet",
+        r"  static Future<void> _downloadVerified\(\n    File target, \{\n    void Function\(int progress, String phase\)\? onProgress,\n  \}\) async \{.*?\n  \}\n\n  static Future<HttpClientResponse> _openSecureGet\(.*?\n  static void _validateDownloadUri",
         downloader_method,
         label="multi-plane verified model transport",
     )
