@@ -1,0 +1,46 @@
+name: Advanced Memory Branch CI
+
+on:
+  push:
+    branches:
+      - agent/advanced-memory-onboarding
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.44.4"
+
+jobs:
+  validate:
+    name: Analyze and focused tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Analyze new modules
+        run: >-
+          flutter analyze --no-pub
+          lib/memory/embedded_vector_store.dart
+          lib/memory/local_memory_service.dart
+          lib/chat/scroll_follow_controller.dart
+          lib/chat/history_drawer.dart
+          lib/onboarding/first_run_onboarding.dart
+          test/embedded_vector_store_test.dart
+          test/advanced_chat_features_test.dart
+
+      - name: Run embedded memory tests
+        run: flutter test --no-pub test/embedded_vector_store_test.dart
+
+      - name: Run advanced chat feature tests
+        run: flutter test --no-pub test/advanced_chat_features_test.dart
