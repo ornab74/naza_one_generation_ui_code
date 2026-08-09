@@ -90,10 +90,13 @@ Write-Host "  GPU compute: $($manifest.windows_gpu_compute)"
 Write-Host "  Cache: $($manifest.windows_gpu_cache)"
 
 if ($StrictGpu) {
-  $env:NAZA_DESKTOP_GPU = '1'
+  # NAZA already maps "only"/"required" to NazaModelBackendPreference.gpuOnly,
+  # which rejects GPU initialization failure instead of entering the normal
+  # GPU-first -> CPU fallback path. This is the definitive RTX validation mode.
+  $env:NAZA_DESKTOP_GPU = 'only'
   $env:NAZA_DESKTOP_CPU = '0'
   $env:NAZA_GPU_STRICT = '1'
-  Write-Host 'Strict GPU environment enabled: CPU fallback is surfaced as a failed GPU validation in NAZA telemetry.' -ForegroundColor Yellow
+  Write-Host 'STRICT GPU MODE: NAZA GPU-only backend selected; CPU fallback is disabled.' -ForegroundColor Yellow
 }
 
 if ($Launch) {
