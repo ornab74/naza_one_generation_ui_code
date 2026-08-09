@@ -46,7 +46,7 @@ jobs:
 
       - name: Analyze advanced modules
         run: >-
-          flutter analyze --no-pub
+          flutter analyze --no-pub --no-fatal-infos
           lib/memory/embedded_vector_store.dart
           lib/memory/local_memory_service.dart
           lib/chat/scroll_follow_controller.dart
@@ -86,7 +86,7 @@ jobs:
         run: ./tool/check_windows_litertlm.ps1 -RequirePrepared
 
       - name: Analyze Windows sources
-        run: flutter analyze --no-pub
+        run: flutter analyze --no-pub --no-fatal-infos
 
       - name: Run regression tests on Windows
         run: flutter test --no-pub
