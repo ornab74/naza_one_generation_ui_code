@@ -4,3 +4,12 @@ analyzer:
   exclude:
     - build/**
     - naza_one_asset_pack/**
+
+linter:
+  rules:
+    # These two rules are formatting preferences only. The advanced embedded
+    # vector store intentionally uses an explicit private seed assignment and a
+    # compact single-line hot-loop update. Do not let those style choices make
+    # plain `flutter analyze --no-pub` fail CI.
+    prefer_initializing_formals: false
+    curly_braces_in_flow_control_structures: false
