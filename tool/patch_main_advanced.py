@@ -53,8 +53,8 @@ def main() -> None:
     )
     text = replace_exact(text, anchor, imports, label="advanced subsystem imports")
 
-    # Chat-first startup. First-run model/help onboarding will become the only
-    # intentional startup gate; vault creation must not throw users into Settings.
+    # Chat-first startup. Preserve the current NazaStableHome constructor and
+    # vision picker; only remove the legacy one-time Settings redirect.
     text = replace_regex(
         text,
         r"^\s*bool _openPostQuantumSetup = false;\n",
@@ -67,10 +67,12 @@ def main() -> None:
         "",
         label="remove Settings-first assignment",
     )
-    text = replace_regex(
+    text = replace_exact(
         text,
-        r"return NazaStableHome\(\n\s*initialPanel:\n\s*_openPostQuantumSetup \? NazaPanel\.settings : NazaPanel\.chat,\n\s*\);",
-        "return const NazaStableHome(initialPanel: NazaPanel.chat);",
+        "        initialPanel: _openPostQuantumSetup\n"
+        "            ? NazaPanel.settings\n"
+        "            : NazaPanel.chat,\n",
+        "        initialPanel: NazaPanel.chat,\n",
         label="route unlocked app to Chat",
     )
 
