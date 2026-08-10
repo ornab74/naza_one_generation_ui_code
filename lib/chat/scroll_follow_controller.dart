@@ -24,8 +24,8 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
   bool _programmaticMove = false;
   bool _disposed = false;
   bool _streaming = false;
+  bool _scrollQueued = false;
   double _lastPixels = 0;
-  Timer? _coalesce;
 
   bool get followTail => _followTail;
   bool get streaming => _streaming;
@@ -53,10 +53,17 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
   }
 
   void onStreamPaint() {
-    if (!_followTail || _disposed) return;
-    _coalesce?.cancel();
-    _coalesce = Timer(const Duration(milliseconds: 18), () {
-      if (_followTail) unawaited(scrollToLatest(animated: false));
+    if (!_followTail || _disposed || _scrollQueued) return;
+
+    // Coalesce all stream updates for the current frame into one tail move.
+    // Using a post-frame callback avoids fighting layout while the latest text
+    // chunk is still changing the scroll extent, which otherwise shows up as
+    // small repeated viewport snaps during generation.
+    _scrollQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollQueued = false;
+      if (_disposed || !_followTail || !controller.hasClients) return;
+      unawaited(scrollToLatest(animated: false));
     });
   }
 
@@ -76,7 +83,7 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
       if (animated) {
         await controller.animateTo(
           target,
-          duration: const Duration(milliseconds: 220),
+          duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
         );
       } else {
@@ -125,7 +132,6 @@ final class NazaChatScrollFollowController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    _coalesce?.cancel();
     controller.removeListener(_onPositionChanged);
     controller.dispose();
     super.dispose();
