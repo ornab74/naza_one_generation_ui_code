@@ -7,11 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app.dart' as app;
 
-enum NazaModelDownloadSource {
-  automatic,
-  huggingFace,
-  githubRelease,
-}
+enum NazaModelDownloadSource { automatic, huggingFace, githubRelease }
 
 final class NazaModelPart {
   final String name;
@@ -30,13 +26,15 @@ final class NazaModelPart {
 final class NazaModelBootstrapManifest {
   const NazaModelBootstrapManifest._();
 
-  static final Uri huggingFaceUri = Uri.parse(app.NazaAppConfig.modelDownloadUrl);
+  static final Uri huggingFaceUri = Uri.parse(
+    app.NazaAppConfig.modelDownloadUrl,
+  );
 
   static const String fullSha256 =
       'ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42';
 
-  static final List<NazaModelPart> githubReleaseParts =
-      List<NazaModelPart>.unmodifiable(<NazaModelPart>[
+  static final List<NazaModelPart>
+  githubReleaseParts = List<NazaModelPart>.unmodifiable(<NazaModelPart>[
     NazaModelPart(
       name: 'gemma-4-E2B-it.litertlm.part00.bin',
       uri: Uri.parse(
@@ -66,10 +64,8 @@ final class NazaModelBootstrapManifest {
     ),
   ]);
 
-  static int get githubJoinedSize => githubReleaseParts.fold<int>(
-        0,
-        (total, part) => total + part.size,
-      );
+  static int get githubJoinedSize =>
+      githubReleaseParts.fold<int>(0, (total, part) => total + part.size);
 
   static void validate() {
     final full = fullSha256.toLowerCase();
@@ -93,10 +89,7 @@ final class NazaModelBootstrapManifest {
       }
       _requireHttps(part.uri, allowedHosts: const {'github.com'});
     }
-    _requireHttps(
-      huggingFaceUri,
-      allowedHosts: const {'huggingface.co'},
-    );
+    _requireHttps(huggingFaceUri, allowedHosts: const {'huggingface.co'});
   }
 
   static bool _isSha256(String value) =>
@@ -204,11 +197,8 @@ final class _DigestCollector implements Sink<crypto.Digest> {
   void close() {}
 }
 
-typedef NazaBootstrapProgress = void Function(
-  int percent,
-  String phase,
-  String detail,
-);
+typedef NazaBootstrapProgress =
+    void Function(int percent, String phase, String detail);
 
 final class NazaVerifiedModelDownloader {
   static const int _maxModelBytes = 8 * 1024 * 1024 * 1024;
@@ -233,10 +223,7 @@ final class NazaVerifiedModelDownloader {
         return _installFromGitHubRelease(target, onProgress: onProgress);
       case NazaModelDownloadSource.automatic:
         try {
-          return await _installFromHuggingFace(
-            target,
-            onProgress: onProgress,
-          );
+          return await _installFromHuggingFace(target, onProgress: onProgress);
         } on NazaModelSourceUnavailable catch (error) {
           onProgress?.call(
             1,
@@ -498,10 +485,7 @@ final class NazaVerifiedModelDownloader {
     } on HandshakeException catch (error) {
       throw NazaModelSourceUnavailable(uri, error.message);
     } on TimeoutException catch (error) {
-      throw NazaModelSourceUnavailable(
-        uri,
-        error.message ?? 'network timeout',
-      );
+      throw NazaModelSourceUnavailable(uri, error.message ?? 'network timeout');
     } on HttpException catch (error) {
       throw NazaModelSourceUnavailable(uri, error.message);
     } finally {
@@ -527,8 +511,7 @@ final class NazaVerifiedModelDownloader {
   }
 
   static String _formatTransfer(int received, int? total) {
-    String gib(int bytes) =>
-        (bytes / (1024 * 1024 * 1024)).toStringAsFixed(2);
+    String gib(int bytes) => (bytes / (1024 * 1024 * 1024)).toStringAsFixed(2);
     if (total == null || total <= 0) {
       return '${gib(received)} GiB received';
     }
@@ -562,6 +545,11 @@ final class _NazaModelBootstrapApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
+        splashFactory: NoSplash.splashFactory,
+        splashColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+        hoverColor: Colors.transparent,
+        focusColor: Colors.transparent,
       ),
       home: const _NazaModelBootstrapScreen(),
     );
@@ -710,13 +698,13 @@ final class _NazaModelBootstrapScreenState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(
+                      Icon(
                         Icons.shield_moon_rounded,
                         size: 56,
                         color: app.NazaPalette.mint,
                       ),
                       const SizedBox(height: 16),
-                      const Text(
+                      Text(
                         'Verified Model Startup',
                         textAlign: TextAlign.center,
                         style: TextStyle(
@@ -726,20 +714,20 @@ final class _NazaModelBootstrapScreenState
                         ),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
+                      Text(
                         'Gemma 4 E2B · LiteRT-LM',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: app.NazaPalette.subtext),
                       ),
                       const SizedBox(height: 28),
-                      LinearProgressIndicator(
+                      app.NazaProgressBar(
                         value: _busy || _checking ? _progress / 100 : null,
                       ),
                       const SizedBox(height: 14),
                       Text(
                         _phase,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: app.NazaPalette.text,
                         ),
@@ -748,7 +736,7 @@ final class _NazaModelBootstrapScreenState
                       Text(
                         _detail,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: app.NazaPalette.subtext),
+                        style: TextStyle(color: app.NazaPalette.subtext),
                       ),
                       const SizedBox(height: 26),
                       SegmentedButton<NazaModelDownloadSource>(
@@ -779,7 +767,7 @@ final class _NazaModelBootstrapScreenState
                       const SizedBox(height: 14),
                       Text(
                         _sourceDescription(_source),
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: app.NazaPalette.muted,
                           fontSize: 13,
                         ),
@@ -789,7 +777,9 @@ final class _NazaModelBootstrapScreenState
                         Container(
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: app.NazaPalette.danger.withValues(alpha: 0.08),
+                            color: app.NazaPalette.danger.withValues(
+                              alpha: 0.08,
+                            ),
                             border: Border.all(
                               color: app.NazaPalette.danger.withValues(
                                 alpha: 0.35,
@@ -799,14 +789,14 @@ final class _NazaModelBootstrapScreenState
                           ),
                           child: Text(
                             _error!,
-                            style: const TextStyle(color: app.NazaPalette.danger),
+                            style: TextStyle(color: app.NazaPalette.danger),
                           ),
                         ),
                       ],
                       const SizedBox(height: 22),
                       FilledButton.icon(
                         onPressed: locked ? null : _downloadAndLaunch,
-                        icon: const Icon(Icons.download_for_offline_rounded),
+                        icon: Icon(Icons.download_for_offline_rounded),
                         label: Text(
                           _busy
                               ? 'Downloading & verifying…'
@@ -814,7 +804,7 @@ final class _NazaModelBootstrapScreenState
                         ),
                       ),
                       const SizedBox(height: 14),
-                      const Text(
+                      Text(
                         'Security rule: a source outage may trigger fallback; a SHA-256 mismatch never does. Every GitHub part is checked before joining, then the joined model is checked again against the app-pinned full SHA-256.',
                         style: TextStyle(
                           color: app.NazaPalette.muted,

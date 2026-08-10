@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -29,14 +28,14 @@ final class NazaHistoryEntry {
     bool? pinned,
     int? messageCount,
   }) => NazaHistoryEntry(
-        threadId: threadId,
-        title: title ?? this.title,
-        preview: preview ?? this.preview,
-        createdAt: createdAt,
-        updatedAt: updatedAt ?? this.updatedAt,
-        pinned: pinned ?? this.pinned,
-        messageCount: messageCount ?? this.messageCount,
-      );
+    threadId: threadId,
+    title: title ?? this.title,
+    preview: preview ?? this.preview,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    pinned: pinned ?? this.pinned,
+    messageCount: messageCount ?? this.messageCount,
+  );
 }
 
 final class NazaConversationTitlePolicy {
@@ -75,15 +74,35 @@ final class NazaConversationTitlePolicy {
   }
 
   static const Set<String> _stop = <String>{
-    'a', 'an', 'the', 'please', 'can', 'could', 'would', 'you', 'me', 'my',
-    'i', 'we', 'our', 'this', 'that', 'with', 'for', 'to', 'of', 'in', 'on',
+    'a',
+    'an',
+    'the',
+    'please',
+    'can',
+    'could',
+    'would',
+    'you',
+    'me',
+    'my',
+    'i',
+    'we',
+    'our',
+    'this',
+    'that',
+    'with',
+    'for',
+    'to',
+    'of',
+    'in',
+    'on',
   };
 }
 
-typedef NazaGenerateConversationTitle = Future<String> Function({
-  required String userText,
-  required String assistantText,
-});
+typedef NazaGenerateConversationTitle =
+    Future<String> Function({
+      required String userText,
+      required String assistantText,
+    });
 
 final class NazaConversationTitleCoordinator {
   NazaConversationTitleCoordinator({required this.generateTitle});
@@ -110,7 +129,10 @@ final class NazaConversationTitleCoordinator {
           userText: userText,
           assistantText: assistantText,
         );
-        return NazaConversationTitlePolicy.sanitizeModelTitle(generated, userText);
+        return NazaConversationTitlePolicy.sanitizeModelTitle(
+          generated,
+          userText,
+        );
       } catch (_) {
         return fallback;
       } finally {
@@ -176,55 +198,53 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
             clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(26),
-              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.45)),
-              boxShadow: <BoxShadow>[
-                BoxShadow(
-                  blurRadius: 36,
-                  spreadRadius: -10,
-                  color: Colors.black.withValues(alpha: 0.45),
-                ),
-              ],
+              border: Border.all(
+                color: scheme.outlineVariant.withValues(alpha: 0.45),
+              ),
             ),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-              child: ColoredBox(
-                color: scheme.surface.withValues(alpha: 0.88),
-                child: Column(
-                  children: <Widget>[
-                    _header(context),
-                    _searchBar(context),
-                    Expanded(
-                      child: groups.isEmpty
-                          ? Center(
-                              child: Text(
-                                _query.isEmpty
-                                    ? 'Your conversations will appear here.'
-                                    : 'No conversations match “$_query”.',
-                              ),
-                            )
-                          : ListView(
-                              padding: const EdgeInsets.fromLTRB(10, 8, 10, 20),
-                              children: <Widget>[
-                                for (final group in groups) ...<Widget>[
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(8, 13, 8, 6),
-                                    child: Text(
-                                      group.key,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        letterSpacing: 0.7,
-                                        color: scheme.onSurfaceVariant,
-                                      ),
+            child: ColoredBox(
+              color: scheme.surface,
+              child: Column(
+                children: <Widget>[
+                  _header(context),
+                  _searchBar(context),
+                  Expanded(
+                    child: groups.isEmpty
+                        ? Center(
+                            child: Text(
+                              _query.isEmpty
+                                  ? 'Your conversations will appear here.'
+                                  : 'No conversations match “$_query”.',
+                            ),
+                          )
+                        : ListView(
+                            padding: const EdgeInsets.fromLTRB(10, 8, 10, 20),
+                            children: <Widget>[
+                              for (final group in groups) ...<Widget>[
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    8,
+                                    13,
+                                    8,
+                                    6,
+                                  ),
+                                  child: Text(
+                                    group.key,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 0.7,
+                                      color: scheme.onSurfaceVariant,
                                     ),
                                   ),
-                                  for (final entry in group.value) _entryTile(context, entry),
-                                ],
+                                ),
+                                for (final entry in group.value)
+                                  _entryTile(context, entry),
                               ],
-                            ),
-                    ),
-                  ],
-                ),
+                            ],
+                          ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -244,9 +264,7 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
             height: 34,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              gradient: LinearGradient(
-                colors: <Color>[scheme.primary, scheme.tertiary],
-              ),
+              color: scheme.primary,
             ),
             child: const Icon(Icons.auto_awesome_rounded, size: 18),
           ),
@@ -255,7 +273,10 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text('Conversations', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                Text(
+                  'Conversations',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                ),
                 Text('Private local history', style: TextStyle(fontSize: 11.5)),
               ],
             ),
@@ -271,34 +292,34 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
   }
 
   Widget _searchBar(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-        child: Row(
-          children: <Widget>[
-            Expanded(
-              child: TextField(
-                controller: _search,
-                onChanged: (value) => setState(() => _query = value),
-                decoration: InputDecoration(
-                  hintText: 'Search past chats',
-                  prefixIcon: const Icon(Icons.search_rounded, size: 19),
-                  isDense: true,
-                  filled: true,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(18),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
+    padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+    child: Row(
+      children: <Widget>[
+        Expanded(
+          child: TextField(
+            controller: _search,
+            onChanged: (value) => setState(() => _query = value),
+            decoration: InputDecoration(
+              hintText: 'Search past chats',
+              prefixIcon: const Icon(Icons.search_rounded, size: 19),
+              isDense: true,
+              filled: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: BorderSide.none,
               ),
             ),
-            const SizedBox(width: 8),
-            FilledButton.tonalIcon(
-              onPressed: widget.onNewChat,
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text('New'),
-            ),
-          ],
+          ),
         ),
-      );
+        const SizedBox(width: 8),
+        FilledButton.tonalIcon(
+          onPressed: widget.onNewChat,
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('New'),
+        ),
+      ],
+    ),
+  );
 
   Widget _entryTile(BuildContext context, NazaHistoryEntry entry) {
     final active = entry.threadId == widget.activeThreadId;
@@ -306,7 +327,9 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Material(
-        color: active ? scheme.primaryContainer.withValues(alpha: 0.52) : Colors.transparent,
+        color: active
+            ? scheme.primaryContainer.withValues(alpha: 0.52)
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -316,7 +339,9 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
             child: Row(
               children: <Widget>[
                 Icon(
-                  entry.pinned ? Icons.push_pin_rounded : Icons.chat_bubble_outline_rounded,
+                  entry.pinned
+                      ? Icons.push_pin_rounded
+                      : Icons.chat_bubble_outline_rounded,
                   size: 17,
                   color: active ? scheme.primary : scheme.onSurfaceVariant,
                 ),
@@ -329,14 +354,21 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
                         entry.title.isEmpty ? 'New conversation' : entry.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontWeight: active ? FontWeight.w700 : FontWeight.w600),
+                        style: TextStyle(
+                          fontWeight: active
+                              ? FontWeight.w700
+                              : FontWeight.w600,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         _subtitle(entry),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -351,7 +383,9 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
   }
 
   Widget _entryMenu(BuildContext context, NazaHistoryEntry entry) {
-    if (widget.onRename == null && widget.onDelete == null && widget.onTogglePinned == null) {
+    if (widget.onRename == null &&
+        widget.onDelete == null &&
+        widget.onTogglePinned == null) {
       return const SizedBox(width: 8);
     }
     return PopupMenuButton<String>(
@@ -368,7 +402,10 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
       },
       itemBuilder: (_) => <PopupMenuEntry<String>>[
         if (widget.onTogglePinned != null)
-          PopupMenuItem(value: 'pin', child: Text(entry.pinned ? 'Unpin' : 'Pin')),
+          PopupMenuItem(
+            value: 'pin',
+            child: Text(entry.pinned ? 'Unpin' : 'Pin'),
+          ),
         if (widget.onRename != null)
           const PopupMenuItem(value: 'rename', child: Text('Rename')),
         if (widget.onDelete != null)
@@ -383,9 +420,16 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Rename conversation'),
-        content: TextField(controller: controller, autofocus: true, maxLength: 72),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 72,
+        ),
         actions: <Widget>[
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
             child: const Text('Save'),
@@ -404,11 +448,13 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
     String query,
   ) {
     final needle = query.trim().toLowerCase();
-    final entries = input.where((entry) {
-      if (needle.isEmpty) return true;
-      return entry.title.toLowerCase().contains(needle) ||
-          entry.preview.toLowerCase().contains(needle);
-    }).toList(growable: false);
+    final entries = input
+        .where((entry) {
+          if (needle.isEmpty) return true;
+          return entry.title.toLowerCase().contains(needle) ||
+              entry.preview.toLowerCase().contains(needle);
+        })
+        .toList(growable: false);
     entries.sort((a, b) {
       if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
       return b.updatedAt.compareTo(a.updatedAt);
@@ -429,14 +475,14 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
       final label = entry.pinned
           ? 'PINNED'
           : delta == 0
-              ? 'TODAY'
-              : delta == 1
-                  ? 'YESTERDAY'
-                  : delta < 7
-                      ? 'PREVIOUS 7 DAYS'
-                      : delta < 30
-                          ? 'PREVIOUS 30 DAYS'
-                          : 'OLDER';
+          ? 'TODAY'
+          : delta == 1
+          ? 'YESTERDAY'
+          : delta < 7
+          ? 'PREVIOUS 7 DAYS'
+          : delta < 30
+          ? 'PREVIOUS 30 DAYS'
+          : 'OLDER';
       groups.putIfAbsent(label, () => <NazaHistoryEntry>[]).add(entry);
     }
     const order = <String>[
@@ -449,7 +495,9 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
     ];
     return order
         .where(groups.containsKey)
-        .map((key) => MapEntry<String, List<NazaHistoryEntry>>(key, groups[key]!))
+        .map(
+          (key) => MapEntry<String, List<NazaHistoryEntry>>(key, groups[key]!),
+        )
         .toList(growable: false);
   }
 

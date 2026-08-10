@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../app.dart' as app;
+
 enum NazaOnboardingModelPhase {
   checking,
   missing,
@@ -30,7 +32,8 @@ final class NazaOnboardingModelState {
   final int? totalBytes;
 
   bool get ready => phase == NazaOnboardingModelPhase.ready;
-  bool get busy => phase == NazaOnboardingModelPhase.checking ||
+  bool get busy =>
+      phase == NazaOnboardingModelPhase.checking ||
       phase == NazaOnboardingModelPhase.downloading ||
       phase == NazaOnboardingModelPhase.verifying;
 }
@@ -160,7 +163,9 @@ final class _NazaFirstRunOnboardingState extends State<NazaFirstRunOnboarding> {
                       state: state,
                       actionBusy: _busy,
                       onEnsure: _ensure,
-                      onChooseLocal: widget.chooseLocalModel == null ? null : _chooseLocal,
+                      onChooseLocal: widget.chooseLocalModel == null
+                          ? null
+                          : _chooseLocal,
                     ),
             ),
           ),
@@ -195,21 +200,10 @@ final class _ModelSetupCard extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
         border: Border.all(color: scheme.primary.withValues(alpha: 0.25)),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[
-            scheme.surfaceContainerHighest.withValues(alpha: 0.92),
-            scheme.surface.withValues(alpha: 0.96),
-          ],
+        color: Color.alphaBlend(
+          scheme.primary.withValues(alpha: 0.06),
+          scheme.surface,
         ),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            blurRadius: 46,
-            spreadRadius: -18,
-            color: scheme.primary.withValues(alpha: 0.22),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -224,9 +218,8 @@ final class _ModelSetupCard extends StatelessWidget {
                   children: <Widget>[
                     Text(
                       'Private model setup',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 3),
                     Text(
@@ -244,10 +237,13 @@ final class _ModelSetupCard extends StatelessWidget {
             const SizedBox(height: 13),
             ClipRRect(
               borderRadius: BorderRadius.circular(100),
-              child: LinearProgressIndicator(value: progress, minHeight: 8),
+              child: app.NazaProgressBar(value: progress, minHeight: 8),
             ),
             const SizedBox(height: 7),
-            Text(_progressLabel(state), style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              _progressLabel(state),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ],
           const SizedBox(height: 18),
           DecoratedBox(
@@ -287,8 +283,8 @@ final class _ModelSetupCard extends StatelessWidget {
                   state.phase == NazaOnboardingModelPhase.failed
                       ? 'Retry secure setup'
                       : state.ready
-                          ? 'Continue'
-                          : 'Download & verify',
+                      ? 'Continue'
+                      : 'Download & verify',
                 ),
               ),
               if (onChooseLocal != null)
@@ -344,23 +340,7 @@ final class _StatusOrb extends StatelessWidget {
     return Container(
       width: 58,
       height: 58,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: SweepGradient(
-          colors: <Color>[
-            scheme.primary,
-            scheme.tertiary,
-            scheme.secondary,
-            scheme.primary,
-          ],
-        ),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            blurRadius: 22,
-            color: scheme.primary.withValues(alpha: 0.34),
-          ),
-        ],
-      ),
+      decoration: BoxDecoration(shape: BoxShape.circle, color: scheme.primary),
       child: Icon(
         ready ? Icons.check_rounded : Icons.memory_rounded,
         color: scheme.onPrimary,
@@ -377,19 +357,39 @@ final class _StatusLine extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final (icon, label) = switch (state.phase) {
-      NazaOnboardingModelPhase.checking => (Icons.search_rounded, 'Checking local model'),
-      NazaOnboardingModelPhase.missing => (Icons.cloud_download_outlined, 'Model is ready to download'),
-      NazaOnboardingModelPhase.downloading => (Icons.downloading_rounded, 'Downloading model'),
-      NazaOnboardingModelPhase.verifying => (Icons.verified_outlined, 'Verifying SHA-256 integrity'),
-      NazaOnboardingModelPhase.ready => (Icons.check_circle_outline_rounded, 'Verified model ready'),
-      NazaOnboardingModelPhase.failed => (Icons.error_outline_rounded, 'Model setup needs attention'),
+      NazaOnboardingModelPhase.checking => (
+        Icons.search_rounded,
+        'Checking local model',
+      ),
+      NazaOnboardingModelPhase.missing => (
+        Icons.cloud_download_outlined,
+        'Model is ready to download',
+      ),
+      NazaOnboardingModelPhase.downloading => (
+        Icons.downloading_rounded,
+        'Downloading model',
+      ),
+      NazaOnboardingModelPhase.verifying => (
+        Icons.verified_outlined,
+        'Verifying SHA-256 integrity',
+      ),
+      NazaOnboardingModelPhase.ready => (
+        Icons.check_circle_outline_rounded,
+        'Verified model ready',
+      ),
+      NazaOnboardingModelPhase.failed => (
+        Icons.error_outline_rounded,
+        'Model setup needs attention',
+      ),
     };
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Icon(
           icon,
-          color: state.phase == NazaOnboardingModelPhase.failed ? scheme.error : scheme.primary,
+          color: state.phase == NazaOnboardingModelPhase.failed
+              ? scheme.error
+              : scheme.primary,
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -399,7 +399,10 @@ final class _StatusLine extends StatelessWidget {
               Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
               if (state.message.trim().isNotEmpty) ...<Widget>[
                 const SizedBox(height: 3),
-                Text(state.message, style: TextStyle(color: scheme.onSurfaceVariant)),
+                Text(
+                  state.message,
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
               ],
             ],
           ),
@@ -440,8 +443,8 @@ final class _HelpCard extends StatelessWidget {
                 child: Text(
                   'You’re ready to chat',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
             ],
@@ -455,27 +458,32 @@ final class _HelpCard extends StatelessWidget {
           const _HelpRow(
             icon: Icons.lock_outline_rounded,
             title: 'Private local inference',
-            detail: 'Normal chats use the on-device model. Private memory remains local and encrypted at rest.',
+            detail:
+                'Normal chats use the on-device model. Private memory remains local and encrypted at rest.',
           ),
           const _HelpRow(
             icon: Icons.psychology_alt_outlined,
             title: 'Smart Memory is on by default',
-            detail: 'Relevant context is retrieved automatically. Pause or clear Smart Memory from Settings at any time.',
+            detail:
+                'Relevant context is retrieved automatically. Pause or clear Smart Memory from Settings at any time.',
           ),
           const _HelpRow(
             icon: Icons.menu_open_rounded,
             title: 'Past chats',
-            detail: 'Use History to search, reopen, pin, rename, or delete conversations.',
+            detail:
+                'Use History to search, reopen, pin, rename, or delete conversations.',
           ),
           const _HelpRow(
             icon: Icons.vertical_align_bottom_rounded,
             title: 'Streaming respects your scroll',
-            detail: 'Scroll upward during generation and auto-follow detaches until you return to the latest message.',
+            detail:
+                'Scroll upward during generation and auto-follow detaches until you return to the latest message.',
           ),
           const _HelpRow(
             icon: Icons.speed_rounded,
             title: 'Local acceleration',
-            detail: 'NAZA prefers hardware acceleration when supported and can fall back to a working backend when initialization fails.',
+            detail:
+                'NAZA prefers hardware acceleration when supported and can fall back to a working backend when initialization fails.',
           ),
           const SizedBox(height: 18),
           Align(
@@ -525,7 +533,10 @@ final class _HelpRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
                 const SizedBox(height: 2),
                 Text(
                   detail,

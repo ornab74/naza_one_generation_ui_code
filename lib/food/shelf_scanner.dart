@@ -27,12 +27,12 @@ enum ShelfRiskLevel {
     high => 2,
   };
 
-  static ShelfRiskLevel parse(Object? value) => switch (
-        value?.toString().trim().toLowerCase()) {
-      'high' => high,
-      'medium' => medium,
-      _ => low,
-    };
+  static ShelfRiskLevel parse(Object? value) =>
+      switch (value?.toString().trim().toLowerCase()) {
+        'high' => high,
+        'medium' => medium,
+        _ => low,
+      };
 }
 
 enum _ShelfPhotoSource { camera, gallery, files }
@@ -66,46 +66,45 @@ final class ShelfItem {
     bool clearRisk = false,
     String? riskReason,
     List<String>? uncertainties,
-  }) =>
-      ShelfItem(
-        id: id,
-        name: name,
-        approximateQuantity: approximateQuantity,
-        visibleCues: visibleCues,
-        confidence: confidence,
-        interested: interested ?? this.interested,
-        risk: clearRisk ? null : (risk ?? this.risk),
-        riskReason: riskReason ?? this.riskReason,
-        uncertainties: uncertainties ?? this.uncertainties,
-      );
+  }) => ShelfItem(
+    id: id,
+    name: name,
+    approximateQuantity: approximateQuantity,
+    visibleCues: visibleCues,
+    confidence: confidence,
+    interested: interested ?? this.interested,
+    risk: clearRisk ? null : (risk ?? this.risk),
+    riskReason: riskReason ?? this.riskReason,
+    uncertainties: uncertainties ?? this.uncertainties,
+  );
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'id': id,
-        'name': name,
-        'approximate_quantity': approximateQuantity,
-        'visible_cues': visibleCues,
-        'confidence': confidence.name,
-        'interested': interested,
-        if (risk != null) 'risk': risk!.name,
-        'risk_reason': riskReason,
-        'uncertainties': uncertainties,
-      };
+    'id': id,
+    'name': name,
+    'approximate_quantity': approximateQuantity,
+    'visible_cues': visibleCues,
+    'confidence': confidence.name,
+    'interested': interested,
+    if (risk != null) 'risk': risk!.name,
+    'risk_reason': riskReason,
+    'uncertainties': uncertainties,
+  };
 
   factory ShelfItem.fromJson(Map<String, Object?> json) => ShelfItem(
-        id: _text(json['id'], 100, fallback: _newId('item')),
-        name: _text(json['name'], 140, fallback: 'Unidentified item'),
-        approximateQuantity: _text(
-          json['approximate_quantity'],
-          100,
-          fallback: 'Quantity unclear',
-        ),
-        visibleCues: _strings(json['visible_cues'], 8, 220),
-        confidence: FoodConfidence.parse(json['confidence']),
-        interested: json['interested'] == true,
-        risk: json['risk'] == null ? null : ShelfRiskLevel.parse(json['risk']),
-        riskReason: _text(json['risk_reason'], 700),
-        uncertainties: _strings(json['uncertainties'], 12, 260),
-      );
+    id: _text(json['id'], 100, fallback: _newId('item')),
+    name: _text(json['name'], 140, fallback: 'Unidentified item'),
+    approximateQuantity: _text(
+      json['approximate_quantity'],
+      100,
+      fallback: 'Quantity unclear',
+    ),
+    visibleCues: _strings(json['visible_cues'], 8, 220),
+    confidence: FoodConfidence.parse(json['confidence']),
+    interested: json['interested'] == true,
+    risk: json['risk'] == null ? null : ShelfRiskLevel.parse(json['risk']),
+    riskReason: _text(json['risk_reason'], 700),
+    uncertainties: _strings(json['uncertainties'], 12, 260),
+  );
 }
 
 final class ShelfComparison {
@@ -126,14 +125,13 @@ final class ShelfComparison {
   });
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'id': id,
-        'left_item_id': leftItemId,
-        'right_item_id': rightItemId,
-        if (recommendedItemId != null)
-          'recommended_item_id': recommendedItemId,
-        'summary': summary,
-        'created_at': createdAt.toUtc().toIso8601String(),
-      };
+    'id': id,
+    'left_item_id': leftItemId,
+    'right_item_id': rightItemId,
+    if (recommendedItemId != null) 'recommended_item_id': recommendedItemId,
+    'summary': summary,
+    'created_at': createdAt.toUtc().toIso8601String(),
+  };
 
   factory ShelfComparison.fromJson(Map<String, Object?> json) =>
       ShelfComparison(
@@ -142,7 +140,8 @@ final class ShelfComparison {
         rightItemId: _text(json['right_item_id'], 100),
         recommendedItemId: json['recommended_item_id']?.toString(),
         summary: _text(json['summary'], 1200),
-        createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '') ??
+        createdAt:
+            DateTime.tryParse(json['created_at']?.toString() ?? '') ??
             DateTime.now().toUtc(),
       );
 }
@@ -169,26 +168,26 @@ final class ShelfScanRecord {
   ShelfScanRecord copyWith({
     List<ShelfItem>? items,
     List<ShelfComparison>? comparisons,
-  }) =>
-      ShelfScanRecord(
-        id: id,
-        capturedAt: capturedAt,
-        image: image,
-        note: note,
-        items: items ?? this.items,
-        comparisons: comparisons ?? this.comparisons,
-      );
+  }) => ShelfScanRecord(
+    id: id,
+    capturedAt: capturedAt,
+    image: image,
+    note: note,
+    items: items ?? this.items,
+    comparisons: comparisons ?? this.comparisons,
+  );
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'format': format,
-        'id': id,
-        'captured_at': capturedAt.toUtc().toIso8601String(),
-        'image': image.toJson(),
-        'note': note,
-        'items': items.map((item) => item.toJson()).toList(growable: false),
-        'comparisons':
-            comparisons.map((item) => item.toJson()).toList(growable: false),
-      };
+    'format': format,
+    'id': id,
+    'captured_at': capturedAt.toUtc().toIso8601String(),
+    'image': image.toJson(),
+    'note': note,
+    'items': items.map((item) => item.toJson()).toList(growable: false),
+    'comparisons': comparisons
+        .map((item) => item.toJson())
+        .toList(growable: false),
+  };
 
   factory ShelfScanRecord.fromJson(Map<String, Object?> json) {
     if (json['format'] != format) {
@@ -198,7 +197,8 @@ final class ShelfScanRecord {
     final rawComparisons = json['comparisons'];
     return ShelfScanRecord(
       id: _text(json['id'], 100, fallback: _newId('shelf')),
-      capturedAt: DateTime.tryParse(json['captured_at']?.toString() ?? '') ??
+      capturedAt:
+          DateTime.tryParse(json['captured_at']?.toString() ?? '') ??
           DateTime.now().toUtc(),
       image: FoodVisionImage.fromJson(
         Map<String, Object?>.from(json['image'] as Map? ?? const {}),
@@ -206,21 +206,24 @@ final class ShelfScanRecord {
       note: _text(json['note'], 1200),
       items: rawItems is List
           ? rawItems
-              .whereType<Map>()
-              .take(80)
-              .map((entry) => ShelfItem.fromJson(
-                    Map<String, Object?>.from(entry),
-                  ))
-              .toList(growable: false)
+                .whereType<Map>()
+                .take(80)
+                .map(
+                  (entry) =>
+                      ShelfItem.fromJson(Map<String, Object?>.from(entry)),
+                )
+                .toList(growable: false)
           : const <ShelfItem>[],
       comparisons: rawComparisons is List
           ? rawComparisons
-              .whereType<Map>()
-              .take(40)
-              .map((entry) => ShelfComparison.fromJson(
+                .whereType<Map>()
+                .take(40)
+                .map(
+                  (entry) => ShelfComparison.fromJson(
                     Map<String, Object?>.from(entry),
-                  ))
-              .toList(growable: false)
+                  ),
+                )
+                .toList(growable: false)
           : const <ShelfComparison>[],
     );
   }
@@ -234,10 +237,8 @@ abstract interface class ShelfRepository {
 }
 
 final class EncryptedShelfRepository implements ShelfRepository {
-  EncryptedShelfRepository({
-    NazaSecureDatabase? database,
-    this.retention = 24,
-  }) : _database = database ?? NazaSecureDatabase.instance {
+  EncryptedShelfRepository({NazaSecureDatabase? database, this.retention = 24})
+    : _database = database ?? NazaSecureDatabase.instance {
     if (retention < 1 || retention > 100) {
       throw ArgumentError.value(retention, 'retention');
     }
@@ -255,37 +256,38 @@ final class EncryptedShelfRepository implements ShelfRepository {
 
   @override
   Future<void> save(ShelfScanRecord record) => _enqueue(() async {
-        final index = await _readIndex();
-        final entries = <Map<String, Object?>>[
+    final index = await _readIndex();
+    final entries =
+        <Map<String, Object?>>[
           <String, Object?>{
             'id': record.id,
             'captured_at': record.capturedAt.toUtc().toIso8601String(),
           },
           ...index.where((entry) => entry['id'] != record.id),
         ]..sort(
-            (a, b) => b['captured_at']
-                .toString()
-                .compareTo(a['captured_at'].toString()),
-          );
-        final kept = entries.take(retention).toList(growable: false);
-        final keptIds = kept.map((entry) => entry['id'].toString()).toSet();
-        final pruned = entries
-            .map((entry) => entry['id'].toString())
-            .where((id) => !keptIds.contains(id));
+          (a, b) => b['captured_at'].toString().compareTo(
+            a['captured_at'].toString(),
+          ),
+        );
+    final kept = entries.take(retention).toList(growable: false);
+    final keptIds = kept.map((entry) => entry['id'].toString()).toSet();
+    final pruned = entries
+        .map((entry) => entry['id'].toString())
+        .where((id) => !keptIds.contains(id));
 
-        await _database.importRecords(<NazaVaultRecordKey, Object?>{
-          NazaVaultRecordKey(_namespace, '$_entryPrefix${record.id}'):
-              record.toJson(),
-          const NazaVaultRecordKey(_namespace, _indexKey): <String, Object?>{
-            'format': 'naza-shelf-index-v1',
-            'entries': kept,
-          },
-        });
-        for (final id in pruned) {
-          await _database.delete(_namespace, '$_entryPrefix$id');
-        }
-        revision.value++;
-      });
+    await _database.importRecords(<NazaVaultRecordKey, Object?>{
+      NazaVaultRecordKey(_namespace, '$_entryPrefix${record.id}'): record
+          .toJson(),
+      const NazaVaultRecordKey(_namespace, _indexKey): <String, Object?>{
+        'format': 'naza-shelf-index-v1',
+        'entries': kept,
+      },
+    });
+    for (final id in pruned) {
+      await _database.delete(_namespace, '$_entryPrefix$id');
+    }
+    revision.value++;
+  });
 
   @override
   Future<List<ShelfScanRecord>> list({int limit = 20}) {
@@ -298,9 +300,7 @@ final class EncryptedShelfRepository implements ShelfRepository {
         final raw = await _database.readJson(_namespace, '$_entryPrefix$id');
         if (raw is! Map) continue;
         try {
-          result.add(
-            ShelfScanRecord.fromJson(Map<String, Object?>.from(raw)),
-          );
+          result.add(ShelfScanRecord.fromJson(Map<String, Object?>.from(raw)));
         } catch (error) {
           throw NazaVaultException(
             'invalid_shelf_scan',
@@ -315,15 +315,15 @@ final class EncryptedShelfRepository implements ShelfRepository {
 
   @override
   Future<void> clear() => _enqueue(() async {
-        for (final entry in await _readIndex()) {
-          final id = entry['id']?.toString() ?? '';
-          if (id.isNotEmpty) {
-            await _database.delete(_namespace, '$_entryPrefix$id');
-          }
-        }
-        await _database.delete(_namespace, _indexKey);
-        revision.value++;
-      });
+    for (final entry in await _readIndex()) {
+      final id = entry['id']?.toString() ?? '';
+      if (id.isNotEmpty) {
+        await _database.delete(_namespace, '$_entryPrefix$id');
+      }
+    }
+    await _database.delete(_namespace, _indexKey);
+    revision.value++;
+  });
 
   Future<List<Map<String, Object?>>> _readIndex() async {
     final raw = await _database.readJson(_namespace, _indexKey);
@@ -431,7 +431,8 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
         _compareIds.clear();
         _status = 'Photo normalized locally; original metadata discarded';
       } else {
-        _status = result.message ??
+        _status =
+            result.message ??
             (result.outcome == FoodPhotoPickOutcome.cancelled
                 ? 'Photo selection cancelled'
                 : 'Photo unavailable');
@@ -507,9 +508,7 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
       items: List<ShelfItem>.unmodifiable(
         record.items
             .map(
-              (item) => item.id == id
-                  ? item.copyWith(interested: value)
-                  : item,
+              (item) => item.id == id ? item.copyWith(interested: value) : item,
             )
             .toList(growable: false),
       ),
@@ -641,9 +640,10 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
         createdAt: DateTime.now().toUtc(),
       );
       final updated = record.copyWith(
-        comparisons: List<ShelfComparison>.unmodifiable(
-          <ShelfComparison>[comparison, ...record.comparisons],
-        ),
+        comparisons: List<ShelfComparison>.unmodifiable(<ShelfComparison>[
+          comparison,
+          ...record.comparisons,
+        ]),
       );
       await widget.repository.save(updated);
       if (!mounted) return;
@@ -693,9 +693,7 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
                     ),
                     const SizedBox(height: 14),
                     if (!_started)
-                      _StartCard(
-                        onStart: () => setState(() => _started = true),
-                      )
+                      _StartCard(onStart: () => setState(() => _started = true))
                     else ...<Widget>[
                       _CaptureCard(
                         image: _image,
@@ -705,10 +703,10 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
                         onClear: _busy
                             ? null
                             : () => setState(() {
-                                  _image = null;
-                                  _record = null;
-                                  _compareIds.clear();
-                                }),
+                                _image = null;
+                                _record = null;
+                                _compareIds.clear();
+                              }),
                         onScan: _image == null || _busy ? null : _scanShelf,
                       ),
                       if (record != null) ...<Widget>[
@@ -757,47 +755,47 @@ final class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
-              color: Theme.of(context).colorScheme.primary.withAlpha(28),
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: <Widget>[
+      Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          color: Theme.of(context).colorScheme.primary.withAlpha(28),
+        ),
+        child: const Icon(Icons.shelves, size: 28),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'Shelf Scanner',
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
             ),
-            child: const Icon(Icons.shelves, size: 28),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  'Shelf Scanner',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
-                ),
-                const SizedBox(height: 3),
-                Text(status, style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
-          if (!started)
-            FilledButton.icon(
-              onPressed: onStart,
-              icon: const Icon(Icons.play_arrow_rounded),
-              label: const Text('Start'),
-            )
-          else if (busy && onStop != null)
-            FilledButton.tonalIcon(
-              onPressed: onStop,
-              icon: const Icon(Icons.stop_rounded),
-              label: const Text('Stop'),
-            ),
-        ],
-      );
+            const SizedBox(height: 3),
+            Text(status, style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
+      if (!started)
+        FilledButton.icon(
+          onPressed: onStart,
+          icon: const Icon(Icons.play_arrow_rounded),
+          label: const Text('Start'),
+        )
+      else if (busy && onStop != null)
+        FilledButton.tonalIcon(
+          onPressed: onStop,
+          icon: const Icon(Icons.stop_rounded),
+          label: const Text('Stop'),
+        ),
+    ],
+  );
 }
 
 final class _StartCard extends StatelessWidget {
@@ -806,34 +804,34 @@ final class _StartCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(22),
-          child: Column(
-            children: <Widget>[
-              const Icon(Icons.document_scanner_outlined, size: 46),
-              const SizedBox(height: 12),
-              Text(
-                'Scan a shelf into your private grocery workspace',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'List visible products, check items you care about, review them one-by-one, then compare two similar options. Results are stored in the encrypted vault.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: onStart,
-                icon: const Icon(Icons.play_arrow_rounded),
-                label: const Text('Start shelf scanner'),
-              ),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.all(22),
+      child: Column(
+        children: <Widget>[
+          const Icon(Icons.document_scanner_outlined, size: 46),
+          const SizedBox(height: 12),
+          Text(
+            'Scan a shelf into your private grocery workspace',
+            textAlign: TextAlign.center,
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
           ),
-        ),
-      );
+          const SizedBox(height: 8),
+          const Text(
+            'List visible products, check items you care about, review them one-by-one, then compare two similar options. Results are stored in the encrypted vault.',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: onStart,
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text('Start shelf scanner'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 final class _CaptureCard extends StatelessWidget {
@@ -855,86 +853,86 @@ final class _CaptureCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  const Icon(Icons.photo_camera_back_outlined),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Photo scanner',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w900,
-                          ),
-                    ),
+              const Icon(Icons.photo_camera_back_outlined),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Photo scanner',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
                   ),
-                  FilledButton.tonalIcon(
-                    onPressed: busy ? null : onPhoto,
-                    icon: const Icon(Icons.add_a_photo_outlined),
-                    label: Text(image == null ? 'Picture' : 'Replace'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              if (image != null)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: AspectRatio(
-                    aspectRatio: 2,
-                    child: Image.memory(
-                      image!.bytes,
-                      fit: BoxFit.cover,
-                      cacheWidth: 1280,
-                    ),
-                  ),
-                )
-              else
-                Container(
-                  height: 160,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.outlineVariant,
-                    ),
-                  ),
-                  child: const Text('No shelf photo selected'),
-                ),
-              if (image != null)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    onPressed: onClear,
-                    icon: const Icon(Icons.delete_outline_rounded),
-                    label: const Text('Clear'),
-                  ),
-                ),
-              TextField(
-                controller: note,
-                enabled: !busy,
-                maxLength: 500,
-                maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Optional shelf note',
-                  hintText: 'Cereal aisle, sparkling water, protein bars…',
                 ),
               ),
-              FilledButton.icon(
-                onPressed: onScan,
-                icon: const Icon(Icons.document_scanner_rounded),
-                label: Text(busy ? 'Scanning locally…' : 'Scan visible shelf'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(50),
-                ),
+              FilledButton.tonalIcon(
+                onPressed: busy ? null : onPhoto,
+                icon: const Icon(Icons.add_a_photo_outlined),
+                label: Text(image == null ? 'Picture' : 'Replace'),
               ),
             ],
           ),
-        ),
-      );
+          const SizedBox(height: 12),
+          if (image != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: AspectRatio(
+                aspectRatio: 2,
+                child: Image.memory(
+                  image!.bytes,
+                  fit: BoxFit.cover,
+                  cacheWidth: 1280,
+                ),
+              ),
+            )
+          else
+            Container(
+              height: 160,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              child: const Text('No shelf photo selected'),
+            ),
+          if (image != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: onClear,
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Clear'),
+              ),
+            ),
+          TextField(
+            controller: note,
+            enabled: !busy,
+            maxLength: 500,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: 'Optional shelf note',
+              hintText: 'Cereal aisle, sparkling water, protein bars…',
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: onScan,
+            icon: const Icon(Icons.document_scanner_rounded),
+            label: Text(busy ? 'Scanning locally…' : 'Scan visible shelf'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(50),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 final class _InterestCard extends StatelessWidget {
@@ -967,8 +965,8 @@ final class _InterestCard extends StatelessWidget {
                   child: Text(
                     'Interested items',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 FilledButton.tonalIcon(
@@ -1026,10 +1024,11 @@ final class _RiskChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final color = switch (risk) {
-      ShelfRiskLevel.low => Colors.greenAccent,
-      ShelfRiskLevel.medium => Colors.amberAccent,
-      ShelfRiskLevel.high => Colors.redAccent,
+      ShelfRiskLevel.low => scheme.primary,
+      ShelfRiskLevel.medium => scheme.secondary,
+      ShelfRiskLevel.high => scheme.error,
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
@@ -1063,134 +1062,129 @@ final class _CompareCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  const Icon(Icons.compare_arrows_rounded),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Compare two',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w900,
-                          ),
-                    ),
+              const Icon(Icons.compare_arrows_rounded),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Compare two',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
                   ),
-                  FilledButton.icon(
-                    onPressed:
-                        busy || selected.length != 2 ? null : onCompare,
-                    icon: const Icon(Icons.auto_awesome_rounded),
-                    label: const Text('Compare'),
-                  ),
-                ],
+                ),
               ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: <Widget>[
-                  for (final item in record.items)
-                    FilterChip(
-                      selected: selected.contains(item.id),
-                      onSelected: busy ||
-                              (!selected.contains(item.id) &&
-                                  selected.length >= 2)
-                          ? null
-                          : (value) => onToggle(item.id, value),
-                      label: Text(item.name),
-                    ),
-                ],
+              FilledButton.icon(
+                onPressed: busy || selected.length != 2 ? null : onCompare,
+                icon: const Icon(Icons.auto_awesome_rounded),
+                label: const Text('Compare'),
               ),
-              if (record.comparisons.isNotEmpty) ...<Widget>[
-                const Divider(height: 28),
-                for (final comparison in record.comparisons.take(4))
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(
-                          '${_byId(record.items, comparison.leftItemId)?.name ?? 'Item A'} vs ${_byId(record.items, comparison.rightItemId)?.name ?? 'Item B'}',
-                          style: const TextStyle(fontWeight: FontWeight.w900),
-                        ),
-                        const SizedBox(height: 4),
-                        if (_byId(
-                              record.items,
-                              comparison.recommendedItemId,
-                            ) !=
-                            null)
-                          Text(
-                            'Suggested: ${_byId(record.items, comparison.recommendedItemId)!.name}',
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.primary,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          )
-                        else
-                          const Text('No evidence-backed winner.'),
-                        const SizedBox(height: 4),
-                        Text(comparison.summary),
-                      ],
-                    ),
-                  ),
-              ],
             ],
           ),
-        ),
-      );
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              for (final item in record.items)
+                FilterChip(
+                  selected: selected.contains(item.id),
+                  onSelected:
+                      busy ||
+                          (!selected.contains(item.id) && selected.length >= 2)
+                      ? null
+                      : (value) => onToggle(item.id, value),
+                  label: Text(item.name),
+                ),
+            ],
+          ),
+          if (record.comparisons.isNotEmpty) ...<Widget>[
+            const Divider(height: 28),
+            for (final comparison in record.comparisons.take(4))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '${_byId(record.items, comparison.leftItemId)?.name ?? 'Item A'} vs ${_byId(record.items, comparison.rightItemId)?.name ?? 'Item B'}',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 4),
+                    if (_byId(record.items, comparison.recommendedItemId) !=
+                        null)
+                      Text(
+                        'Suggested: ${_byId(record.items, comparison.recommendedItemId)!.name}',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      )
+                    else
+                      const Text('No evidence-backed winner.'),
+                    const SizedBox(height: 4),
+                    Text(comparison.summary),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    ),
+  );
 }
 
-Future<_ShelfPhotoSource?> _chooseSource(BuildContext context) =>
-    showModalBottomSheet<_ShelfPhotoSource>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                'Photo scanner',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Selected images are decoded and re-encoded locally before scanner storage, so original EXIF/GPS metadata is not retained.',
-              ),
-              const SizedBox(height: 12),
-              ListTile(
-                leading: const Icon(Icons.photo_camera_rounded),
-                title: const Text('Camera'),
-                subtitle: const Text('Take a new picture'),
-                onTap: () =>
-                    Navigator.pop(context, _ShelfPhotoSource.camera),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined),
-                title: const Text('Photo library'),
-                subtitle: const Text('Use the system photo picker'),
-                onTap: () =>
-                    Navigator.pop(context, _ShelfPhotoSource.gallery),
-              ),
-              ListTile(
-                leading: const Icon(Icons.folder_open_rounded),
-                title: const Text('Files'),
-                subtitle: const Text('Choose JPG, PNG, or WebP from files'),
-                onTap: () => Navigator.pop(context, _ShelfPhotoSource.files),
-              ),
-            ],
+Future<_ShelfPhotoSource?> _chooseSource(
+  BuildContext context,
+) => showModalBottomSheet<_ShelfPhotoSource>(
+  context: context,
+  showDragHandle: true,
+  builder: (context) => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text(
+            'Photo scanner',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
           ),
-        ),
+          const SizedBox(height: 4),
+          const Text(
+            'Selected images are decoded and re-encoded locally before scanner storage, so original EXIF/GPS metadata is not retained.',
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            leading: const Icon(Icons.photo_camera_rounded),
+            title: const Text('Camera'),
+            subtitle: const Text('Take a new picture'),
+            onTap: () => Navigator.pop(context, _ShelfPhotoSource.camera),
+          ),
+          ListTile(
+            leading: const Icon(Icons.photo_library_outlined),
+            title: const Text('Photo library'),
+            subtitle: const Text('Use the system photo picker'),
+            onTap: () => Navigator.pop(context, _ShelfPhotoSource.gallery),
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_open_rounded),
+            title: const Text('Files'),
+            subtitle: const Text('Choose JPG, PNG, or WebP from files'),
+            onTap: () => Navigator.pop(context, _ShelfPhotoSource.files),
+          ),
+        ],
       ),
-    );
+    ),
+  ),
+);
 
 ShelfRiskLevel _deriveReviewRisk(
   FridgeItemObservation item,
@@ -1225,13 +1219,13 @@ ShelfRiskLevel _deriveReviewRisk(
 }
 
 String _riskReason(ShelfRiskLevel risk) => switch (risk) {
-      ShelfRiskLevel.high =>
-        'High review risk: visible/model-structured cues may indicate package damage or another condition needing direct inspection. This is not a pathogen or recall determination.',
-      ShelfRiskLevel.medium =>
-        'Medium review risk: visible evidence is incomplete or uncertain. Verify the package and label directly.',
-      ShelfRiskLevel.low =>
-        'Low review risk from visible evidence only. This does not establish freshness, contamination, recall, allergen, or hidden-package status.',
-    };
+  ShelfRiskLevel.high =>
+    'High review risk: visible/model-structured cues may indicate package damage or another condition needing direct inspection. This is not a pathogen or recall determination.',
+  ShelfRiskLevel.medium =>
+    'Medium review risk: visible evidence is incomplete or uncertain. Verify the package and label directly.',
+  ShelfRiskLevel.low =>
+    'Low review risk from visible evidence only. This does not establish freshness, contamination, recall, allergen, or hidden-package status.',
+};
 
 ShelfItem? _recommend(ShelfItem a, ShelfItem b) {
   final aRisk = a.risk?.severity ?? 1;
@@ -1280,10 +1274,10 @@ FridgeItemObservation? _closestObservation(
 }
 
 int _confidenceScore(FoodConfidence confidence) => switch (confidence) {
-      FoodConfidence.low => 0,
-      FoodConfidence.medium => 1,
-      FoodConfidence.high => 2,
-    };
+  FoodConfidence.low => 0,
+  FoodConfidence.medium => 1,
+  FoodConfidence.high => 2,
+};
 
 ShelfItem? _byId(List<ShelfItem> items, String? id) {
   if (id == null) return null;
@@ -1308,10 +1302,8 @@ String _newId(String prefix) {
 }
 
 String _text(Object? value, int maxChars, {String fallback = ''}) {
-  final clean = value
-          ?.toString()
-          .replaceAll(RegExp(r'[\u0000-\u001F]'), ' ')
-          .trim() ??
+  final clean =
+      value?.toString().replaceAll(RegExp(r'[\u0000-\u001F]'), ' ').trim() ??
       '';
   final selected = clean.isEmpty ? fallback : clean;
   return selected.length <= maxChars

@@ -622,17 +622,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
               ],
             ),
             body: DecoratedBox(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    _FoodColors.background,
-                    Color(0xFF071A13),
-                    _FoodColors.background,
-                  ],
-                ),
-              ),
+              decoration: const BoxDecoration(color: _FoodColors.background),
               child: wide
                   ? Row(
                       children: [
@@ -2432,9 +2422,6 @@ class _CompletionBand extends StatelessWidget {
                           decoration: BoxDecoration(
                             color: _FoodColors.text,
                             borderRadius: BorderRadius.circular(99),
-                            boxShadow: const [
-                              BoxShadow(color: Colors.black54, blurRadius: 5),
-                            ],
                           ),
                         ),
                       ),

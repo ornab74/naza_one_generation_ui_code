@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -17,6 +18,28 @@ import 'boot_theme_catalog.dart';
 
 enum _BootStage { loading, security, model, guide, themes, preparing, home }
 
+final class NazaBootDiagnostics {
+  NazaBootDiagnostics._();
+
+  static final Stopwatch _clock = Stopwatch()..start();
+
+  static void log(String message) {
+    developer.log(
+      '[+${_clock.elapsedMilliseconds}ms] $message',
+      name: 'NazaBoot',
+    );
+  }
+
+  static void failure(String step, Object error, StackTrace stackTrace) {
+    developer.log(
+      '[+${_clock.elapsedMilliseconds}ms] FAIL $step: $error',
+      name: 'NazaBoot',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
+}
+
 /// Naza's vault-first startup coordinator.
 ///
 /// First-run order is intentionally explicit:
@@ -24,7 +47,7 @@ enum _BootStage { loading, security, model, guide, themes, preparing, home }
 /// 2. obtain/verify the model,
 /// 3. optional AI/product guide,
 /// 4. theme selection,
-/// 5. pre-load the local AI and open Chat.
+/// 5. open Chat; native AI loading begins only when the user sends a prompt.
 final class NazaBootCoordinator extends StatefulWidget {
   const NazaBootCoordinator({super.key});
 
@@ -36,13 +59,15 @@ final class NazaBootCoordinator extends StatefulWidget {
         DeviceOrientation.portraitUp,
         DeviceOrientation.portraitDown,
       ]);
-      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        systemNavigationBarColor: Color(0xFF020806),
-        statusBarIconBrightness: Brightness.light,
-        systemNavigationBarIconBrightness: Brightness.light,
-        systemNavigationBarContrastEnforced: false,
-      ));
+      SystemChrome.setSystemUIOverlayStyle(
+        const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          systemNavigationBarColor: Color(0xFF020806),
+          statusBarIconBrightness: Brightness.light,
+          systemNavigationBarIconBrightness: Brightness.light,
+          systemNavigationBarContrastEnforced: false,
+        ),
+      );
     }
     runApp(const NazaBootCoordinator());
   }
@@ -54,7 +79,6 @@ final class NazaBootCoordinator extends StatefulWidget {
 final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   static const String _onboardingNamespace = 'naza-first-run-v3';
   static const String _onboardingCompleteKey = 'complete';
-  static const String _themeKey = 'theme';
 
   final NazaSecureDatabase _vault = NazaSecureDatabase.instance;
   final NazaLocalModelPreference _localPreference = NazaLocalModelPreference();
@@ -75,15 +99,47 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   String _themeId = NazaBootThemeCatalog.defaultId;
   int _guidePage = 0;
   NazaDownloadSnapshot? _download;
+  NazaDownloadSnapshot? _pendingDownload;
   NazaTransferController? _transferControl;
   NazaPausableModelDownloader? _activeDownloader;
+  Timer? _downloadPaintTimer;
+  DateTime _lastDownloadPaint = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _cachedThemeId;
+  ThemeData? _cachedTheme;
 
   NazaBootTheme get _theme => NazaBootThemeCatalog.byId(_themeId);
-  bool get _desktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+  ThemeData get _themeData {
+    if (_cachedThemeId != _themeId || _cachedTheme == null) {
+      _cachedThemeId = _themeId;
+      _cachedTheme = _theme.build();
+    }
+    return _cachedTheme!;
+  }
+
+  bool get _desktop =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
+  Future<T> _trace<T>(String step, Future<T> Function() operation) async {
+    final timer = Stopwatch()..start();
+    NazaBootDiagnostics.log('START $step');
+    try {
+      final result = await operation();
+      NazaBootDiagnostics.log('DONE $step in ${timer.elapsedMilliseconds}ms');
+      return result;
+    } catch (error, stackTrace) {
+      NazaBootDiagnostics.failure(
+        '$step after ${timer.elapsedMilliseconds}ms',
+        error,
+        stackTrace,
+      );
+      rethrow;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    NazaBootDiagnostics.log('coordinator initialized');
     unawaited(_bootstrap());
   }
 
@@ -93,6 +149,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     _confirmPassword.dispose();
     _unlockPassword.dispose();
     _guideController.dispose();
+    _downloadPaintTimer?.cancel();
     _transferControl?.cancel();
     unawaited(_activeDownloader?.close());
     super.dispose();
@@ -100,14 +157,20 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
 
   Future<void> _bootstrap() async {
     try {
-      final inspection = await _vault.inspect();
+      final inspection = await _trace('vault inspection', _vault.inspect);
+      NazaBootDiagnostics.log(
+        'vault inspection result: access=${inspection.access.name}, '
+        'passwordRequired=${inspection.passwordRequired}, '
+        'legacyDataPresent=${inspection.legacyDataPresent}',
+      );
       if (!mounted) return;
       switch (inspection.access) {
         case NazaVaultAccess.setupRequired:
           setState(() {
             _stage = _BootStage.security;
             _existingPasswordVault = false;
-            _requirePassword = false; // UX default: encrypted, no boot password.
+            _requirePassword =
+                false; // UX default: encrypted, no boot password.
             _status = 'Choose how Naza One unlocks on this device.';
           });
           return;
@@ -121,14 +184,21 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
             });
             return;
           }
-          await _vault.unlockWithDeviceKey();
-          await _afterVaultUnlocked();
+          await _trace('device-key vault unlock', _vault.unlockWithDeviceKey);
+          await _trace(
+            'post-unlock startup handoff',
+            () => _afterVaultUnlocked(),
+          );
           return;
         case NazaVaultAccess.unlocked:
-          await _afterVaultUnlocked();
+          await _trace(
+            'already-unlocked startup handoff',
+            () => _afterVaultUnlocked(),
+          );
           return;
       }
-    } catch (error) {
+    } catch (error, stackTrace) {
+      NazaBootDiagnostics.failure('bootstrap', error, stackTrace);
       if (!mounted) return;
       setState(() {
         _stage = _BootStage.security;
@@ -143,7 +213,9 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     final password = _password.text;
     if (_requirePassword) {
       if (password.length < 12) {
-        setState(() => _error = 'Use at least 12 characters for the boot password.');
+        setState(
+          () => _error = 'Use at least 12 characters for the boot password.',
+        );
         return;
       }
       if (password != _confirmPassword.text) {
@@ -159,12 +231,19 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
           : 'Creating encrypted vault + protected device unlock key…';
     });
     try {
-      await _vault.create(
-        password: _requirePassword ? password : '',
-        passwordRequired: _requirePassword,
+      await _trace(
+        'vault creation',
+        () => _vault.create(
+          password: _requirePassword ? password : '',
+          passwordRequired: _requirePassword,
+        ),
       );
-      await _afterVaultUnlocked(firstRun: true);
-    } catch (error) {
+      await _trace(
+        'post-create startup handoff',
+        () => _afterVaultUnlocked(firstRun: true),
+      );
+    } catch (error, stackTrace) {
+      NazaBootDiagnostics.failure('create vault flow', error, stackTrace);
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -179,9 +258,16 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       _status = 'Authenticating encrypted vault…';
     });
     try {
-      await _vault.unlock(_unlockPassword.text);
-      await _afterVaultUnlocked();
-    } catch (error) {
+      await _trace(
+        'password vault unlock',
+        () => _vault.unlock(_unlockPassword.text),
+      );
+      await _trace(
+        'post-password-unlock startup handoff',
+        () => _afterVaultUnlocked(),
+      );
+    } catch (error, stackTrace) {
+      NazaBootDiagnostics.failure('password unlock flow', error, stackTrace);
       if (mounted) setState(() => _error = 'Unlock failed: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -189,11 +275,11 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   }
 
   Future<void> _afterVaultUnlocked({bool firstRun = false}) async {
-    final savedTheme = await _vault.readJson(_onboardingNamespace, _themeKey);
-    final savedThemeId = savedTheme is Map ? savedTheme['id']?.toString() : null;
-    final completeRaw = await _vault.readJson(
-      _onboardingNamespace,
-      _onboardingCompleteKey,
+    await _trace<void>('read saved theme', app.NazaThemeStore.load);
+    final savedThemeId = app.NazaThemeStore.selectedId.value;
+    final completeRaw = await _trace(
+      'read onboarding completion marker',
+      () => _vault.readJson(_onboardingNamespace, _onboardingCompleteKey),
     );
     final complete = completeRaw is Map && completeRaw['complete'] == true;
 
@@ -205,13 +291,46 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       _error = null;
     });
 
-    await _restorePreferredLocalModel();
-    final modelStatus = await app.NazaSecureModelStore.refresh();
+    // Check the managed cache first. Re-validating a persisted Windows local
+    // model preference here can hash a multi-gigabyte file before the model
+    // store gets a chance to use its existing attestation.
+    var modelStatus = await _trace(
+      'managed model cache refresh',
+      app.NazaSecureModelStore.refresh,
+    );
+    NazaBootDiagnostics.log(
+      'managed model cache refresh result: installed=${modelStatus.installed}, '
+      'phase=${modelStatus.phase}',
+    );
+    if (!modelStatus.installed) {
+      if (mounted) {
+        setState(() => _status = 'Verifying selected local model…');
+      }
+      await _trace(
+        'restore preferred local model',
+        _restorePreferredLocalModel,
+      );
+      modelStatus = await _trace(
+        'managed model cache refresh after local restore',
+        app.NazaSecureModelStore.refresh,
+      );
+      NazaBootDiagnostics.log(
+        'post-restore model cache result: installed=${modelStatus.installed}, '
+        'phase=${modelStatus.phase}',
+      );
+    }
     _modelReady = modelStatus.installed;
 
     if (!mounted) return;
     if (complete && _modelReady && !firstRun) {
-      await _prepareAndEnterChat(markComplete: false);
+      // _unlockVault keeps the coordinator busy while authenticating. Allow
+      // the authenticated startup handoff to take ownership of that same
+      // busy state; otherwise _prepareAndEnterChat would return immediately
+      // and leave the coordinator on the loading screen forever.
+      await _trace(
+        'authenticated automatic chat handoff',
+        () => _prepareAndEnterChat(markComplete: false, allowBusyHandoff: true),
+      );
       return;
     }
     setState(() {
@@ -223,19 +342,47 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   }
 
   Future<void> _restorePreferredLocalModel() async {
-    if (!_desktop) return;
+    if (!_desktop) {
+      NazaBootDiagnostics.log(
+        'skip local preference restore: non-desktop platform',
+      );
+      return;
+    }
     try {
-      final env = await _localPreference.verifiedEnvironmentOverride();
+      final env = await _trace(
+        'verify NAZA_MODEL_PATH override',
+        _localPreference.verifiedEnvironmentOverride,
+      );
       if (env != null) {
-        await _localPreference.materializeForApp(env);
+        NazaBootDiagnostics.log('verified environment model override found');
+        await _trace(
+          'materialize environment model into managed cache',
+          () => _localPreference.materializeForApp(env),
+        );
         return;
       }
-      final persisted = await _localPreference.verifiedPersistedSelection();
+      final persisted = await _trace(
+        'verify persisted local model selection',
+        _localPreference.verifiedPersistedSelection,
+      );
       if (persisted != null) {
-        await _localPreference.materializeForApp(persisted);
+        NazaBootDiagnostics.log(
+          'verified persisted local model selection found',
+        );
+        await _trace(
+          'materialize persisted model into managed cache',
+          () => _localPreference.materializeForApp(persisted),
+        );
+      } else {
+        NazaBootDiagnostics.log('no verified local model preference found');
       }
-    } catch (_) {
+    } catch (error, stackTrace) {
       // Model screen will expose the managed-cache state and allow recovery.
+      NazaBootDiagnostics.failure(
+        'restore preferred local model (falling back to model screen)',
+        error,
+        stackTrace,
+      );
     }
   }
 
@@ -251,9 +398,13 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       if (_modelReady) _goToGuide();
       return;
     }
+    _downloadPaintTimer?.cancel();
+    _downloadPaintTimer = null;
     setState(() {
       _busy = true;
       _error = null;
+      _download = null;
+      _pendingDownload = null;
       _downloadPaused = false;
       _status = 'Loading signed-in-app mirror identity…';
     });
@@ -272,25 +423,15 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       final target = await _managedModelTarget();
       await downloader.download(
         target: target,
-        onProgress: (snapshot) {
-          if (!mounted) return;
-          setState(() {
-            _download = snapshot;
-            _status = switch (snapshot.stage) {
-              NazaDownloadStage.probing => 'Preparing approved mirrors…',
-              NazaDownloadStage.allocating => 'Resuming secure chunk spool…',
-              NazaDownloadStage.downloading => 'Downloading from multiple verified transports…',
-              NazaDownloadStage.verifying => 'Checking part hashes + final model SHA-256…',
-              NazaDownloadStage.complete => 'Verified local model installed.',
-            };
-          });
-        },
+        onProgress: _publishDownloadProgress,
       );
       await downloader.close();
       _activeDownloader = null;
       final refreshed = await app.NazaSecureModelStore.refresh();
       if (!refreshed.installed) {
-        throw StateError('Downloaded model passed transport verification but app trust refresh did not accept it.');
+        throw StateError(
+          'Downloaded model passed transport verification but app trust refresh did not accept it.',
+        );
       }
       if (!mounted) return;
       setState(() {
@@ -303,7 +444,8 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       if (mounted) {
         setState(() {
           _error = '$error';
-          _status = 'Model download paused by an error. Completed chunks are kept for resume.';
+          _status =
+              'Model download paused by an error. Completed chunks are kept for resume.';
         });
       }
     } finally {
@@ -315,13 +457,56 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     }
   }
 
+  void _publishDownloadProgress(NazaDownloadSnapshot snapshot) {
+    if (!mounted) return;
+    final priorStage = (_pendingDownload ?? _download)?.stage;
+    _pendingDownload = snapshot;
+    _download = snapshot;
+    if (!_downloadPaused || snapshot.stage == NazaDownloadStage.complete) {
+      _status = switch (snapshot.stage) {
+        NazaDownloadStage.probing => 'Preparing approved mirrors…',
+        NazaDownloadStage.allocating => 'Resuming secure chunk spool…',
+        NazaDownloadStage.downloading =>
+          'Downloading from multiple verified transports…',
+        NazaDownloadStage.verifying =>
+          'Checking part hashes + final model SHA-256…',
+        NazaDownloadStage.complete => 'Verified local model installed.',
+      };
+    }
+
+    final now = DateTime.now();
+    final stageChanged = priorStage != snapshot.stage;
+    final terminal = snapshot.stage == NazaDownloadStage.complete;
+    final sincePaint = now.difference(_lastDownloadPaint);
+    if (stageChanged ||
+        terminal ||
+        sincePaint >= const Duration(milliseconds: 250)) {
+      _downloadPaintTimer?.cancel();
+      _downloadPaintTimer = null;
+      _lastDownloadPaint = now;
+      setState(() {});
+      return;
+    }
+
+    _downloadPaintTimer ??= Timer(
+      const Duration(milliseconds: 250) - sincePaint,
+      () {
+        _downloadPaintTimer = null;
+        if (!mounted) return;
+        _lastDownloadPaint = DateTime.now();
+        setState(() {});
+      },
+    );
+  }
+
   void _pauseDownload() {
     final control = _transferControl;
     if (control == null || control.isPaused || control.isCancelled) return;
     control.pause();
     setState(() {
       _downloadPaused = true;
-      _status = 'Paused — in-memory sockets are back-pressured and completed chunks stay on disk.';
+      _status =
+          'Paused — in-memory sockets are back-pressured and completed chunks stay on disk.';
     });
   }
 
@@ -347,23 +532,38 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
         label: 'LiteRT-LM model',
         extensions: <String>['litertlm'],
       );
-      final selected = await openFile(acceptedTypeGroups: const <XTypeGroup>[group]);
+      final selected = await openFile(
+        acceptedTypeGroups: const <XTypeGroup>[group],
+      );
       if (selected == null) {
-        if (mounted) setState(() => _status = 'Local model selection cancelled.');
+        if (mounted)
+          setState(() => _status = 'Local model selection cancelled.');
         return;
       }
-      if (mounted) setState(() => _status = 'Hashing selected model — this can take a moment…');
-      final preference = await _localPreference.verifyAndPersist(File(selected.path));
-      if (mounted) setState(() => _status = 'Model hash matched. Linking into the managed verified cache…');
+      if (mounted)
+        setState(
+          () => _status = 'Hashing selected model — this can take a moment…',
+        );
+      final preference = await _localPreference.verifyAndPersist(
+        File(selected.path),
+      );
+      if (mounted)
+        setState(
+          () => _status =
+              'Model hash matched. Linking into the managed verified cache…',
+        );
       await _localPreference.materializeForApp(preference);
       final refreshed = await app.NazaSecureModelStore.refresh();
       if (!refreshed.installed) {
-        throw StateError('Verified local model could not be activated by the app model store.');
+        throw StateError(
+          'Verified local model could not be activated by the app model store.',
+        );
       }
       if (!mounted) return;
       setState(() {
         _modelReady = true;
-        _status = 'Verified local model selected and encrypted preference saved.';
+        _status =
+            'Verified local model selected and encrypted preference saved.';
       });
       _goToGuide();
     } catch (error) {
@@ -392,15 +592,14 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   Future<void> _saveTheme(String id) async {
     final theme = NazaBootThemeCatalog.byId(id);
     setState(() => _themeId = theme.id);
-    await _vault.writeJson(_onboardingNamespace, _themeKey, <String, Object?>{
-      'schema': 'naza-theme-choice-v1',
-      'id': theme.id,
-      'savedAt': DateTime.now().toUtc().toIso8601String(),
-    });
+    await app.NazaThemeStore.select(theme.id);
   }
 
-  Future<void> _prepareAndEnterChat({bool markComplete = true}) async {
-    if (_busy) return;
+  Future<void> _prepareAndEnterChat({
+    bool markComplete = true,
+    bool allowBusyHandoff = false,
+  }) async {
+    if (_busy && !allowBusyHandoff) return;
     setState(() {
       _busy = true;
       _stage = _BootStage.preparing;
@@ -409,47 +608,59 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     });
     try {
       if (markComplete) {
-        await _vault.writeJson(
-          _onboardingNamespace,
-          _onboardingCompleteKey,
-          <String, Object?>{
-            'schema': 'naza-first-run-v3',
-            'complete': true,
-            'completedAt': DateTime.now().toUtc().toIso8601String(),
-          },
+        await _trace(
+          'write onboarding completion marker',
+          () => _vault.writeJson(
+            _onboardingNamespace,
+            _onboardingCompleteKey,
+            <String, Object?>{
+              'schema': 'naza-first-run-v3',
+              'complete': true,
+              'completedAt': DateTime.now().toUtc().toIso8601String(),
+            },
+          ),
         );
       }
-      await app.NazaLocalGemma.instance.prepareBackendPreference();
-      await app.NazaSecureModelStore.refresh();
-      if (!mounted) return;
-      setState(() => _status = 'Loading Gemma into the local inference backend…');
-      await app.NazaLocalGemma.instance.ensureReady();
+      // Enter the workspace immediately. Loading a multi-gigabyte native model
+      // and constructing a LiteRT conversation can take well over a minute on
+      // a memory-constrained CPU device; blocking the entire app here made the
+      // boot progress appear frozen. These idempotent preparations continue in
+      // the background, and the first send awaits the same operations.
+      unawaited(app.NazaLocalGemma.instance.prepareBackendPreference());
+      unawaited(app.NazaSecureModelStore.refresh());
       if (!mounted) return;
       setState(() {
         _stage = _BootStage.home;
         _busy = false;
         _status = 'Ready';
       });
-    } catch (error) {
+    } catch (error, stackTrace) {
+      NazaBootDiagnostics.failure('chat handoff', error, stackTrace);
       if (!mounted) return;
       setState(() {
         _busy = false;
         _stage = _BootStage.model;
         _error = 'AI runtime did not become ready: $error';
-        _status = 'Model is installed, but runtime initialization needs attention.';
+        _status =
+            'Model is installed, but runtime initialization needs attention.';
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = _theme.build();
+    final theme = _themeData;
     if (_stage == _BootStage.home) {
-      return MaterialApp(
-        debugShowCheckedModeBanner: false,
-        title: 'Naza One',
-        theme: theme,
-        home: const app.NazaStableHome(),
+      return ValueListenableBuilder<String>(
+        valueListenable: app.NazaThemeStore.selectedId,
+        builder: (_, themeId, _) {
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            title: 'Naza One',
+            theme: NazaBootThemeCatalog.byId(themeId).build(),
+            home: const app.NazaStableHome(),
+          );
+        },
       );
     }
 
@@ -462,18 +673,18 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
           children: <Widget>[
             Positioned.fill(child: _BootBackdrop(theme: _theme)),
             SafeArea(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 320),
-                child: switch (_stage) {
-                  _BootStage.loading => _loadingScreen(),
-                  _BootStage.security => _securityScreen(),
-                  _BootStage.model => _modelScreen(),
-                  _BootStage.guide => _guideScreen(),
-                  _BootStage.themes => _themeScreen(),
-                  _BootStage.preparing => _preparingScreen(),
-                  _BootStage.home => const SizedBox.shrink(),
-                },
-              ),
+              // The boot route is short-lived. A cross-fade here creates an
+              // opacity layer during the same first frames in which Skia is
+              // compiling the shell shaders, so stage changes stay direct.
+              child: switch (_stage) {
+                _BootStage.loading => _loadingScreen(),
+                _BootStage.security => _securityScreen(),
+                _BootStage.model => _modelScreen(),
+                _BootStage.guide => _guideScreen(),
+                _BootStage.themes => _themeScreen(),
+                _BootStage.preparing => _preparingScreen(),
+                _BootStage.home => const SizedBox.shrink(),
+              },
             ),
           ],
         ),
@@ -488,7 +699,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     required Widget child,
     Widget? footer,
   }) {
-    final scheme = _theme.build().colorScheme;
+    final scheme = _themeData.colorScheme;
     return Center(
       key: ValueKey<String>('boot-${_stage.name}'),
       child: SingleChildScrollView(
@@ -501,13 +712,6 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
               borderRadius: BorderRadius.circular(32),
               color: scheme.surface.withValues(alpha: 0.90),
               border: Border.all(color: scheme.primary.withValues(alpha: 0.22)),
-              boxShadow: <BoxShadow>[
-                BoxShadow(
-                  blurRadius: 60,
-                  spreadRadius: -20,
-                  color: scheme.primary.withValues(alpha: 0.22),
-                ),
-              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -524,17 +728,28 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                 const SizedBox(height: 10),
                 Text(
                   title,
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
+                  style: _themeData.textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color: scheme.onSurface,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                Text(subtitle, style: TextStyle(color: scheme.onSurfaceVariant, height: 1.45)),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    height: 1.45,
+                  ),
+                ),
                 const SizedBox(height: 24),
                 child,
                 if (_error != null) ...<Widget>[
                   const SizedBox(height: 18),
-                  _messageCard(Icons.error_outline_rounded, _error!, scheme.error),
+                  _messageCard(
+                    Icons.error_outline_rounded,
+                    _error!,
+                    scheme.error,
+                  ),
                 ],
                 if (footer != null) ...<Widget>[
                   const SizedBox(height: 22),
@@ -549,11 +764,40 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   }
 
   Widget _loadingScreen() => _shell(
-        eyebrow: 'Naza One',
-        title: 'Private AI, preparing locally',
-        subtitle: _status,
-        child: const LinearProgressIndicator(),
-      );
+    eyebrow: 'Naza One',
+    title: 'Private AI, preparing locally',
+    subtitle: _status,
+    child: ValueListenableBuilder<app.NazaModelStoreStatus>(
+      valueListenable: app.NazaSecureModelStore.status,
+      builder: (_, modelStatus, _) {
+        final measuredProgress = modelStatus.busy && modelStatus.progress > 0;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            app.NazaProgressBar(
+              value: modelStatus.installed
+                  ? 1
+                  : measuredProgress
+                  ? modelStatus.progress.clamp(0, 100) / 100
+                  : modelStatus.busy
+                  ? null
+                  : 0,
+            ),
+            if (modelStatus.busy) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(
+                modelStatus.phase,
+                style: TextStyle(
+                  color: _themeData.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    ),
+  );
 
   Widget _securityScreen() {
     if (_existingPasswordVault) {
@@ -600,7 +844,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
             _requirePassword
                 ? 'Password mode: Argon2id derives the key-encryption key. You will enter this password on future app starts.'
                 : 'Default mode: a random unlock secret is stored in the operating system secure credential store. Your SQLite records remain AES-256-GCM encrypted.',
-            Theme.of(context).colorScheme.primary,
+            _themeData.colorScheme.primary,
           ),
           const SizedBox(height: 16),
           CheckboxListTile(
@@ -617,9 +861,9 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
             onChanged: _busy
                 ? null
                 : (value) => setState(() {
-                      _requirePassword = value ?? false;
-                      _error = null;
-                    }),
+                    _requirePassword = value ?? false;
+                    _error = null;
+                  }),
           ),
           AnimatedSize(
             duration: const Duration(milliseconds: 240),
@@ -656,12 +900,14 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       ),
       footer: Row(
         children: <Widget>[
-          Expanded(child: Text(_status, style: Theme.of(context).textTheme.bodySmall)),
+          Expanded(child: Text(_status, style: _themeData.textTheme.bodySmall)),
           const SizedBox(width: 12),
           FilledButton.icon(
             onPressed: _busy ? null : _createVault,
             icon: const Icon(Icons.arrow_forward_rounded),
-            label: Text(_requirePassword ? 'Create encrypted vault' : 'Continue securely'),
+            label: Text(
+              _requirePassword ? 'Create encrypted vault' : 'Continue securely',
+            ),
           ),
         ],
       ),
@@ -670,8 +916,25 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
 
   Widget _modelScreen() {
     final snapshot = _download;
-    final fraction = snapshot?.fraction ?? (_modelReady ? 1.0 : 0.0);
-    final scheme = Theme.of(context).colorScheme;
+    final verifying = snapshot?.stage == NazaDownloadStage.verifying;
+    final complete = snapshot?.stage == NazaDownloadStage.complete;
+    final measuredDownload =
+        snapshot != null &&
+        (snapshot.stage == NazaDownloadStage.allocating ||
+            snapshot.stage == NazaDownloadStage.downloading) &&
+        snapshot.receivedBytes > 0;
+    final double? progressValue = _modelReady
+        ? 1
+        : complete
+        ? 1
+        : verifying
+        ? null
+        : measuredDownload
+        ? snapshot.fraction
+        : _busy
+        ? null
+        : 0;
+    final scheme = _themeData.colorScheme;
     return _shell(
       eyebrow: '2 · Local AI model',
       title: 'Verified multi-source model setup',
@@ -691,7 +954,10 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
               children: <Widget>[
                 Row(
                   children: <Widget>[
-                    Icon(_modelReady ? Icons.verified_rounded : Icons.hub_rounded, color: scheme.primary),
+                    Icon(
+                      _modelReady ? Icons.verified_rounded : Icons.hub_rounded,
+                      color: scheme.primary,
+                    ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
@@ -699,14 +965,22 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
                     ),
-                    if (snapshot != null)
-                      Text('${snapshot.percent}%', style: TextStyle(color: scheme.primary, fontWeight: FontWeight.w900)),
+                    if (snapshot != null &&
+                        !verifying &&
+                        (complete || measuredDownload))
+                      Text(
+                        '${snapshot.percent}%',
+                        style: TextStyle(
+                          color: scheme.primary,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 14),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(100),
-                  child: LinearProgressIndicator(value: _busy || _modelReady ? fraction : 0),
+                  child: app.NazaProgressBar(value: progressValue),
                 ),
                 const SizedBox(height: 10),
                 if (snapshot != null)
@@ -717,8 +991,14 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                       _metric('Received', _formatBytes(snapshot.receivedBytes)),
                       _metric('Total', _formatBytes(snapshot.totalBytes)),
                       _metric('Streams', '${snapshot.activeTransfers}'),
-                      _metric('Chunks', '${snapshot.completedChunks}/${snapshot.totalChunks}'),
-                      _metric('Speed', '${_formatBytes(snapshot.bytesPerSecond.round())}/s'),
+                      _metric(
+                        'Chunks',
+                        '${snapshot.completedChunks}/${snapshot.totalChunks}',
+                      ),
+                      _metric(
+                        'Speed',
+                        '${_formatBytes(snapshot.bytesPerSecond.round())}/s',
+                      ),
                       _metric('Fastest', snapshot.fastestProvider ?? 'probing'),
                     ],
                   ),
@@ -729,9 +1009,19 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                   children: <Widget>[
                     if (!_modelReady && !_busy)
                       FilledButton.icon(
-                        onPressed: _useLocalModel ? _chooseLocalModel : _startDownload,
-                        icon: Icon(_useLocalModel ? Icons.folder_open_rounded : Icons.download_rounded),
-                        label: Text(_useLocalModel ? 'Select & verify model' : 'Download verified model'),
+                        onPressed: _useLocalModel
+                            ? _chooseLocalModel
+                            : _startDownload,
+                        icon: Icon(
+                          _useLocalModel
+                              ? Icons.folder_open_rounded
+                              : Icons.download_rounded,
+                        ),
+                        label: Text(
+                          _useLocalModel
+                              ? 'Select & verify model'
+                              : 'Download verified model',
+                        ),
                       ),
                     if (_busy && _transferControl != null && !_downloadPaused)
                       OutlinedButton.icon(
@@ -762,7 +1052,10 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
               value: _useLocalModel,
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
-              title: const Text('Use a local .litertlm model file instead', style: TextStyle(fontWeight: FontWeight.w800)),
+              title: const Text(
+                'Use a local .litertlm model file instead',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
               subtitle: const Text(
                 'Opens the native file picker. The path is saved inside the encrypted vault only after exact size + SHA-256 verification.',
               ),
@@ -792,7 +1085,8 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     return _shell(
       eyebrow: '3 · Quick guide',
       title: 'Get more out of your private AI',
-      subtitle: 'A short local guide to prompting and the main Naza One tools. Skip it any time.',
+      subtitle:
+          'A short local guide to prompting and the main Naza One tools. Skip it any time.',
       child: SizedBox(
         height: 390,
         child: PageView.builder(
@@ -819,8 +1113,14 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                 );
               }
             },
-            icon: Icon(_guidePage >= pages.length - 1 ? Icons.palette_outlined : Icons.arrow_forward_rounded),
-            label: Text(_guidePage >= pages.length - 1 ? 'Choose theme' : 'Next'),
+            icon: Icon(
+              _guidePage >= pages.length - 1
+                  ? Icons.palette_outlined
+                  : Icons.arrow_forward_rounded,
+            ),
+            label: Text(
+              _guidePage >= pages.length - 1 ? 'Choose theme' : 'Next',
+            ),
           ),
         ],
       ),
@@ -828,59 +1128,76 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   }
 
   List<Widget> _guidePages() => <Widget>[
-        _GuidePage(
-          icon: Icons.psychology_alt_rounded,
-          title: 'Prompt like you are briefing a collaborator',
-          body: 'Say what outcome you want, provide the important context, and specify format or constraints. You can iterate naturally; you do not need special command syntax.',
-          examples: const <String>[
-            '“Explain this error, then give me the smallest safe patch.”',
-            '“Draft a friendly email under 150 words and preserve these three facts.”',
-          ],
-        ),
-        _GuidePage(
-          icon: Icons.chat_bubble_outline_rounded,
-          title: 'Chat + private memory',
-          body: 'Chat runs on the local model. Smart Memory can retain useful context in the encrypted vault and retrieve relevant history as evidence. You can pause or clear memory in Settings.',
-          examples: const <String>['Use History to reopen, search, pin, rename or delete conversations.'],
-        ),
-        _GuidePage(
-          icon: Icons.image_outlined,
-          title: 'Vision',
-          body: 'Attach or capture an image when a visual question matters. Naza bounds and normalizes image input locally before inference. Ask about visible details, structure, text, UI, food, or troubleshooting evidence.',
-          examples: const <String>['Visual appearance is evidence, not proof of hidden properties or microbiological safety.'],
-        ),
-        _GuidePage(
-          icon: Icons.route_outlined,
-          title: 'Road scanner',
-          body: 'The road/safety scanner turns observations you provide into structured risk-support output. It separates observed evidence from inference and avoids pretending software transforms are physical sensors.',
-          examples: const <String>['Use real inspection and emergency guidance when stakes are high.'],
-        ),
-        _GuidePage(
-          icon: Icons.kitchen_outlined,
-          title: 'Fridge + food intelligence',
-          body: 'Food tools can analyze selected fridge or bake images, maintain encrypted food history, compare shelf observations, and help reason about recipes and storage.',
-          examples: const <String>['For doneness or food safety, pair AI guidance with temperature, dates, storage history and direct inspection.'],
-        ),
-        _GuidePage(
-          icon: Icons.shield_outlined,
-          title: 'Local-first security',
-          body: 'User state is encrypted at rest. Model artifacts are integrity-verified. The model is not an authorization authority: privileged security operations remain under deterministic application policy.',
-          examples: const <String>['You can opt into a startup password later from security settings.'],
-        ),
-      ];
+    _GuidePage(
+      icon: Icons.psychology_alt_rounded,
+      title: 'Prompt like you are briefing a collaborator',
+      body:
+          'Say what outcome you want, provide the important context, and specify format or constraints. You can iterate naturally; you do not need special command syntax.',
+      examples: const <String>[
+        '“Explain this error, then give me the smallest safe patch.”',
+        '“Draft a friendly email under 150 words and preserve these three facts.”',
+      ],
+    ),
+    _GuidePage(
+      icon: Icons.chat_bubble_outline_rounded,
+      title: 'Chat + private memory',
+      body:
+          'Chat runs on the local model. Smart Memory can retain useful context in the encrypted vault and retrieve relevant history as evidence. You can pause or clear memory in Settings.',
+      examples: const <String>[
+        'Use History to reopen, search, pin, rename or delete conversations.',
+      ],
+    ),
+    _GuidePage(
+      icon: Icons.image_outlined,
+      title: 'Vision',
+      body:
+          'Attach or capture an image when a visual question matters. Naza bounds and normalizes image input locally before inference. Ask about visible details, structure, text, UI, food, or troubleshooting evidence.',
+      examples: const <String>[
+        'Visual appearance is evidence, not proof of hidden properties or microbiological safety.',
+      ],
+    ),
+    _GuidePage(
+      icon: Icons.route_outlined,
+      title: 'Road scanner',
+      body:
+          'The road/safety scanner turns observations you provide into structured risk-support output. It separates observed evidence from inference and avoids pretending software transforms are physical sensors.',
+      examples: const <String>[
+        'Use real inspection and emergency guidance when stakes are high.',
+      ],
+    ),
+    _GuidePage(
+      icon: Icons.kitchen_outlined,
+      title: 'Fridge + food intelligence',
+      body:
+          'Food tools can analyze selected fridge or bake images, maintain encrypted food history, compare shelf observations, and help reason about recipes and storage.',
+      examples: const <String>[
+        'For doneness or food safety, pair AI guidance with temperature, dates, storage history and direct inspection.',
+      ],
+    ),
+    _GuidePage(
+      icon: Icons.shield_outlined,
+      title: 'Local-first security',
+      body:
+          'User state is encrypted at rest. Model artifacts are integrity-verified. The model is not an authorization authority: privileged security operations remain under deterministic application policy.',
+      examples: const <String>[
+        'You can opt into a startup password later from security settings.',
+      ],
+    ),
+  ];
 
   Widget _themeScreen() {
     return _shell(
       eyebrow: '4 · Theme',
       title: 'Make Naza One yours',
-      subtitle: 'Pick a visual system. Your choice is saved inside the encrypted vault and applied immediately.',
+      subtitle:
+          'Pick a visual system. Your choice is saved inside the encrypted vault and applied immediately.',
       child: LayoutBuilder(
         builder: (context, constraints) {
           final columns = constraints.maxWidth >= 820
               ? 4
               : constraints.maxWidth >= 580
-                  ? 3
-                  : 2;
+              ? 3
+              : 2;
           return GridView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
@@ -902,16 +1219,18 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(20),
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: <Color>[
-                        option.seed.withValues(alpha: option.brightness == Brightness.dark ? 0.30 : 0.18),
-                        option.accent.withValues(alpha: option.brightness == Brightness.dark ? 0.14 : 0.09),
-                      ],
+                    color: Color.alphaBlend(
+                      option.seed.withValues(
+                        alpha: option.brightness == Brightness.dark
+                            ? 0.22
+                            : 0.14,
+                      ),
+                      Theme.of(context).colorScheme.surface,
                     ),
                     border: Border.all(
-                      color: selected ? option.seed : Theme.of(context).colorScheme.outlineVariant,
+                      color: selected
+                          ? option.seed
+                          : Theme.of(context).colorScheme.outlineVariant,
                       width: selected ? 2 : 1,
                     ),
                   ),
@@ -924,13 +1243,28 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                           const SizedBox(width: 5),
                           _themeDot(option.accent),
                           const Spacer(),
-                          if (selected) Icon(Icons.check_circle_rounded, color: option.seed, size: 20),
+                          if (selected)
+                            Icon(
+                              Icons.check_circle_rounded,
+                              color: option.seed,
+                              size: 20,
+                            ),
                         ],
                       ),
                       const Spacer(),
-                      Text(option.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w900)),
+                      Text(
+                        option.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
                       const SizedBox(height: 3),
-                      Text(option.description, maxLines: 2, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall),
+                      Text(
+                        option.description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     ],
                   ),
                 ),
@@ -941,11 +1275,16 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       ),
       footer: Row(
         children: <Widget>[
-          Expanded(child: Text('Selected: ${_theme.label}', style: const TextStyle(fontWeight: FontWeight.w800))),
+          Expanded(
+            child: Text(
+              'Selected: ${_theme.label}',
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
           FilledButton.icon(
             onPressed: _busy ? null : _prepareAndEnterChat,
             icon: const Icon(Icons.rocket_launch_rounded),
-            label: const Text('Load AI & open Chat'),
+            label: const Text('Open Chat'),
           ),
         ],
       ),
@@ -953,53 +1292,49 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   }
 
   Widget _preparingScreen() => _shell(
-        eyebrow: '5 · Ready',
-        title: 'Loading your local AI',
-        subtitle: _status,
-        child: Column(
-          children: <Widget>[
-            const LinearProgressIndicator(),
-            const SizedBox(height: 18),
-            _messageCard(
-              Icons.memory_rounded,
-              'Naza One waits for the model backend to become ready before landing in Chat, so your first message can be sent immediately.',
-              Theme.of(context).colorScheme.primary,
-            ),
-          ],
+    eyebrow: '5 · Ready',
+    title: 'Opening your private workspace',
+    subtitle: _status,
+    child: Column(
+      children: <Widget>[
+        const app.NazaProgressBar(value: 1),
+        const SizedBox(height: 18),
+        _messageCard(
+          Icons.memory_rounded,
+          'Chat opens now. The local model loads on your first message, with its live stage shown beside the pending reply.',
+          _themeData.colorScheme.primary,
         ),
-      );
+      ],
+    ),
+  );
 
   Widget _messageCard(IconData icon, String text, Color color) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          color: color.withValues(alpha: 0.08),
-          border: Border.all(color: color.withValues(alpha: 0.20)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Icon(icon, color: color, size: 20),
-            const SizedBox(width: 10),
-            Expanded(child: Text(text, style: const TextStyle(height: 1.4))),
-          ],
-        ),
-      );
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(18),
+      color: color.withValues(alpha: 0.08),
+      border: Border.all(color: color.withValues(alpha: 0.20)),
+    ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Icon(icon, color: color, size: 20),
+        const SizedBox(width: 10),
+        Expanded(child: Text(text, style: const TextStyle(height: 1.4))),
+      ],
+    ),
+  );
 
   Widget _metric(String label, String value) => Chip(
-        avatar: const Icon(Icons.bolt_rounded, size: 15),
-        label: Text('$label · $value'),
-      );
+    avatar: const Icon(Icons.bolt_rounded, size: 15),
+    label: Text('$label · $value'),
+  );
 
   Widget _themeDot(Color color) => Container(
-        width: 15,
-        height: 15,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          boxShadow: <BoxShadow>[BoxShadow(color: color.withValues(alpha: 0.35), blurRadius: 7)],
-        ),
-      );
+    width: 15,
+    height: 15,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
 
   static String _formatBytes(int bytes) {
     const units = <String>['B', 'KiB', 'MiB', 'GiB'];
@@ -1051,9 +1386,17 @@ final class _GuidePage extends StatelessWidget {
               child: Icon(icon, color: scheme.primary, size: 28),
             ),
             const SizedBox(height: 18),
-            Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)),
+            Text(
+              title,
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+            ),
             const SizedBox(height: 10),
-            Text(body, style: TextStyle(color: scheme.onSurfaceVariant, height: 1.5)),
+            Text(
+              body,
+              style: TextStyle(color: scheme.onSurfaceVariant, height: 1.5),
+            ),
             const SizedBox(height: 14),
             for (final example in examples)
               Padding(
@@ -1061,9 +1404,15 @@ final class _GuidePage extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Icon(Icons.auto_awesome_rounded, color: scheme.secondary, size: 16),
+                    Icon(
+                      Icons.auto_awesome_rounded,
+                      color: scheme.secondary,
+                      size: 16,
+                    ),
                     const SizedBox(width: 8),
-                    Expanded(child: Text(example, style: const TextStyle(height: 1.4))),
+                    Expanded(
+                      child: Text(example, style: const TextStyle(height: 1.4)),
+                    ),
                   ],
                 ),
               ),
@@ -1081,41 +1430,17 @@ final class _BootBackdrop extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = theme.brightness == Brightness.dark;
+    final base = dark ? const Color(0xFF020504) : const Color(0xFFF8FAF9);
     return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: RadialGradient(
-          center: const Alignment(-0.65, -0.72),
-          radius: 1.5,
-          colors: <Color>[
-            theme.seed.withValues(alpha: dark ? 0.18 : 0.09),
-            theme.accent.withValues(alpha: dark ? 0.07 : 0.04),
-            dark ? const Color(0xFF020504) : const Color(0xFFF8FAF9),
-          ],
+        color: Color.alphaBlend(
+          theme.seed.withValues(alpha: dark ? 0.10 : 0.05),
+          base,
         ),
       ),
-      child: CustomPaint(painter: _BootGridPainter(color: theme.seed)),
+      // Keep the first frame a single opaque fill. The steady-state shell
+      // supplies its own lightweight background after boot.
+      child: const SizedBox.expand(),
     );
   }
-}
-
-final class _BootGridPainter extends CustomPainter {
-  const _BootGridPainter({required this.color});
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color.withValues(alpha: 0.055)
-      ..strokeWidth = 1;
-    const step = 72.0;
-    for (var x = 0.0; x <= size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (var y = 0.0; y <= size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _BootGridPainter oldDelegate) => oldDelegate.color != color;
 }

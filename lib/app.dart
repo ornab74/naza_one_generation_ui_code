@@ -21,11 +21,24 @@ import 'food/models.dart';
 import 'food/photo_picker.dart';
 import 'food/prompts.dart';
 import 'food/repository.dart';
+import 'onboarding/boot_theme_catalog.dart';
+import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
 import 'security/post_quantum_recovery.dart';
 import 'security/secure_database.dart';
 
+bool _environmentFlag(String name) {
+  final value = Platform.environment[name]?.trim().toLowerCase();
+  return value == '1' || value == 'true' || value == 'yes';
+}
+
 Future<void> main() async {
+  // This warm-up is specific to the explicit Skia compatibility renderer.
+  // Impeller compiles its own pipelines and synchronous Skia warm-up only
+  // postpones the first visible raster frame there.
+  if (_environmentFlag('NAZA_FLUTTER_SKIA')) {
+    PaintingBinding.shaderWarmUp ??= const NazaShaderWarmUp();
+  }
   WidgetsFlutterBinding.ensureInitialized();
 
   if (Platform.isAndroid || Platform.isIOS) {
@@ -51,20 +64,243 @@ Future<void> main() async {
 final class NazaPalette {
   const NazaPalette._();
 
-  static const Color ink = Color(0xFF06110D);
-  static const Color inkDeep = Color(0xFF020806);
-  static const Color panel = Color(0xCC071611);
-  static const Color panelSoft = Color(0x99101E19);
-  static const Color mint = Color(0xFF8DFFC4);
-  static const Color mintSoft = Color(0xFFC7FFE3);
-  static const Color mintDim = Color(0xFF59EFA9);
-  static const Color moss = Color(0xFF208563);
-  static const Color userBubble = Color(0xFF073A20);
-  static const Color text = Color(0xFFF2FFF7);
-  static const Color subtext = Color(0xFFA9CDBB);
-  static const Color muted = Color(0xFF739080);
-  static const Color border = Color(0x22FFFFFF);
-  static const Color danger = Color(0xFFFF8B70);
+  static const bool reduceRasterEffects = true;
+
+  static NazaBootTheme get _theme =>
+      NazaBootThemeCatalog.byId(NazaThemeStore.selectedId.value);
+
+  static Color get _base => _theme.brightness == Brightness.light
+      ? const Color(0xFFFFFBF5)
+      : const Color(0xFF020806);
+
+  static Color get _inkText => _theme.brightness == Brightness.light
+      ? const Color(0xFF211B1C)
+      : const Color(0xFFF2FFF7);
+
+  static Color _tint(double amount, [Color? base]) {
+    return Color.alphaBlend(
+      _theme.seed.withValues(alpha: amount),
+      base ?? _base,
+    );
+  }
+
+  static Color get ink => _tint(0.16);
+  static Color get inkDeep => _tint(0.08);
+  static Color get panel => _tint(
+    _theme.brightness == Brightness.light ? 0.08 : 0.22,
+  ).withValues(alpha: _theme.brightness == Brightness.light ? 0.96 : 0.88);
+  static Color get panelSoft => _tint(
+    _theme.brightness == Brightness.light ? 0.05 : 0.14,
+  ).withValues(alpha: _theme.brightness == Brightness.light ? 0.88 : 0.68);
+  static Color get shell => _tint(
+    _theme.brightness == Brightness.light ? 0.07 : 0.18,
+  ).withValues(alpha: _theme.brightness == Brightness.light ? 0.98 : 0.92);
+  static Color get shellSoft => _tint(
+    _theme.brightness == Brightness.light ? 0.04 : 0.11,
+  ).withValues(alpha: _theme.brightness == Brightness.light ? 0.92 : 0.74);
+  static Color get selection => _theme.seed.withValues(
+    alpha: _theme.brightness == Brightness.light ? 0.18 : 0.22,
+  );
+  static Color get borderStrong => _theme.seed.withValues(
+    alpha: _theme.brightness == Brightness.light ? 0.52 : 0.58,
+  );
+  static Color get mint => _theme.seed;
+  static Color get mintSoft => _theme.brightness == Brightness.light
+      ? Color.alphaBlend(_theme.seed.withValues(alpha: 0.76), Colors.white)
+      : Color.alphaBlend(_theme.seed.withValues(alpha: 0.58), Colors.white);
+  static Color get mintDim => _theme.accent;
+  static Color get success => mintSoft;
+  static Color get warning => mintDim;
+  static Color get info => mintDim;
+  static Color get danger => _theme.brightness == Brightness.light
+      ? Color.alphaBlend(_theme.seed.withValues(alpha: 0.68), Colors.white)
+      : Color.alphaBlend(_theme.seed.withValues(alpha: 0.72), Colors.white);
+  static Color get onMint =>
+      ThemeData.estimateBrightnessForColor(mintDim) == Brightness.dark
+      ? Colors.white
+      : const Color(0xFF111111);
+  static Color get moss => _tint(0.48);
+  static Color get userBubble =>
+      _tint(_theme.brightness == Brightness.light ? 0.18 : 0.42);
+  static Color get text => _inkText;
+  static Color get subtext => _theme.brightness == Brightness.light
+      ? Color.alphaBlend(
+          _theme.seed.withValues(alpha: 0.42),
+          const Color(0xFF51494B),
+        )
+      : Color.alphaBlend(_theme.seed.withValues(alpha: 0.36), Colors.white);
+  static Color get muted => _theme.brightness == Brightness.light
+      ? const Color(0xFF756A6D)
+      : Color.alphaBlend(_theme.seed.withValues(alpha: 0.25), Colors.white);
+  static Color get border => _theme.seed.withValues(
+    alpha: _theme.brightness == Brightness.light ? 0.24 : 0.18,
+  );
+}
+
+final class NazaProgressBar extends StatelessWidget {
+  final double? value;
+  final double minHeight;
+  final Color? color;
+  final Color? backgroundColor;
+
+  const NazaProgressBar({
+    super.key,
+    this.value,
+    this.minHeight = 6,
+    this.color,
+    this.backgroundColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fill = color ?? scheme.primary;
+    final track =
+        backgroundColor ??
+        Color.alphaBlend(
+          scheme.onSurface.withValues(alpha: 0.10),
+          scheme.surface,
+        );
+    final progress = value;
+    if (progress == null) {
+      // Unknown native work has no honest percentage. Keep this static so a
+      // multi-minute model load does not schedule perpetual raster frames;
+      // phase text and elapsed time provide liveness instead.
+      return RepaintBoundary(
+        child: _buildBar(
+          fraction: 0.34,
+          alignment: Alignment.center,
+          fill: fill,
+          track: track,
+        ),
+      );
+    }
+    return _buildBar(
+      fraction: progress.clamp(0.0, 1.0).toDouble(),
+      fill: fill,
+      track: track,
+    );
+  }
+
+  Widget _buildBar({
+    required double fraction,
+    required Color fill,
+    required Color track,
+    Alignment alignment = Alignment.centerLeft,
+  }) {
+    return SizedBox(
+      height: minHeight,
+      child: ColoredBox(
+        color: track,
+        child: Align(
+          alignment: alignment,
+          child: FractionallySizedBox(
+            widthFactor: fraction,
+            heightFactor: 1,
+            child: ColoredBox(color: fill),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+final class NazaThemeStore {
+  NazaThemeStore._();
+
+  static const String namespace = 'naza-first-run-v3';
+  static const String key = 'theme';
+  static final ValueNotifier<String> selectedId = ValueNotifier<String>(
+    NazaBootThemeCatalog.defaultId,
+  );
+
+  static bool _loaded = false;
+  static Future<void>? _loadFuture;
+
+  static Future<void> load() {
+    if (_loaded) return Future<void>.value();
+    _loadFuture ??= _loadInner();
+    return _loadFuture!;
+  }
+
+  static Future<void> _loadInner() async {
+    try {
+      final database = NazaSecureDatabase.instance;
+      if (!database.isUnlocked) return;
+      final raw = await database.readJson(namespace, key);
+      final savedId = raw is Map ? raw['id']?.toString() : null;
+      selectedId.value = NazaBootThemeCatalog.byId(savedId).id;
+      _loaded = true;
+    } catch (_) {
+    } finally {
+      _loadFuture = null;
+    }
+  }
+
+  static Future<void> select(String id) async {
+    final theme = NazaBootThemeCatalog.byId(id);
+
+    selectedId.value = theme.id;
+    _loaded = true;
+    final database = NazaSecureDatabase.instance;
+    if (database.isUnlocked) {
+      try {
+        await database.writeJson(namespace, key, <String, Object?>{
+          'schema': 'naza-theme-choice-v1',
+          'id': theme.id,
+          'savedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+      } catch (_) {}
+    }
+  }
+}
+
+final class NazaSettingsModeStore {
+  NazaSettingsModeStore._();
+
+  static const String namespace = 'settings';
+  static const String key = 'ui-mode';
+  static final ValueNotifier<bool> advanced = ValueNotifier<bool>(false);
+  static bool _loaded = false;
+  static Future<void>? _loadFuture;
+
+  static Future<void> load() {
+    if (_loaded) return Future<void>.value();
+    _loadFuture ??= _loadInner();
+    return _loadFuture!;
+  }
+
+  static Future<void> _loadInner() async {
+    try {
+      final database = NazaSecureDatabase.instance;
+      if (!database.isUnlocked) return;
+      final raw = await database.readJson(namespace, key);
+      advanced.value = raw is Map && raw['advanced'] == true;
+      _loaded = true;
+    } catch (_) {
+      // Simple settings remain the safe default when the preference is absent
+      // or malformed; this preference must never delay model startup.
+    } finally {
+      _loadFuture = null;
+    }
+  }
+
+  static Future<void> setAdvanced(bool value) async {
+    advanced.value = value;
+    _loaded = true;
+    final database = NazaSecureDatabase.instance;
+    if (!database.isUnlocked) return;
+    try {
+      await database.writeJson(namespace, key, <String, Object?>{
+        'format': 'naza-settings-mode-v1',
+        'advanced': value,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+    } catch (_) {
+      // Keep the live choice. The encrypted preference can be retried on a
+      // later settings change without blocking normal app use.
+    }
+  }
 }
 
 final class NazaFonts {
@@ -111,23 +347,21 @@ final class NazaAppConfig {
   static const String continuationDoneMarker = '<NAZA_CONTINUATION_DONE>';
   static const int streamPaintThrottleMs = 360;
   static const int telemetryThrottleMs = 500;
+  // Gemma 4 CPU prefill can legitimately take well over 30 seconds on a cold
+  // device. Treat first-token silence like the normal idle budget; an early
+  // cancel/reopen cycle is both misleading and unsafe for the native engine.
+  static const int generationFirstTokenTimeoutSeconds = 90;
   static const int generationIdleTimeoutSeconds = 90;
   static const int generationTotalTimeoutSeconds = 300;
   static const int continuationIdleTimeoutSeconds = 45;
-  static const int continuationChatOpenTimeoutSeconds = 12;
   static const int continuationPromptSubmitTimeoutSeconds = 12;
-  // One initial response plus the default three continuation chunks can share
-  // one native conversation. Context-window errors still trigger a bounded
-  // fresh-session retry when a longer custom continuation run needs it.
+
   static const int continuationWarmSessionTurns = 4;
   static const int chatRecoveryTimeoutSeconds = 8;
   static const int runtimeInitTimeoutSeconds = 30;
   static const int modelInstallTimeoutSeconds = 300;
-  // Native LiteRT-LM engine creation is not cancellable. Keep this above the
-  // measured cold CPU initialization time so a UI timeout does not encourage
-  // a second load while the first one is still allocating the model.
-  static const int modelLoadTimeoutSeconds = 150;
-  static const int chatOpenTimeoutSeconds = 20;
+
+  static const int responseReadinessSlowStatusSeconds = 120;
   static const int chatAddQueryTimeoutSeconds = 30;
   static const int memoryAllocationTimeoutSeconds = 4;
   static const String vaultAad = 'naza-one-vault-v2-generation-ui';
@@ -4470,8 +4704,10 @@ final class NazaSecureModelStore {
   }
 
   static Future<NazaModelStoreStatus> _refreshInner() async {
-    final target = await _targetFile();
+    File? resolvedTarget;
     try {
+      final target = await _targetFile();
+      resolvedTarget = target;
       status.value = status.value.copyWith(
         busy: true,
         progress: 1,
@@ -4565,7 +4801,7 @@ final class NazaSecureModelStore {
         busy: false,
         progress: 0,
         phase: 'model status check failed',
-        cachePath: target.path,
+        cachePath: resolvedTarget?.path ?? '',
         localPath: null,
         error: error.toString(),
       );
@@ -9119,10 +9355,22 @@ final class NazaPromptBudget {
       return prompt;
     }
     final systemTokens = estimateTokens(systemInstruction) + 8;
-    final promptTokenBudget = math.max(
-      64,
-      safeInputTokenLimit - systemTokens - math.max(0, reservedTokens),
-    );
+    final promptTokenBudget = math
+        .max(
+          64,
+          safeInputTokenLimit - systemTokens - math.max(0, reservedTokens),
+        )
+        .toInt();
+    final pinnedTask = _extractCurrentTask(prompt);
+    if (pinnedTask != null) {
+      return _fitAroundPinnedTask(
+        prompt: prompt,
+        pinnedTask: pinnedTask,
+        promptTokenBudget: promptTokenBudget,
+        marker: marker,
+        headFraction: headFraction,
+      );
+    }
     final runes = prompt.runes.toList(growable: false);
     if (runes.isEmpty) return prompt;
 
@@ -9142,6 +9390,111 @@ final class NazaPromptBudget {
         marker: marker,
         headFraction: headFraction,
       );
+      if (estimateTokens(candidate) <= promptTokenBudget) {
+        best = candidate;
+        low = keep + 1;
+      } else {
+        high = keep - 1;
+      }
+    }
+    return best;
+  }
+
+  static ({int start, int end, String text})? _extractCurrentTask(
+    String prompt,
+  ) {
+    const startMarker = '[current_task]';
+    const endMarker = '[/current_task]';
+    final start = prompt.lastIndexOf(startMarker);
+    if (start < 0) return null;
+    final closing = prompt.indexOf(endMarker, start + startMarker.length);
+    if (closing < 0) return null;
+    final end = closing + endMarker.length;
+    return (start: start, end: end, text: prompt.substring(start, end));
+  }
+
+  static String _fitAroundPinnedTask({
+    required String prompt,
+    required ({int start, int end, String text}) pinnedTask,
+    required int promptTokenBudget,
+    required String marker,
+    required double headFraction,
+  }) {
+    final before = prompt.substring(0, pinnedTask.start).trimRight();
+    final after = prompt.substring(pinnedTask.end).trimLeft();
+    final supporting = [
+      before,
+      after,
+    ].where((part) => part.isNotEmpty).join('\n');
+    final supportingRunes = supporting.runes.toList(growable: false);
+
+    // The current user task is the one non-negotiable prompt region. Character
+    // limits are not token limits (CJK, emoji, and punctuation-heavy code can
+    // cost multiple estimated tokens per rune), so compact the task itself only
+    // when it cannot fit even with all supplemental context removed.
+    final fittedTask = _fitPinnedTaskToBudget(
+      pinnedTask.text,
+      promptTokenBudget: promptTokenBudget,
+    );
+    var best = fittedTask;
+    if (supportingRunes.isEmpty) {
+      return best;
+    }
+
+    var low = 0;
+    var high = supportingRunes.length;
+    while (low <= high) {
+      final keep = (low + high) ~/ 2;
+      final compacted = keep >= supportingRunes.length
+          ? supporting
+          : _headTail(
+              supportingRunes,
+              keepRunes: keep,
+              marker: marker,
+              headFraction: headFraction,
+            );
+      final candidate = compacted.trim().isEmpty
+          ? fittedTask
+          : '${compacted.trim()}\n$fittedTask';
+      if (estimateTokens(candidate) <= promptTokenBudget) {
+        best = candidate;
+        low = keep + 1;
+      } else {
+        high = keep - 1;
+      }
+    }
+    return best;
+  }
+
+  static String _fitPinnedTaskToBudget(
+    String task, {
+    required int promptTokenBudget,
+  }) {
+    if (estimateTokens(task) <= promptTokenBudget) return task;
+    const startMarker = '[current_task]';
+    const endMarker = '[/current_task]';
+    final start = task.indexOf(startMarker);
+    final end = task.lastIndexOf(endMarker);
+    if (start < 0 || end <= start) return task;
+
+    final innerStart = start + startMarker.length;
+    final inner = task.substring(innerStart, end).trim();
+    final runes = inner.runes.toList(growable: false);
+    const marker = '\n[current task middle compacted for model window]\n';
+    String wrap(String value) => '$startMarker\n$value\n$endMarker';
+
+    var low = 0;
+    var high = runes.length;
+    var best = wrap(marker.trim());
+    while (low <= high) {
+      final keep = (low + high) ~/ 2;
+      final compacted = _headTail(
+        runes,
+        keepRunes: keep,
+        marker: marker,
+        headFraction: 0.55,
+      );
+      final candidate = wrap(compacted.trim());
       if (estimateTokens(candidate) <= promptTokenBudget) {
         best = candidate;
         low = keep + 1;
@@ -9382,9 +9735,6 @@ exact_tail_end
       return candidate;
     }
 
-    // Preserve the exact seam before preserving verbose planning metadata. A
-    // continuation can recover from a compact contract, but not from a cursor
-    // whose opening tokens were discarded.
     final minimalPriority = compactText(
       priority,
       maxChars: 320,
@@ -10022,18 +10372,14 @@ final class NazaBackendUnavailable implements Exception {
   String toString() => message;
 }
 
-final class NazaModelLoadStillRunning implements Exception {
-  final int timeoutSeconds;
+final class NazaGenerationDrainPending implements Exception {
+  final String partialText;
 
-  const NazaModelLoadStillRunning(this.timeoutSeconds);
+  const NazaGenerationDrainPending({this.partialText = ''});
 
   @override
-  String toString() {
-    return 'LiteRT-LM engine initialization is still running after '
-        '${timeoutSeconds}s. Native initialization cannot be cancelled, so '
-        'Naza One kept the original load instead of starting over. Wait for '
-        'the runtime status to report ready, then send the message again.';
-  }
+  String toString() =>
+      'The previous native response is still stopping safely. Wait a moment before retrying.';
 }
 
 final class NazaLocalGemma {
@@ -10054,6 +10400,7 @@ final class NazaLocalGemma {
 
   dynamic _model;
   dynamic _chat;
+  String? _chatSystemInstruction;
   dynamic _continuationChat;
   int _chatSessionTurns = 0;
   int _continuationSessionTurns = 0;
@@ -10069,16 +10416,25 @@ final class NazaLocalGemma {
   int _modelLifecycleSerial = 0;
   bool _modelSupportsVision = false;
   bool _requestVisionOnLoad = false;
-  bool _nativeModelLoadTimedOut = false;
   bool _textGpuUnavailableForRuntime = false;
   bool _visionGpuUnavailableForRuntime = false;
   int _generationSerial = 0;
   int _cancelledGeneration = -1;
   int _cancellationSignalGeneration = -1;
   Completer<void>? _cancellationSignal;
-  String? _warmHistoryTurnId;
   NazaGenerationOrigin? _activeGenerationOrigin;
   bool _runtimeBootstrapped = false;
+  bool _sendInFlight = false;
+  bool _modelMutationInFlight = false;
+  Completer<void>? _activeTurnSettled;
+  Completer<void>? _activeTurnCancellation;
+  Future<void>? _retainedReadinessFuture;
+  Future<void>? _nativeGenerationDrainFuture;
+  Future<dynamic>? _nativeChatOpenFuture;
+  String? _nativeChatOpenSystemInstruction;
+  bool _chatRequiresRecovery = false;
+  bool _nativeGenerationDrainFailed = false;
+  bool _readinessContinuesInBackground = false;
 
   static final RegExp _textResponseRegExp = RegExp(
     r'^TextResponse\("([\s\S]*)"\)$',
@@ -10103,38 +10459,50 @@ final class NazaLocalGemma {
   Future<void> setBackendPreference(
     NazaModelBackendPreference preference,
   ) async {
-    await prepareBackendPreference();
-    if (backendPreference.value == preference) return;
-
-    if (snapshot.value.busy || _nativeModelLoadFuture != null) {
+    if (_sendInFlight ||
+        _modelMutationInFlight ||
+        snapshot.value.busy ||
+        _retainedReadinessFuture != null ||
+        _nativeModelLoadFuture != null ||
+        _nativeChatOpenFuture != null ||
+        _nativeGenerationDrainFuture != null ||
+        _nativeGenerationDrainFailed) {
       snapshot.value = snapshot.value.copyWith(
-        phase: 'wait for current native load before changing backend',
+        phase: 'wait for the current model operation before changing backend',
       );
       return;
     }
 
-    final hadLoadedModel = _model != null || _chat != null;
-    _textGpuUnavailableForRuntime = false;
-    _visionGpuUnavailableForRuntime = false;
-    backendPreference.value = preference;
-    final saved = await _persistBackendPreference();
+    _modelMutationInFlight = true;
+    try {
+      await prepareBackendPreference();
+      if (backendPreference.value == preference) return;
 
-    if (hadLoadedModel) {
-      await close(phase: 'backend changed; model reloads on next send');
+      final hadLoadedModel = _model != null || _chat != null;
+      _textGpuUnavailableForRuntime = false;
+      _visionGpuUnavailableForRuntime = false;
+      backendPreference.value = preference;
+      final saved = await _persistBackendPreference();
+
+      if (hadLoadedModel) {
+        await close(phase: 'backend changed; model reloads on next send');
+      }
+
+      snapshot.value = snapshot.value.copyWith(
+        usingGpu: preference == NazaModelBackendPreference.cpuOnly
+            ? false
+            : snapshot.value.usingGpu,
+        phase: saved
+            ? (hadLoadedModel
+                  ? 'backend set to ${preference.shortLabel}; reload on next send'
+                  : 'backend set to ${preference.shortLabel}')
+            : 'backend set in memory; preference save failed',
+        clearError: saved,
+      );
+      unawaited(_persistRuntimeSnapshot());
+    } finally {
+      _modelMutationInFlight = false;
     }
-
-    snapshot.value = snapshot.value.copyWith(
-      usingGpu: preference == NazaModelBackendPreference.cpuOnly
-          ? false
-          : snapshot.value.usingGpu,
-      phase: saved
-          ? (hadLoadedModel
-                ? 'backend set to ${preference.shortLabel}; reload on next send'
-                : 'backend set to ${preference.shortLabel}')
-          : 'backend set in memory; preference save failed',
-      clearError: saved,
-    );
-    unawaited(_persistRuntimeSnapshot());
   }
 
   Future<void> _loadBackendPreference() async {
@@ -10234,7 +10602,10 @@ final class NazaLocalGemma {
     }
   }
 
-  Future<void> ensureReady({bool requireVision = false}) async {
+  Future<void> ensureReady({
+    bool requireVision = false,
+    String systemInstruction = NazaAppConfig.systemInstruction,
+  }) async {
     if (requireVision && _model != null && !_modelSupportsVision) {
       if (snapshot.value.busy || _nativeModelLoadFuture != null) {
         throw StateError(
@@ -10244,13 +10615,15 @@ final class NazaLocalGemma {
       await close(phase: 'reloading Gemma with vision enabled');
     }
     if (requireVision) _requestVisionOnLoad = true;
-    await _awaitReadyOperation();
+    await _awaitReadyOperation(systemInstruction: systemInstruction);
     if (requireVision && !_modelSupportsVision) {
       final activeUpgrade = _visionUpgradeFuture;
       if (activeUpgrade != null) {
         await activeUpgrade;
       } else {
-        final operation = _upgradeModelForVision();
+        final operation = _upgradeModelForVision(
+          systemInstruction: systemInstruction,
+        );
         _visionUpgradeFuture = operation;
         try {
           await operation;
@@ -10266,7 +10639,9 @@ final class NazaLocalGemma {
     }
   }
 
-  Future<void> _upgradeModelForVision() async {
+  Future<void> _upgradeModelForVision({
+    required String systemInstruction,
+  }) async {
     if (_modelSupportsVision) return;
     if (snapshot.value.busy || _nativeModelLoadFuture != null) {
       throw StateError(
@@ -10276,28 +10651,29 @@ final class NazaLocalGemma {
 
     await close(phase: 'reloading Gemma with vision enabled');
     _requestVisionOnLoad = true;
-    await _awaitReadyOperation();
+    await _awaitReadyOperation(systemInstruction: systemInstruction);
   }
 
-  Future<void> _awaitReadyOperation() async {
+  Future<void> _awaitReadyOperation({required String systemInstruction}) async {
     final active = _loadingFuture;
     if (active != null) {
       await active;
       return;
     }
 
-    final operation = _ensureReadyInner();
+    final operation = _ensureReadyInner(systemInstruction: systemInstruction);
     _loadingFuture = operation;
     try {
       await operation;
     } finally {
       if (identical(_loadingFuture, operation)) {
         _loadingFuture = null;
+        _readinessContinuesInBackground = false;
       }
     }
   }
 
-  Future<void> _ensureReadyInner() async {
+  Future<void> _ensureReadyInner({required String systemInstruction}) async {
     try {
       if (_chat != null && _model != null) return;
       final pendingBackend = _nativeModelLoadBackend;
@@ -10309,16 +10685,21 @@ final class NazaLocalGemma {
           phase: 'finishing the existing native model load',
           clearError: true,
         );
-        _model = await _getActiveModelWithTimeout(
+        _model = await _getActiveModelSafely(
           pendingBackend,
           supportVision: pendingVision ?? false,
           requireGpu: pendingRequiresGpu ?? false,
         );
         _modelSupportsVision = pendingVision ?? false;
-        _chat = await _createChatWithTimeout(
-          systemInstruction: NazaAppConfig.systemInstruction,
+        snapshot.value = snapshot.value.copyWith(
+          busy: true,
+          phase: 'opening the local response context',
+        );
+        _chat = await _createChatSafely(
+          systemInstruction: systemInstruction,
           maxOutputTokens: NazaAppConfig.outputTokens,
         );
+        _chatSystemInstruction = systemInstruction;
         _chatSessionTurns = 0;
         snapshot.value = snapshot.value.copyWith(
           modelLoaded: true,
@@ -10331,18 +10712,37 @@ final class NazaLocalGemma {
         return;
       }
       if (_model != null) {
-        _chat = await _createChatWithTimeout(
-          systemInstruction: NazaAppConfig.systemInstruction,
-          maxOutputTokens: NazaAppConfig.outputTokens,
-        );
-        _chatSessionTurns = 0;
-        snapshot.value = snapshot.value.copyWith(
-          modelLoaded: true,
-          busy: false,
-          phase: 'ready',
-          clearError: true,
-        );
-        return;
+        try {
+          snapshot.value = snapshot.value.copyWith(
+            busy: true,
+            phase: 'opening the local response context',
+          );
+          _chat = await _createChatSafely(
+            systemInstruction: systemInstruction,
+            maxOutputTokens: NazaAppConfig.outputTokens,
+          );
+          _chatSystemInstruction = systemInstruction;
+          _chatSessionTurns = 0;
+          snapshot.value = snapshot.value.copyWith(
+            modelLoaded: true,
+            busy: false,
+            phase: 'ready',
+            clearError: true,
+          );
+          return;
+        } catch (error) {
+          if (!_isClosedModelError(error)) rethrow;
+          // The native handle can be closed by the platform while its Dart
+          // reference remains non-null. Retire that stale handle and run the
+          // normal verified load path again instead of returning a permanent
+          // "Model is closed" error on every subsequent prompt.
+          snapshot.value = snapshot.value.copyWith(
+            busy: true,
+            phase: 'reopening the closed local model',
+            error: error.toString(),
+          );
+          await close(phase: 'reopening the closed local model');
+        }
       }
       snapshot.value = snapshot.value.copyWith(
         busy: true,
@@ -10383,12 +10783,10 @@ final class NazaLocalGemma {
           supportVision: loadVision,
         );
       } catch (error) {
-        // Future.timeout cannot cancel a native LiteRT load. Retrying or
-        // switching backend while that operation may still finish can create
-        // overlapping native sessions and crash Android. Let the user retry
-        // only after the original operation has settled.
+        // Never repair/retry while another native operation might still own
+        // the model lifecycle. The retained load itself has settled before
+        // ordinary engine errors reach this branch.
         if (error is TimeoutException ||
-            error is NazaModelLoadStillRunning ||
             error is NazaModelLoadSuperseded ||
             error is NazaBackendUnavailable) {
           rethrow;
@@ -10407,10 +10805,16 @@ final class NazaLocalGemma {
       _modelSupportsVision = loadVision;
       _requestVisionOnLoad = false;
 
-      _chat = await _createChatWithTimeout(
-        systemInstruction: NazaAppConfig.systemInstruction,
+      snapshot.value = snapshot.value.copyWith(
+        busy: true,
+        modelLoaded: true,
+        phase: 'opening the local response context',
+      );
+      _chat = await _createChatSafely(
+        systemInstruction: systemInstruction,
         maxOutputTokens: NazaAppConfig.outputTokens,
       );
+      _chatSystemInstruction = systemInstruction;
       _chatSessionTurns = 0;
       snapshot.value = snapshot.value.copyWith(
         modelLoaded: true,
@@ -10421,30 +10825,121 @@ final class NazaLocalGemma {
 
       unawaited(_persistRuntimeSnapshot());
     } catch (error) {
-      final stillInitializing = error is NazaModelLoadStillRunning;
-      final completedAfterTimeout = stillInitializing && _model != null;
       snapshot.value = snapshot.value.copyWith(
-        busy: stillInitializing && !completedAfterTimeout,
+        busy: false,
         modelLoaded: _model != null,
-        phase: completedAfterTimeout
-            ? 'model initialized; ready for the next message'
-            : stillInitializing
-            ? 'model initialization continues in background'
-            : 'local model failed',
-        error: completedAfterTimeout
-            ? null
-            : stillInitializing
-            ? error.toString()
-            : 'Could not load ${NazaAppConfig.modelFileName}. '
-                  '${_modelSetupHint(error)} Raw error: $error',
-        clearError: completedAfterTimeout,
+        phase: 'local model failed',
+        error:
+            'Could not load ${NazaAppConfig.modelFileName}. '
+            '${_modelSetupHint(error)} Raw error: $error',
       );
       unawaited(_persistRuntimeSnapshot());
       rethrow;
     }
   }
 
+  /// Serializes access to LiteRT's single native conversation.
+  ///
+  /// UI-level guards are useful for feedback, but they are not a sufficient
+  /// safety boundary: callers can reach this service from chat, scanners, and
+  /// lifecycle recovery. Rejecting an overlapping turn here prevents two
+  /// streams from staging into or tearing down the same native session.
   Future<NazaResponse> send(
+    String userText, {
+    void Function(String partialText)? onPartial,
+    String? historyUserText,
+    NazaVisionImage? visionImage,
+    bool useMemory = true,
+    bool persistTurn = true,
+    int? maxContinuationsOverride,
+    NazaGenerationOrigin origin = NazaGenerationOrigin.chat,
+    bool scannerMode = false,
+    String? routeOverride,
+    String? historyThreadId,
+    String? historyTurnId,
+    String threadContext = '',
+    String? systemInstructionOverride,
+  }) async {
+    if (userText.trim().isEmpty) {
+      return NazaResponse(
+        text: 'Send a message first.',
+        score: 0,
+        route: 'empty',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+    if (_readinessContinuesInBackground &&
+        (_retainedReadinessFuture != null ||
+            _loadingFuture != null ||
+            _nativeModelLoadFuture != null ||
+            _nativeChatOpenFuture != null)) {
+      return NazaResponse(
+        text:
+            'The original local engine/context initialization is still '
+            'finishing safely in the background. Wait for the status to say '
+            'ready, then send this message again.',
+        score: 0,
+        route: 'model-warming',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+    if (_nativeGenerationDrainFuture != null || _nativeGenerationDrainFailed) {
+      return NazaResponse(
+        text: const NazaGenerationDrainPending().toString(),
+        score: 0,
+        route: 'model-stopping',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+    if (_sendInFlight || _modelMutationInFlight) {
+      return NazaResponse(
+        text: 'Another local model response is already in progress.',
+        score: 0,
+        route: 'model-busy',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+
+    final settled = Completer<void>();
+    final turnCancellation = Completer<void>();
+    _activeTurnSettled = settled;
+    _activeTurnCancellation = turnCancellation;
+    _activeGenerationOrigin = origin;
+    _sendInFlight = true;
+    try {
+      return await _sendTurn(
+        userText,
+        onPartial: onPartial,
+        historyUserText: historyUserText,
+        visionImage: visionImage,
+        useMemory: useMemory,
+        persistTurn: persistTurn,
+        maxContinuationsOverride: maxContinuationsOverride,
+        origin: origin,
+        scannerMode: scannerMode,
+        routeOverride: routeOverride,
+        historyThreadId: historyThreadId,
+        historyTurnId: historyTurnId,
+        threadContext: threadContext,
+        systemInstructionOverride: systemInstructionOverride,
+      );
+    } finally {
+      _sendInFlight = false;
+      if (!settled.isCompleted) settled.complete();
+      if (identical(_activeTurnSettled, settled)) {
+        _activeTurnSettled = null;
+      }
+      if (identical(_activeTurnCancellation, turnCancellation)) {
+        _activeTurnCancellation = null;
+      }
+    }
+  }
+
+  Future<NazaResponse> _sendTurn(
     String userText, {
     void Function(String partialText)? onPartial,
     String? historyUserText,
@@ -10470,12 +10965,17 @@ final class NazaLocalGemma {
         createdAt: DateTime.now(),
       );
     }
-
     final route = NazaQuantumRouter.route(trimmed);
     final outputRoute = routeOverride?.trim().isNotEmpty == true
         ? routeOverride!.trim()
         : route.label;
     final actionProfile = NazaActionSelector.select(trimmed, route);
+    final requestedModeInstruction = systemInstructionOverride?.trim();
+    final turnSystemInstruction = requestedModeInstruction?.isNotEmpty == true
+        ? requestedModeInstruction!
+        : scannerMode
+        ? NazaAppConfig.scannerSystemInstruction
+        : NazaAppConfig.systemInstruction;
     if (visionImage != null &&
         (visionImage.bytes.isEmpty ||
             visionImage.bytes.length > NazaAppConfig.visionMaxImageBytes)) {
@@ -10507,9 +11007,106 @@ final class NazaLocalGemma {
       actionProfile: actionProfile,
     );
 
-    final chatWasMissingBeforeReady = _chat == null;
+    NazaResponse cancelledBeforeGeneration({required bool warming}) {
+      return NazaResponse(
+        text: warming
+            ? 'Stopped before the message was submitted. The original local '
+                  'engine/context warm-up is still finishing safely in the '
+                  'background.'
+            : 'Stopped before the message was submitted to the local model.',
+        score: route.score,
+        route: 'model-warmup-cancelled',
+        cancelled: true,
+        createdAt: DateTime.now(),
+      );
+    }
+
+    if (_activeTurnCancellation?.isCompleted == true) {
+      return cancelledBeforeGeneration(warming: false);
+    }
+
     try {
-      await ensureReady(requireVision: visionImage != null);
+      // Cold readiness must create the one conversation this turn will use.
+      // Opening a default chat and immediately replacing it for the selected
+      // mode doubles an expensive native Gemma context build on CPU devices.
+      final readiness = () async {
+        await _recoverQuarantinedChatIfNeeded(
+          systemInstruction: turnSystemInstruction,
+        );
+        await ensureReady(
+          requireVision: visionImage != null,
+          systemInstruction: turnSystemInstruction,
+        );
+        // A completed native conversation cannot also retain the bounded
+        // transcript injected into the next prompt without duplicating
+        // history. Rotate here, inside the retained/cancellable readiness
+        // lane, so second and later turns get the same UI deadline and Stop
+        // behavior as the cold first context open.
+        final shouldRotateChat =
+            _chat != null &&
+            (_chatSystemInstruction != turnSystemInstruction ||
+                _chatSessionTurns > 0);
+        if (shouldRotateChat) {
+          await _replaceChatSessionForBoundedTurn(
+            systemInstruction: turnSystemInstruction,
+          );
+        }
+      }();
+      _retainedReadinessFuture = readiness;
+      unawaited(
+        readiness.then<void>(
+          (_) {
+            _readinessContinuesInBackground = false;
+            if (identical(_retainedReadinessFuture, readiness)) {
+              _retainedReadinessFuture = null;
+            }
+          },
+          onError: (Object _, StackTrace _) {
+            _readinessContinuesInBackground = false;
+            if (identical(_retainedReadinessFuture, readiness)) {
+              _retainedReadinessFuture = null;
+            }
+          },
+        ),
+      );
+      final slowStatusTimer = Timer(
+        const Duration(
+          seconds: NazaAppConfig.responseReadinessSlowStatusSeconds,
+        ),
+        () {
+          if (!identical(_retainedReadinessFuture, readiness)) return;
+          snapshot.value = snapshot.value.copyWith(
+            busy: true,
+            phase:
+                'native engine/context is still initializing safely • Stop is available',
+            clearError: true,
+          );
+        },
+      );
+      try {
+        final cancellation = _activeTurnCancellation;
+        if (cancellation == null) {
+          await readiness;
+        } else {
+          final readyMarker = Object();
+          final cancelledMarker = Object();
+          final outcome = await Future.any<Object>([
+            readiness.then<Object>((_) => readyMarker),
+            cancellation.future.then<Object>((_) => cancelledMarker),
+          ]);
+          if (identical(outcome, cancelledMarker)) {
+            _readinessContinuesInBackground = true;
+            snapshot.value = snapshot.value.copyWith(
+              busy: true,
+              phase: 'local warm-up continues after Stop',
+              clearError: true,
+            );
+            return cancelledBeforeGeneration(warming: true);
+          }
+        }
+      } finally {
+        slowStatusTimer.cancel();
+      }
     } catch (error) {
       return NazaResponse(
         text:
@@ -10522,10 +11119,12 @@ final class NazaLocalGemma {
       );
     }
 
+    if (_activeTurnCancellation?.isCompleted == true) {
+      return cancelledBeforeGeneration(warming: false);
+    }
+
     final generationId = ++_generationSerial;
     _cancelledGeneration = -1;
-    _activeGenerationOrigin = origin;
-
     _startGenerationTelemetry(generationId: generationId, route: route);
 
     snapshot.value = snapshot.value.copyWith(
@@ -10556,20 +11155,6 @@ final class NazaLocalGemma {
             ? 'opening compact bounded context'
             : 'opening bounded context',
       );
-      final turnSystemInstruction =
-          systemInstructionOverride?.trim().isNotEmpty == true
-          ? systemInstructionOverride!.trim()
-          : scannerMode
-          ? NazaAppConfig.scannerSystemInstruction
-          : NazaAppConfig.systemInstruction;
-      if (!chatWasMissingBeforeReady ||
-          scannerMode ||
-          systemInstructionOverride != null) {
-        await _replaceChatSessionForBoundedTurn(
-          systemInstruction: turnSystemInstruction,
-        );
-      }
-
       generation.value = generation.value.copyWith(stage: 'submitting prompt');
       final artifactControl = scannerMode
           ? ''
@@ -10610,26 +11195,17 @@ final class NazaLocalGemma {
             ? 0
             : NazaAppConfig.visionInputTokenReserve,
       );
-      await _addQueryChunkWithTimeout(
-        _chat,
-        _messageForTurn(initialPrompt, visionImage: visionImage),
-        label: visionImage == null ? 'local prompt' : 'Gemma vision prompt',
-      );
-
       final pythonArtifactTask = artifactSession.graph.nodes.any(
         (node) => node.id.startsWith('code-'),
       );
       var lastInitialPaint = '';
       void paintInitialTransaction(String partial) {
         if (onPartial == null) return;
-        if (scannerMode) {
-          onPartial(partial);
-          return;
-        }
-        final stable = NazaContinuationEngine.stableInitialPaint(
-          partial,
-          pythonTask: pythonArtifactTask,
-        );
+        // Paint the actual growing response, including code. Holding Python
+        // output until a complete syntax checkpoint made a healthy generation
+        // look silent for its entire duration; final delivery still applies
+        // the structural integrity/rollback checks below.
+        final stable = partial.trimRight();
         if (stable.isEmpty || stable == lastInitialPaint) return;
         if (lastInitialPaint.isNotEmpty &&
             !stable.startsWith(lastInitialPaint)) {
@@ -10639,56 +11215,31 @@ final class NazaLocalGemma {
         onPartial(stable);
       }
 
-      late NazaStreamResult stream;
-      try {
-        stream = await _streamResponse(
-          generationId: generationId,
-          onPartial: onPartial == null ? null : paintInitialTransaction,
-        );
-      } catch (error) {
-        if (!_isInputWindowError(error)) rethrow;
-        generation.value = generation.value.copyWith(
-          stage: 'retrying with emergency task capsule',
-        );
-        await _replaceChatSessionForBoundedTurn(
-          systemInstruction: turnSystemInstruction,
-        );
-        final emergencyBase = scannerMode
-            ? trimmed
-            : NazaContextManager.emergencyTaskPrompt(
-                userText: trimmed,
-                route: route,
-                actionProfile: actionProfile,
-              );
-        final emergencyThread = NazaThreadContext.promptBlock(threadContext);
-        final emergencyPromptBase = <String>[
-          emergencyThread,
-          emergencyBase,
-          artifactControl,
-        ].where((block) => block.trim().isNotEmpty).join('\n');
-        final emergencyPrompt = NazaPromptBudget.fitPrompt(
-          systemInstruction: turnSystemInstruction,
-          prompt: emergencyPromptBase,
-          reservedTokens: visionImage == null
-              ? 0
-              : NazaAppConfig.visionInputTokenReserve,
-        );
+      Future<void> submitInitialPrompt() async {
         await _addQueryChunkWithTimeout(
           _chat,
-          _messageForTurn(emergencyPrompt, visionImage: visionImage),
-          label: visionImage == null
-              ? 'emergency bounded prompt'
-              : 'emergency bounded vision prompt',
+          _messageForTurn(initialPrompt, visionImage: visionImage),
+          label: visionImage == null ? 'local prompt' : 'Gemma vision prompt',
         );
-        stream = await _streamResponse(
+      }
+
+      Future<NazaStreamResult> generateInitial() async {
+        await submitInitialPrompt();
+        return _streamResponse(
           generationId: generationId,
           onPartial: onPartial == null ? null : paintInitialTransaction,
         );
       }
+
+      // Prompt fitting has already reserved the current task inside the safe
+      // input window. If LiteRT still rejects it, surface that one failure and
+      // quarantine the conversation; closing and reopening here would hide
+      // the error behind another potentially minute-long native context open.
+      var stream = await generateInitial();
       // Every normal turn starts in a fresh bounded primary conversation.
       // Retain the generated-turn count when that conversation is later
       // parked for manual or automatic continuation.
-      _chatSessionTurns = 1;
+      _chatSessionTurns = math.max(1, _chatSessionTurns + 1);
       var clean = stream.text;
 
       if (_cancelledGeneration == generationId) {
@@ -10710,7 +11261,6 @@ final class NazaLocalGemma {
           cancelled: true,
           createdAt: DateTime.now(),
         );
-        _warmHistoryTurnId = historyTurnId;
         if (persistTurn && clean.trim().isNotEmpty) {
           final persistedUser = historyUserText?.trim();
           unawaited(
@@ -10857,7 +11407,6 @@ final class NazaLocalGemma {
             cancelled: true,
             createdAt: DateTime.now(),
           );
-          _warmHistoryTurnId = historyTurnId;
           if (persistTurn && visibleCancelledText.trim().isNotEmpty) {
             final persistedUser = historyUserText?.trim();
             unawaited(
@@ -10891,9 +11440,7 @@ final class NazaLocalGemma {
           passContext: passContext,
         );
         var assembly = evaluation.assembly;
-        // A structurally valid candidate is committed immediately. Generating
-        // a second full candidate merely because a soft lexical score is low
-        // doubles on-device latency and can look like a hang between chunks.
+
         final shouldTryAlternative =
             !evaluation.accepted &&
             NazaContinuationEngine.shouldGenerateAlternativeCandidate(
@@ -10995,7 +11542,6 @@ final class NazaLocalGemma {
         cancelled: false,
         createdAt: DateTime.now(),
       );
-      _warmHistoryTurnId = historyTurnId;
 
       snapshot.value = snapshot.value.copyWith(
         busy: false,
@@ -11023,20 +11569,34 @@ final class NazaLocalGemma {
 
       return out;
     } catch (error) {
-      _warmHistoryTurnId = null;
       _stopGenerationTelemetry(cancelled: false);
-      await _recoverChatAfterGenerationError();
+      final pendingDrain = error is NazaGenerationDrainPending ? error : null;
+      final drainPending = pendingDrain != null;
+      final safePartial = pendingDrain?.partialText.trimRight() ?? '';
+      if (!drainPending) {
+        // Return control to the UI immediately. Native conversation creation
+        // is unbounded and cannot be cancelled safely; reopening here turns a
+        // generation error into another long apparent hang. The next send
+        // performs the serialized recovery with a visible pending stage.
+        _chatRequiresRecovery = true;
+      }
       snapshot.value = snapshot.value.copyWith(
         busy: false,
-        phase: 'generation failed',
+        phase: drainPending
+            ? 'native response is still stopping safely'
+            : 'generation failed',
         error: error.toString(),
       );
 
       return NazaResponse(
-        text: 'Local Gemma error: $error',
+        text: drainPending && safePartial.isNotEmpty
+            ? safePartial
+            : drainPending
+            ? error.toString()
+            : 'Local Gemma error: $error',
         score: route.score,
-        route: outputRoute,
-        cancelled: false,
+        route: drainPending ? 'model-stopping' : outputRoute,
+        cancelled: drainPending && _cancelledGeneration == generationId,
         createdAt: DateTime.now(),
       );
     }
@@ -11054,6 +11614,87 @@ final class NazaLocalGemma {
     required String historyTurnId,
     void Function(String partialText)? onPartial,
   }) async {
+    if (_nativeGenerationDrainFuture != null || _nativeGenerationDrainFailed) {
+      return NazaResponse(
+        text: accumulatedReply,
+        score: 0,
+        route: 'manual-continuation-stopping',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+    if (_sendInFlight || _modelMutationInFlight) {
+      return NazaResponse(
+        text: accumulatedReply,
+        score: 0,
+        route: 'manual-continuation-busy',
+        cancelled: false,
+        createdAt: DateTime.now(),
+      );
+    }
+    final settled = Completer<void>();
+    _activeTurnSettled = settled;
+    _sendInFlight = true;
+    try {
+      return await _continueOnceTurn(
+        originalUserText: originalUserText,
+        accumulatedReply: accumulatedReply,
+        historyThreadId: historyThreadId,
+        historyTurnId: historyTurnId,
+        onPartial: onPartial,
+      );
+    } finally {
+      _sendInFlight = false;
+      if (!settled.isCompleted) settled.complete();
+      if (identical(_activeTurnSettled, settled)) {
+        _activeTurnSettled = null;
+      }
+    }
+  }
+
+  Future<void> waitForActiveTurnToSettle() async {
+    await (_activeTurnSettled?.future ?? Future<void>.value());
+    // Stop can release the UI while an uncancellable native model/context
+    // open continues. Lifecycle shutdown must still retain ownership of that
+    // exact operation and wait before touching its handles.
+    while (true) {
+      final readiness = _retainedReadinessFuture;
+      if (readiness == null) return;
+      try {
+        await readiness;
+      } catch (_) {
+        // The operation has settled; close() can now inspect live handles.
+      }
+      if (identical(_retainedReadinessFuture, readiness)) return;
+    }
+  }
+
+  Future<void> _recoverQuarantinedChatIfNeeded({
+    String systemInstruction = NazaAppConfig.systemInstruction,
+  }) async {
+    if (!_chatRequiresRecovery) return;
+    final drain = _nativeGenerationDrainFuture;
+    if (drain != null) await drain;
+    snapshot.value = snapshot.value.copyWith(
+      busy: true,
+      phase: 'reopening the local response context',
+      clearError: true,
+    );
+    await _recoverChatAfterGenerationError(
+      reloadClosedModel: true,
+      systemInstruction: systemInstruction,
+    );
+    _chatRequiresRecovery = false;
+  }
+
+  Future<NazaResponse> _continueOnceTurn({
+    required String originalUserText,
+    required String accumulatedReply,
+    required String historyThreadId,
+    required String historyTurnId,
+    void Function(String partialText)? onPartial,
+  }) async {
+    await _recoverQuarantinedChatIfNeeded();
     final original = originalUserText.trim();
     final prefix = accumulatedReply.trimRight();
     if (original.isEmpty || prefix.isEmpty) {
@@ -11067,10 +11708,18 @@ final class NazaLocalGemma {
     }
 
     final route = NazaQuantumRouter.route(original);
-    final chatWasMissing = _chat == null;
     try {
       await ensureReady();
     } catch (error) {
+      snapshot.value = snapshot.value.copyWith(
+        busy: false,
+        phase: 'continuation model recovery failed',
+        error: error.toString(),
+      );
+      // Do not hide the failure behind another potentially long native chat
+      // open. Quarantine the session and let the next explicit send perform
+      // one visible, serialized recovery attempt.
+      _chatRequiresRecovery = _model != null || _chat != null;
       return NazaResponse(
         text: prefix,
         score: route.score,
@@ -11091,55 +11740,29 @@ final class NazaLocalGemma {
     );
 
     try {
-      var warm =
-          _chat != null &&
-          _warmHistoryTurnId == historyTurnId &&
-          _chatSessionTurns < NazaAppConfig.continuationWarmSessionTurns;
-      if (!warm && !chatWasMissing) {
+      final needsFreshSession =
+          _chatSessionTurns > 0 ||
+          _chatSystemInstruction != NazaAppConfig.systemInstruction;
+      if (needsFreshSession) {
         generation.value = generation.value.copyWith(
           stage: 'opening compact continuation context',
         );
         await _replaceChatSessionForBoundedTurn();
       }
 
-      var prompt = warm
-          ? NazaManualContinuationPrompt.warm(prefix)
-          : NazaManualContinuationPrompt.stateless(
-              originalUserText: original,
-              accumulatedReply: prefix,
-            );
-      try {
-        await _addQueryChunkWithTimeout(
-          _chat,
-          Message.text(text: prompt, isUser: true),
-          label: warm
-              ? 'warm manual continuation'
-              : 'bounded manual continuation',
-          timeoutSeconds: NazaAppConfig.continuationPromptSubmitTimeoutSeconds,
-        );
-      } catch (error) {
-        if (!warm || !_isInputWindowError(error)) rethrow;
-        generation.value = generation.value.copyWith(
-          stage: 'retrying from compact saved seam',
-        );
-        await _replaceChatSessionForBoundedTurn();
-        warm = false;
-        prompt = NazaManualContinuationPrompt.stateless(
-          originalUserText: original,
-          accumulatedReply: prefix,
-        );
-        await _addQueryChunkWithTimeout(
-          _chat,
-          Message.text(text: prompt, isUser: true),
-          label: 'compact saved-seam continuation',
-          timeoutSeconds: NazaAppConfig.continuationPromptSubmitTimeoutSeconds,
-        );
-      }
+      final prompt = NazaManualContinuationPrompt.stateless(
+        originalUserText: original,
+        accumulatedReply: prefix,
+      );
+      await _addQueryChunkWithTimeout(
+        _chat,
+        Message.text(text: prompt, isUser: true),
+        label: 'bounded manual continuation',
+        timeoutSeconds: NazaAppConfig.continuationPromptSubmitTimeoutSeconds,
+      );
 
       generation.value = generation.value.copyWith(
-        stage: warm
-            ? 'streaming warm continuation'
-            : 'streaming bounded continuation',
+        stage: 'streaming bounded continuation',
       );
       final stream = await _streamResponse(
         generationId: generationId,
@@ -11168,7 +11791,6 @@ final class NazaLocalGemma {
         phase: cancelled ? 'continuation stopped' : 'ready',
         clearError: true,
       );
-      _warmHistoryTurnId = historyTurnId;
       onPartial?.call(output);
       final response = NazaResponse(
         text: output,
@@ -11188,18 +11810,27 @@ final class NazaLocalGemma {
       );
       return response;
     } catch (error) {
-      _warmHistoryTurnId = null;
       _stopGenerationTelemetry(cancelled: false);
-      await _recoverChatAfterGenerationError();
+      final pendingDrain = error is NazaGenerationDrainPending ? error : null;
+      final drainPending = pendingDrain != null;
+      if (!drainPending) {
+        _chatRequiresRecovery = true;
+      }
       snapshot.value = snapshot.value.copyWith(
         busy: false,
-        phase: 'manual continuation failed; saved text kept',
+        phase: drainPending
+            ? 'native continuation is still stopping safely'
+            : 'manual continuation failed; saved text kept',
         error: error.toString(),
       );
       return NazaResponse(
-        text: prefix,
+        text: pendingDrain?.partialText.trim().isNotEmpty == true
+            ? pendingDrain!.partialText
+            : prefix,
         score: route.score,
-        route: 'manual-continuation-error',
+        route: drainPending
+            ? 'manual-continuation-stopping'
+            : 'manual-continuation-error',
         cancelled: false,
         createdAt: DateTime.now(),
       );
@@ -11220,104 +11851,58 @@ final class NazaLocalGemma {
           NazaAppConfig.outputTokens,
         )
         .toInt();
-    Object? lastError;
-    for (var attempt = 0; attempt < 2; attempt++) {
-      try {
-        final needsFreshSession =
-            forceFreshSession ||
-            _continuationChat == null ||
-            _continuationSessionTurns >=
-                NazaAppConfig.continuationWarmSessionTurns;
-        if (needsFreshSession) {
-          final canReusePrimary =
-              !forceFreshSession && _continuationChat == null && _chat != null;
-          if (canReusePrimary) {
-            // The initial answer already lives in this session. A compact
-            // follow-up avoids close/open/prefill churn between visible chunks.
-            _continuationChat = _chat;
-            _chat = null;
-            // The transferred session contains exactly the initial generated
-            // turn. Starting at limit-1 made the very next continuation hit
-            // the recycle threshold and synchronously delete the conversation.
-            _continuationSessionTurns = math.max(1, _chatSessionTurns);
-            _chatSessionTurns = 0;
-            generation.value = generation.value.copyWith(
-              stage: 'continuing in the warm LiteRT session',
-            );
-          } else {
-            generation.value = generation.value.copyWith(
-              stage: _continuationChat == null
-                  ? 'opening continuation session'
-                  : 'recycling full continuation context',
-            );
-            await _closeContinuationSession();
-            final primaryChat = _chat;
-            _chat = null;
-            _chatSessionTurns = 0;
-            try {
-              await primaryChat?.session?.close().timeout(
-                const Duration(
-                  seconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
-                ),
-              );
-            } catch (_) {
-              // The LiteRT model remains loaded; only the old chat is retired.
-            }
-            _continuationChat = await _createChatWithTimeout(
-              systemInstruction: NazaAppConfig.systemInstruction,
-              maxOutputTokens: boundedMaxTokens,
-              timeoutSeconds: NazaAppConfig.continuationChatOpenTimeoutSeconds,
-            );
-            _continuationSessionTurns = 0;
-          }
-          forceFreshSession = false;
-        }
-        final continuationChat = _continuationChat;
-        if (continuationChat == null) {
-          throw StateError('Continuation chat session did not open.');
-        }
-        final fittedPrompt = _continuationSessionTurns == 0
-            ? NazaPromptBudget.fitContinuationPrompt(prompt)
-            : NazaPromptBudget.warmContinuationPrompt(prompt);
-        generation.value = generation.value.copyWith(
-          stage: _continuationSessionTurns == 0
-              ? 'submitting bounded continuation context'
-              : 'continuing in warm LiteRT session',
-        );
-        await _addQueryChunkWithTimeout(
-          continuationChat,
-          Message.text(text: fittedPrompt, isUser: true),
-          label: _continuationSessionTurns == 0
-              ? 'continuation prompt'
-              : 'warm continuation prompt',
-          timeoutSeconds: NazaAppConfig.continuationPromptSubmitTimeoutSeconds,
-        );
-        final result = await _streamResponse(
-          generationId: generationId,
-          chat: continuationChat,
-          partialPrefix: partialPrefix,
-          onPartial: onPartial,
-          maxTokens: boundedMaxTokens,
-          stripContinuationMarkers: false,
-          idleTimeoutSeconds: NazaAppConfig.continuationIdleTimeoutSeconds,
-        );
-        _continuationSessionTurns++;
-        return result;
-      } catch (error) {
-        lastError = error;
-        final recoverable =
-            _isClosedSessionError(error) || _isInputWindowError(error);
-        if (!recoverable || attempt == 1) rethrow;
-        generation.value = generation.value.copyWith(
-          stage: _isInputWindowError(error)
-              ? 'recycling continuation context window'
-              : 'reopening continuation session',
-        );
-        await _closeContinuationSession();
-        forceFreshSession = true;
-      }
+    // LiteRT does not expose retained prompt-token usage, so each continuation
+    // uses one fresh compressed capsule. A failed open/submit/stream is
+    // returned to the caller; retrying here would synchronously tear down and
+    // recreate another native context while the UI appears frozen.
+    generation.value = generation.value.copyWith(
+      stage: forceFreshSession
+          ? 'opening clean continuation session'
+          : 'opening bounded continuation session',
+    );
+    await _closeContinuationSession();
+    final primaryChat = _chat;
+    _chat = null;
+    _chatSystemInstruction = null;
+    _chatSessionTurns = 0;
+    try {
+      await primaryChat?.session?.close().timeout(
+        const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+      );
+    } catch (_) {
+      // A settled primary stream may still have a slow synchronous native
+      // delete. The next open remains serialized by _createChatSafely.
     }
-    throw StateError('Continuation window failed: $lastError');
+    _continuationChat = await _createChatSafely(
+      systemInstruction: NazaAppConfig.systemInstruction,
+      maxOutputTokens: boundedMaxTokens,
+    );
+    _continuationSessionTurns = 0;
+    final continuationChat = _continuationChat;
+    if (continuationChat == null) {
+      throw StateError('Continuation chat session did not open.');
+    }
+    final fittedPrompt = NazaPromptBudget.fitContinuationPrompt(prompt);
+    generation.value = generation.value.copyWith(
+      stage: 'submitting bounded continuation context',
+    );
+    await _addQueryChunkWithTimeout(
+      continuationChat,
+      Message.text(text: fittedPrompt, isUser: true),
+      label: 'continuation prompt',
+      timeoutSeconds: NazaAppConfig.continuationPromptSubmitTimeoutSeconds,
+    );
+    final result = await _streamResponse(
+      generationId: generationId,
+      chat: continuationChat,
+      partialPrefix: partialPrefix,
+      onPartial: onPartial,
+      maxTokens: boundedMaxTokens,
+      stripContinuationMarkers: false,
+      idleTimeoutSeconds: NazaAppConfig.continuationIdleTimeoutSeconds,
+    );
+    _continuationSessionTurns++;
+    return result;
   }
 
   Future<void> _closeContinuationSession() async {
@@ -11353,18 +11938,13 @@ final class NazaLocalGemma {
     return operation;
   }
 
-  bool _isClosedSessionError(Object error) {
+  bool _isClosedModelError(Object error) {
     final text = error.toString().toLowerCase();
-    return text.contains('session is closed') ||
-        text.contains('bad state') && text.contains('closed');
-  }
-
-  bool _isInputWindowError(Object error) {
-    final text = error.toString().toLowerCase();
-    return text.contains('input token ids are too long') ||
-        text.contains('maximum number of tokens allowed') ||
-        text.contains('invalid_argument') &&
-            (text.contains('token') || text.contains('context'));
+    return text.contains('model is closed') ||
+        text.contains('closed model') ||
+        text.contains('bad state') &&
+            text.contains('model') &&
+            text.contains('closed');
   }
 
   Future<void> _refreshPrimaryChatAfterContinuation() async {
@@ -11379,13 +11959,18 @@ final class NazaLocalGemma {
     _continuationSessionTurns = 0;
     if (completedChat != null) {
       _chat = completedChat;
+      _chatSystemInstruction = NazaAppConfig.systemInstruction;
       _chatSessionTurns = completedTurns;
     }
   }
 
-  Future<void> _recoverChatAfterGenerationError() async {
+  Future<void> _recoverChatAfterGenerationError({
+    bool reloadClosedModel = false,
+    String systemInstruction = NazaAppConfig.systemInstruction,
+  }) async {
     final chat = _chat;
     _chat = null;
+    _chatSystemInstruction = null;
     _chatSessionTurns = 0;
     await _closeContinuationSession();
 
@@ -11404,15 +11989,31 @@ final class NazaLocalGemma {
     if (_model == null) return;
 
     try {
-      _chat = await _createChatWithTimeout(
-        systemInstruction: NazaAppConfig.systemInstruction,
+      _chat = await _createChatSafely(
+        systemInstruction: systemInstruction,
         maxOutputTokens: NazaAppConfig.outputTokens,
-        timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
       );
+      _chatSystemInstruction = systemInstruction;
       _chatSessionTurns = 0;
-    } catch (_) {
+    } catch (error) {
       _chat = null;
       _chatSessionTurns = 0;
+      if (reloadClosedModel && _isClosedModelError(error)) {
+        try {
+          await close(phase: 'reloading closed model after continuation');
+          await ensureReady(systemInstruction: systemInstruction);
+          if (_chatSystemInstruction != systemInstruction) {
+            await _replaceChatSessionForBoundedTurn(
+              systemInstruction: systemInstruction,
+            );
+          }
+        } catch (recoveryError) {
+          snapshot.value = snapshot.value.copyWith(
+            phase: 'closed model reload failed',
+            error: recoveryError.toString(),
+          );
+        }
+      }
     }
   }
 
@@ -11421,6 +12022,7 @@ final class NazaLocalGemma {
   }) async {
     final chat = _chat;
     _chat = null;
+    _chatSystemInstruction = null;
     _chatSessionTurns = 0;
 
     if (chat != null) {
@@ -11444,11 +12046,32 @@ final class NazaLocalGemma {
       throw StateError('Model closed while rotating the bounded chat context.');
     }
 
-    _chat = await _createChatWithTimeout(
-      systemInstruction: systemInstruction,
-      maxOutputTokens: NazaAppConfig.outputTokens,
-      timeoutSeconds: NazaAppConfig.chatRecoveryTimeoutSeconds,
-    );
+    try {
+      _chat = await _createChatSafely(
+        systemInstruction: systemInstruction,
+        maxOutputTokens: NazaAppConfig.outputTokens,
+      );
+      _chatSystemInstruction = systemInstruction;
+    } catch (error) {
+      if (!_isClosedModelError(error)) rethrow;
+      await close(phase: 'reloading closed model before continuation');
+      await ensureReady(systemInstruction: systemInstruction);
+      if (_chatSystemInstruction != systemInstruction) {
+        final recoveredDefaultChat = _chat;
+        _chat = null;
+        _chatSystemInstruction = null;
+        try {
+          await recoveredDefaultChat?.session?.close().timeout(
+            const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+          );
+        } catch (_) {}
+        _chat = await _createChatSafely(
+          systemInstruction: systemInstruction,
+          maxOutputTokens: NazaAppConfig.outputTokens,
+        );
+        _chatSystemInstruction = systemInstruction;
+      }
+    }
     _chatSessionTurns = 0;
   }
 
@@ -11457,8 +12080,18 @@ final class NazaLocalGemma {
     String reason = 'requested',
   }) {
     final current = generation.value;
-    if (!current.active) return false;
     if (only != null && _activeGenerationOrigin != only) return false;
+    if (!current.active) {
+      final turnCancellation = _activeTurnCancellation;
+      if (!_sendInFlight || turnCancellation == null) return false;
+      if (!turnCancellation.isCompleted) turnCancellation.complete();
+      snapshot.value = snapshot.value.copyWith(
+        busy: true,
+        phase: 'Stop accepted; native warm-up will finish safely',
+        clearError: true,
+      );
+      return true;
+    }
 
     _cancelledGeneration = current.generationId;
     if (_cancellationSignalGeneration == current.generationId) {
@@ -11478,28 +12111,7 @@ final class NazaLocalGemma {
       clearError: true,
     );
 
-    unawaited(_stopNativeGeneration());
     return true;
-  }
-
-  Future<void> _stopNativeGeneration() async {
-    // Capture the sessions that belonged to the cancelled generation. Reading
-    // mutable fields after each await can otherwise stop a replacement scanner
-    // session that started during teardown.
-    final primaryChat = _chat;
-    final continuationChat = _continuationChat;
-    Future<void> stop(dynamic chat) async {
-      try {
-        await chat?.stopGeneration().timeout(const Duration(seconds: 2));
-      } catch (_) {
-        // Cancellation is best-effort; the generation id rejects late output.
-      }
-    }
-
-    await Future.wait<void>([
-      stop(primaryChat),
-      if (!identical(primaryChat, continuationChat)) stop(continuationChat),
-    ]);
   }
 
   void _startGenerationTelemetry({
@@ -11555,11 +12167,34 @@ final class NazaLocalGemma {
   }
 
   Future<void> resetChat() async {
+    if (_sendInFlight ||
+        _modelMutationInFlight ||
+        _loadingFuture != null ||
+        _retainedReadinessFuture != null ||
+        _nativeChatOpenFuture != null ||
+        _nativeModelLoadFuture != null ||
+        _nativeGenerationDrainFuture != null ||
+        _nativeGenerationDrainFailed) {
+      snapshot.value = snapshot.value.copyWith(
+        phase: 'wait for the current model operation before resetting chat',
+      );
+      return;
+    }
+    _modelMutationInFlight = true;
+    try {
+      await _resetChatInner();
+    } finally {
+      _modelMutationInFlight = false;
+    }
+  }
+
+  Future<void> _resetChatInner() async {
     if (_model == null) return;
 
     final primaryChat = _chat;
     final continuationChat = _continuationChat;
     _chat = null;
+    _chatSystemInstruction = null;
     _chatSessionTurns = 0;
     _continuationChat = null;
     _continuationSessionTurns = 0;
@@ -11570,12 +12205,13 @@ final class NazaLocalGemma {
       await continuationChat?.session?.close();
     } catch (_) {}
 
-    _chat = await _createChatWithTimeout(
+    _chat = await _createChatSafely(
       systemInstruction: NazaAppConfig.systemInstruction,
       maxOutputTokens: NazaAppConfig.outputTokens,
     );
+    _chatSystemInstruction = NazaAppConfig.systemInstruction;
     _chatSessionTurns = 0;
-    _warmHistoryTurnId = null;
+    _chatRequiresRecovery = false;
 
     snapshot.value = snapshot.value.copyWith(
       phase: 'chat context reset',
@@ -11671,7 +12307,7 @@ final class NazaLocalGemma {
               : 'initializing model on CPU',
           clearError: true,
         );
-        _model = await _getActiveModelWithTimeout(
+        _model = await _getActiveModelSafely(
           PreferredBackend.cpu,
           supportVision: supportVision,
         );
@@ -11693,7 +12329,7 @@ final class NazaLocalGemma {
             phase: 'initializing required GPU backend',
             clearError: true,
           );
-          _model = await _getActiveModelWithTimeout(
+          _model = await _getActiveModelSafely(
             PreferredBackend.gpu,
             supportVision: supportVision,
             requireGpu: true,
@@ -11729,7 +12365,7 @@ final class NazaLocalGemma {
               : 'using remembered CPU fallback for this model profile',
           clearError: true,
         );
-        _model = await _getActiveModelWithTimeout(
+        _model = await _getActiveModelSafely(
           requestedBackend,
           supportVision: supportVision,
         );
@@ -11804,20 +12440,13 @@ final class NazaLocalGemma {
     }
   }
 
-  Future<dynamic> _getActiveModelWithTimeout(
+  Future<dynamic> _getActiveModelSafely(
     PreferredBackend backend, {
     required bool supportVision,
     bool requireGpu = false,
   }) {
     final activeLoad = _nativeModelLoadFuture;
     if (activeLoad != null) {
-      if (_nativeModelLoadTimedOut) {
-        return Future<dynamic>.error(
-          const NazaModelLoadStillRunning(
-            NazaAppConfig.modelLoadTimeoutSeconds,
-          ),
-        );
-      }
       return _awaitUsableNativeModel(
         activeLoad,
         _nativeModelLoadBackend ?? backend,
@@ -11828,7 +12457,6 @@ final class NazaLocalGemma {
     }
 
     final lifecycleSerial = _modelLifecycleSerial;
-    _nativeModelLoadTimedOut = false;
     final Future<dynamic> operation = FlutterGemma.getActiveModel(
       maxTokens: NazaAppConfig.contextTokens,
       preferredBackend: backend,
@@ -11843,69 +12471,31 @@ final class NazaLocalGemma {
     _nativeModelLoadLifecycleSerial = lifecycleSerial;
     unawaited(
       operation
-          .then<void>(
-            (loaded) async {
-              if (_modelLifecycleSerial == lifecycleSerial) {
-                final activeBackend = _activeBackendOf(loaded);
-                if (backend == PreferredBackend.gpu &&
-                    activeBackend != PreferredBackend.gpu) {
-                  _rememberGpuFallback(supportVision: supportVision);
-                }
-                if (!nazaBackendSatisfiesRequirement(
-                  requireGpu: requireGpu,
-                  activeBackend: activeBackend,
-                )) {
-                  if (_nativeModelLoadTimedOut) {
-                    try {
-                      await loaded.close();
-                    } catch (_) {}
-                    snapshot.value = snapshot.value.copyWith(
-                      modelLoaded: false,
-                      busy: false,
-                      usingGpu: false,
-                      phase: 'GPU backend failed',
-                      error:
-                          'GPU-only mode rejected LiteRT-LM\'s late CPU '
-                          'fallback. Choose CPU only or GPU first in Settings.',
-                    );
-                    unawaited(_persistRuntimeSnapshot());
-                  }
-                  return;
-                }
-                _model ??= loaded;
-                _modelSupportsVision = supportVision;
-                if (_nativeModelLoadTimedOut) {
-                  _requestVisionOnLoad = false;
-                  snapshot.value = snapshot.value.copyWith(
-                    modelLoaded: true,
-                    busy: false,
-                    usingGpu: _activeBackendOf(loaded) == PreferredBackend.gpu,
-                    phase: 'model initialized; ready for the next message',
-                    clearError: true,
-                  );
-                  unawaited(_persistRuntimeSnapshot());
-                }
-              } else {
-                try {
-                  await loaded.close();
-                } catch (_) {
-                  // A late native result belongs to a closed lifecycle.
-                }
+          .then<void>((loaded) async {
+            if (_modelLifecycleSerial == lifecycleSerial) {
+              final activeBackend = _activeBackendOf(loaded);
+              if (backend == PreferredBackend.gpu &&
+                  activeBackend != PreferredBackend.gpu) {
+                _rememberGpuFallback(supportVision: supportVision);
               }
-            },
-            onError: (Object error, StackTrace _) {
-              if (_modelLifecycleSerial == lifecycleSerial &&
-                  _nativeModelLoadTimedOut) {
-                snapshot.value = snapshot.value.copyWith(
-                  modelLoaded: false,
-                  busy: false,
-                  phase: 'background model initialization failed',
-                  error: '${_modelSetupHint(error)} Raw error: $error',
-                );
-                unawaited(_persistRuntimeSnapshot());
+              if (!nazaBackendSatisfiesRequirement(
+                requireGpu: requireGpu,
+                activeBackend: activeBackend,
+              )) {
+                // The awaiting owner validates and closes this rejected
+                // fallback exactly once.
+                return;
               }
-            },
-          )
+              _model ??= loaded;
+              _modelSupportsVision = supportVision;
+            } else {
+              try {
+                await loaded.close();
+              } catch (_) {
+                // A late native result belongs to a closed lifecycle.
+              }
+            }
+          }, onError: (Object _, StackTrace _) {})
           .whenComplete(() {
             if (identical(_nativeModelLoadFuture, operation)) {
               _nativeModelLoadFuture = null;
@@ -11913,7 +12503,6 @@ final class NazaLocalGemma {
               _nativeModelLoadSupportsVision = null;
               _nativeModelLoadRequiresGpu = null;
               _nativeModelLoadLifecycleSerial = null;
-              _nativeModelLoadTimedOut = false;
             }
           }),
     );
@@ -11933,7 +12522,10 @@ final class NazaLocalGemma {
     required bool supportVision,
     required bool requireGpu,
   }) async {
-    final loaded = await _timeoutModelLoad(operation, backend);
+    // Native engine initialization is retained and cannot be cancelled.
+    // Await the exact operation until it settles; the caller's Stop signal
+    // can release the UI without abandoning or duplicating this Future.
+    final loaded = await operation;
     if (_modelLifecycleSerial != lifecycleSerial) {
       // The completion observer owns closing this late handle. Reject it here
       // so a detached Android activity cannot create a session on that model.
@@ -11976,50 +12568,54 @@ final class NazaLocalGemma {
     }
   }
 
-  Future<dynamic> _timeoutModelLoad(
-    Future<dynamic> operation,
-    PreferredBackend backend,
-  ) {
-    return operation.timeout(
-      const Duration(seconds: NazaAppConfig.modelLoadTimeoutSeconds),
-      onTimeout: () {
-        if (identical(_nativeModelLoadFuture, operation)) {
-          _nativeModelLoadTimedOut = true;
-        }
-        throw const NazaModelLoadStillRunning(
-          NazaAppConfig.modelLoadTimeoutSeconds,
-        );
-      },
-    );
-  }
-
-  Future<dynamic> _createChatWithTimeout({
+  Future<dynamic> _createChatSafely({
     required String systemInstruction,
     required int maxOutputTokens,
-    int timeoutSeconds = NazaAppConfig.chatOpenTimeoutSeconds,
   }) async {
     final continuationClose = _continuationCloseFuture;
     if (continuationClose != null) await continuationClose;
+
+    final active = _nativeChatOpenFuture;
+    if (active != null) {
+      if (_nativeChatOpenSystemInstruction != systemInstruction) {
+        throw StateError(
+          'A local response context is already opening for another mode.',
+        );
+      }
+      return active;
+    }
+
     final model = _model;
     if (model == null) {
       throw StateError('Model is not loaded.');
     }
 
-    final opened = model.createChat(
-      systemInstruction: systemInstruction,
-      maxOutputTokens: maxOutputTokens,
-    );
-    if (opened is Future) {
-      return opened.timeout(
-        Duration(seconds: timeoutSeconds),
-        onTimeout: () {
-          throw TimeoutException(
-            'Chat session open timed out after ${timeoutSeconds}s.',
-          );
-        },
+    final lifecycleSerial = _modelLifecycleSerial;
+    final operation = () async {
+      final opened = model.createChat(
+        systemInstruction: systemInstruction,
+        maxOutputTokens: maxOutputTokens,
       );
+      return opened is Future ? await opened : opened;
+    }();
+    _nativeChatOpenFuture = operation;
+    _nativeChatOpenSystemInstruction = systemInstruction;
+    try {
+      final opened = await operation;
+      if (_modelLifecycleSerial != lifecycleSerial ||
+          !identical(_model, model)) {
+        try {
+          await opened?.session?.close();
+        } catch (_) {}
+        throw StateError('Local response context open was superseded.');
+      }
+      return opened;
+    } finally {
+      if (identical(_nativeChatOpenFuture, operation)) {
+        _nativeChatOpenFuture = null;
+        _nativeChatOpenSystemInstruction = null;
+      }
     }
-    return opened;
   }
 
   Future<void> _addQueryChunkWithTimeout(
@@ -12050,10 +12646,6 @@ final class NazaLocalGemma {
     if (error is NazaUnsupportedAndroidAbi) {
       return error.toString();
     }
-    if (error is NazaModelLoadStillRunning) {
-      return 'The verified LiteRT-LM engine is still initializing in the '
-          'background; no download, reinstall, or second model load is needed.';
-    }
     if (error is NazaBackendUnavailable ||
         nazaIsNativeEngineInitializationError(error)) {
       return 'The model passed SHA-256 verification; this native message '
@@ -12067,6 +12659,21 @@ final class NazaLocalGemma {
   }
 
   Future<void> close({String phase = 'closed'}) async {
+    if (_nativeGenerationDrainFailed) {
+      snapshot.value = snapshot.value.copyWith(
+        busy: false,
+        phase: 'native response did not stop; restart Naza One safely',
+        error:
+            'LiteRT could not confirm that the previous response stream drained, so its live handles were left untouched.',
+      );
+      return;
+    }
+    // A timed-out cancellation keeps the native conversation quarantined.
+    // Closing that handle before its stream has actually drained can race
+    // LiteRT's synchronous conversation_delete and terminate the process.
+    final nativeDrain = _nativeGenerationDrainFuture;
+    if (nativeDrain != null) await nativeDrain;
+
     _modelLifecycleSerial++;
     try {
       await _chat?.session?.close();
@@ -12079,12 +12686,14 @@ final class NazaLocalGemma {
     } catch (_) {}
 
     _chat = null;
+    _chatSystemInstruction = null;
     _chatSessionTurns = 0;
     _continuationChat = null;
     _continuationSessionTurns = 0;
     _model = null;
     _modelSupportsVision = false;
     _requestVisionOnLoad = false;
+    _chatRequiresRecovery = false;
 
     snapshot.value = snapshot.value.copyWith(
       modelLoaded: false,
@@ -12144,6 +12753,12 @@ final class NazaLocalGemma {
     final responseStream = activeChat.generateChatResponseAsync();
     final iterator = StreamIterator<dynamic>(responseStream);
     final startedAt = DateTime.now();
+    final firstTokenLimit = Duration(
+      seconds: math.min(
+        idleTimeoutSeconds,
+        NazaAppConfig.generationFirstTokenTimeoutSeconds,
+      ),
+    );
     final idleLimit = Duration(seconds: idleTimeoutSeconds);
     const totalLimit = Duration(
       seconds: NazaAppConfig.generationTotalTimeoutSeconds,
@@ -12157,21 +12772,75 @@ final class NazaLocalGemma {
     Future<void>? iteratorCancelFuture;
 
     Future<void> stopActiveChat() async {
-      try {
-        await activeChat.stopGeneration().timeout(const Duration(seconds: 2));
-      } catch (_) {}
+      await activeChat.stopGeneration();
     }
 
     Future<void> cancelIteratorOnce() {
       final active = iteratorCancelFuture;
       if (active != null) return active;
       final operation = () async {
-        try {
-          await iterator.cancel().timeout(const Duration(seconds: 2));
-        } catch (_) {}
+        await iterator.cancel();
       }();
       iteratorCancelFuture = operation;
       return operation;
+    }
+
+    Future<void> settleInterruptedGeneration() async {
+      // LiteRT conversation handles must not be reused or deleted while the
+      // native stream is still unwinding. Await both sides of cancellation so
+      // a max-token stop, timeout, or user cancellation cannot race a chat
+      // rotation and take down the process.
+      NazaGenerationDrainPending pendingError() {
+        final partial = _cleanResponse(
+          rawResponse.toString(),
+          preserveLeadingWhitespace: partialPrefix.isNotEmpty,
+          stripContinuationMarkers: stripContinuationMarkers,
+        );
+        return NazaGenerationDrainPending(
+          partialText: NazaContinuationEngine.joinForStreamingPaint(
+            partialPrefix,
+            partial,
+          ),
+        );
+      }
+
+      final drain = Future.wait<void>([stopActiveChat(), cancelIteratorOnce()]);
+      _nativeGenerationDrainFuture = drain;
+      unawaited(
+        drain.then<void>(
+          (_) {
+            if (identical(_nativeGenerationDrainFuture, drain)) {
+              _nativeGenerationDrainFuture = null;
+            }
+          },
+          onError: (Object _, StackTrace _) {
+            _nativeGenerationDrainFailed = true;
+            _chatRequiresRecovery = true;
+            if (identical(_nativeGenerationDrainFuture, drain)) {
+              _nativeGenerationDrainFuture = null;
+            }
+          },
+        ),
+      );
+      try {
+        await drain.timeout(
+          const Duration(seconds: NazaAppConfig.chatRecoveryTimeoutSeconds),
+        );
+      } on TimeoutException {
+        // Do not delete or replace this conversation while its async stream is
+        // still unwinding. Immediate retries receive a bounded "stopping"
+        // response; once the drain completes, the next turn replaces the
+        // quarantined chat before use.
+        _chatRequiresRecovery = true;
+        throw pendingError();
+      } catch (_) {
+        // A failed stop/cancel is not equivalent to a settled stream. Keep the
+        // native lane quarantined instead of deleting or reusing a potentially
+        // live conversation. A process restart is the only safe recovery.
+        _nativeGenerationDrainFailed = true;
+        _chatRequiresRecovery = true;
+        throw pendingError();
+      }
     }
 
     // Observe cancellation once for the entire stream. Attaching a new
@@ -12189,8 +12858,6 @@ final class NazaLocalGemma {
           if (pending != null && !pending.isCompleted) {
             pending.complete(cancelledSignal);
           }
-          unawaited(stopActiveChat());
-          unawaited(cancelIteratorOnce());
         }),
       );
     }
@@ -12203,14 +12870,15 @@ final class NazaLocalGemma {
         }
 
         final nowBeforeWait = DateTime.now();
-        final textRemaining = idleLimit - nowBeforeWait.difference(lastTextAt);
+        final textRemaining = rawResponse.isEmpty
+            ? firstTokenLimit - nowBeforeWait.difference(startedAt)
+            : idleLimit - nowBeforeWait.difference(lastTextAt);
         final totalRemaining = totalLimit - nowBeforeWait.difference(startedAt);
         final remaining = textRemaining < totalRemaining
             ? textRemaining
             : totalRemaining;
         if (remaining <= Duration.zero) {
           interrupted = true;
-          unawaited(stopActiveChat());
           if (rawResponse.isEmpty) {
             throw TimeoutException(
               'Local generation produced no answer text before its deadline.',
@@ -12256,7 +12924,6 @@ final class NazaLocalGemma {
         }
         if (identical(outcome, deadlineSignal)) {
           interrupted = true;
-          unawaited(stopActiveChat());
           if (rawResponse.isEmpty) {
             throw TimeoutException(
               'Local generation produced no answer text for '
@@ -12266,6 +12933,7 @@ final class NazaLocalGemma {
           break;
         }
         if (outcome is AsyncError) {
+          interrupted = true;
           Error.throwWithStackTrace(outcome.error, outcome.stackTrace);
         }
         if (outcome != true) break;
@@ -12336,14 +13004,16 @@ final class NazaLocalGemma {
 
         if (estimatedTokens >= maxTokens) {
           interrupted = true;
-          unawaited(stopActiveChat());
           break;
         }
       }
+    } catch (_) {
+      interrupted = true;
+      rethrow;
     } finally {
       streamFinished = true;
       if (interrupted) {
-        unawaited(cancelIteratorOnce());
+        await settleInterruptedGeneration();
       }
     }
 
@@ -12470,6 +13140,41 @@ final class NazaResponse {
     required this.createdAt,
   });
 }
+
+/// Testable UI boundary for a normal chat turn.
+///
+/// The production sender adapts this request to [NazaLocalGemma.send]. Keeping
+/// the callback above the native runtime lets widget tests verify immediate
+/// pending feedback and duplicate-submit protection without loading a model.
+final class NazaChatPromptRequest {
+  final String prompt;
+  final void Function(String partialText)? onPartial;
+  final String historyUserText;
+  final NazaVisionImage? visionImage;
+  final bool useMemory;
+  final String historyThreadId;
+  final String historyTurnId;
+  final String threadContext;
+  final int? maxContinuationsOverride;
+  final String systemInstruction;
+
+  const NazaChatPromptRequest({
+    required this.prompt,
+    required this.onPartial,
+    required this.historyUserText,
+    required this.visionImage,
+    required this.useMemory,
+    required this.historyThreadId,
+    required this.historyTurnId,
+    required this.threadContext,
+    required this.maxContinuationsOverride,
+    required this.systemInstruction,
+  });
+}
+
+typedef NazaChatPromptSender =
+    Future<NazaResponse> Function(NazaChatPromptRequest request);
+typedef NazaChatPromptCanceller = bool Function();
 
 final class NazaVisionImage {
   final Uint8List bytes;
@@ -14164,6 +14869,35 @@ final class NazaThreadContext {
     );
   }
 
+  static String fromRecentThreads(List<NazaConversationThread> threads) {
+    if (threads.isEmpty) return '';
+    final buffer = StringBuffer();
+    for (final thread in threads.take(5)) {
+      final last = thread.turns.isEmpty ? null : thread.turns.last;
+      buffer
+        ..writeln(
+          'CONVERSATION: ${NazaPromptData.block(thread.title, maxChars: 180)}',
+        )
+        ..writeln(
+          'OPENING: ${NazaPromptData.block(thread.turns.first.user, maxChars: 420)}',
+        )
+        ..writeln(
+          'LATEST: ${NazaPromptData.block(last?.assistant ?? '', maxChars: 620)}',
+        );
+    }
+    final summary = NazaSummaGemmaSummarizer.summarize(
+      buffer.toString().trim(),
+      role: 'recent-conversations',
+      maxChars: 980,
+    ).summary;
+    if (summary.isEmpty) return '';
+    return NazaPromptBudget.compactText(
+      summary,
+      maxChars: 1200,
+      marker: '\n[older recent conversation detail compacted]\n',
+    );
+  }
+
   static String promptBlock(String context) {
     if (context.trim().isEmpty) return '';
     return '''
@@ -15067,25 +15801,68 @@ final class NazaGenerationSettingsStore {
 
 final class NazaMemorySettings {
   final bool enabled;
+  final int maxRetrievedChunks;
+  final int candidateLimit;
+  final double diversity;
+  final bool autoConsolidation;
 
-  const NazaMemorySettings({required this.enabled});
+  const NazaMemorySettings({
+    required this.enabled,
+    this.maxRetrievedChunks = NazaAppConfig.memoryAllocationChunks,
+    this.candidateLimit = NazaAppConfig.memoryRetrievalCandidates,
+    this.diversity = 0.28,
+    this.autoConsolidation = true,
+  });
 
   factory NazaMemorySettings.defaults() {
     return const NazaMemorySettings(enabled: true);
   }
 
   factory NazaMemorySettings.fromJson(Map<String, dynamic> json) {
-    return NazaMemorySettings(enabled: json['enabled'] != false);
+    final rawChunks =
+        (json['maxRetrievedChunks'] as num?)?.toInt() ??
+        NazaAppConfig.memoryAllocationChunks;
+    final rawCandidates =
+        (json['candidateLimit'] as num?)?.toInt() ??
+        NazaAppConfig.memoryRetrievalCandidates;
+    final rawDiversity = (json['diversity'] as num?)?.toDouble() ?? 0.28;
+    return NazaMemorySettings(
+      enabled: json['enabled'] != false,
+      maxRetrievedChunks: rawChunks.clamp(4, 24).toInt(),
+      candidateLimit: rawCandidates.clamp(24, 180).toInt(),
+      diversity: rawDiversity.clamp(0.0, 0.72),
+      autoConsolidation: json['autoConsolidation'] != false,
+    );
   }
 
-  NazaMemorySettings copyWith({bool? enabled}) {
-    return NazaMemorySettings(enabled: enabled ?? this.enabled);
+  NazaMemorySettings copyWith({
+    bool? enabled,
+    int? maxRetrievedChunks,
+    int? candidateLimit,
+    double? diversity,
+    bool? autoConsolidation,
+  }) {
+    return NazaMemorySettings(
+      enabled: enabled ?? this.enabled,
+      maxRetrievedChunks: (maxRetrievedChunks ?? this.maxRetrievedChunks)
+          .clamp(4, 24)
+          .toInt(),
+      candidateLimit: (candidateLimit ?? this.candidateLimit)
+          .clamp(24, 180)
+          .toInt(),
+      diversity: (diversity ?? this.diversity).clamp(0.0, 0.72),
+      autoConsolidation: autoConsolidation ?? this.autoConsolidation,
+    );
   }
 
   Map<String, dynamic> toJson() {
     return {
-      'format': 'naza-memory-settings-v1',
+      'format': 'naza-memory-settings-v2',
       'enabled': enabled,
+      'maxRetrievedChunks': maxRetrievedChunks,
+      'candidateLimit': candidateLimit,
+      'diversity': diversity,
+      'autoConsolidation': autoConsolidation,
       'updatedAt': DateTime.now().toIso8601String(),
     };
   }
@@ -15426,6 +16203,7 @@ final class NazaVectorMemory {
   Future<void>? _settingsLoadFuture;
   Future<void> _storageTail = Future<void>.value();
   List<NazaMemoryChunk>? _chunks;
+  final Map<String, Set<String>> _chunkTokenCache = <String, Set<String>>{};
   int _rotationCursor = 0;
 
   Future<void> prepareSettings() {
@@ -15434,12 +16212,20 @@ final class NazaVectorMemory {
   }
 
   Future<void> setEnabled(bool enabled) async {
+    await updateSettings((current) => current.copyWith(enabled: enabled));
+  }
+
+  Future<void> updateSettings(
+    NazaMemorySettings Function(NazaMemorySettings current) update,
+  ) async {
     await prepareSettings();
-    final next = settings.value.copyWith(enabled: enabled);
+    final next = update(settings.value);
     settings.value = next;
     snapshot.value = snapshot.value.copyWith(
-      enabled: enabled,
-      phase: enabled ? 'vector memory enabled' : 'vector memory paused',
+      enabled: next.enabled,
+      phase: next.enabled
+          ? 'vector memory settings updated'
+          : 'vector memory paused',
       clearError: true,
     );
     await _persistSettings(next);
@@ -15449,6 +16235,7 @@ final class NazaVectorMemory {
     final operation = _storageTail.then((_) async {
       await NazaSecureDatabase.instance.delete('memory', 'chunks');
       _chunks = <NazaMemoryChunk>[];
+      _chunkTokenCache.clear();
       snapshot.value = snapshot.value.copyWith(
         chunks: 0,
         lastAllocationChunks: 0,
@@ -15471,7 +16258,8 @@ final class NazaVectorMemory {
   }) async {
     try {
       await prepareSettings();
-      if (!settings.value.enabled) {
+      final memorySettings = settings.value;
+      if (!memorySettings.enabled) {
         snapshot.value = snapshot.value.copyWith(
           enabled: false,
           lastAllocationChunks: 0,
@@ -15510,7 +16298,14 @@ final class NazaVectorMemory {
       final now = DateTime.now();
       final workingTurnIds = _workingMemoryTurnIds(chunks, maxTurns: 4);
       final scored = <_ScoredMemoryChunk>[];
-      for (final chunk in chunks) {
+      for (var chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+        // Vector retrieval is intentionally cooperative. A large encrypted
+        // memory index can otherwise monopolize the main isolate long enough
+        // to make Flutter timers and input feel frozen.
+        if (chunkIndex > 0 && chunkIndex % 24 == 0) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        final chunk = chunks[chunkIndex];
         if (chunk.embedding.length != NazaAppConfig.memoryEmbeddingDimensions) {
           continue;
         }
@@ -15522,6 +16317,18 @@ final class NazaVectorMemory {
             .toDouble();
         final workingMemory = workingTurnIds.contains(chunk.turnId);
         final recency = workingMemory ? 1.0 : 1.0 / (1.0 + ageHours / 96.0);
+        final accessStrength = math.min(
+          1.0,
+          math.log(chunk.accessCount + 1) / math.log(8),
+        );
+        final accessFreshness =
+            1.0 /
+            (1.0 +
+                now
+                        .difference(chunk.lastAccessedAt)
+                        .inHours
+                        .clamp(0, 24 * 3650) /
+                    240.0);
         final routeAffinity = chunk.route == route.label ? 0.08 : 0.0;
         final keywordAffinity = _keywordAffinity(
           queryTokens: queryTokens,
@@ -15540,6 +16347,8 @@ final class NazaVectorMemory {
             keywordAffinity * 0.19 +
             tagAffinity * 0.07 +
             recency * 0.10 +
+            accessStrength * 0.04 +
+            accessFreshness * 0.04 +
             chunk.importance * 0.12 +
             routeAffinity +
             roleBias +
@@ -15560,7 +16369,7 @@ final class NazaVectorMemory {
       }
       scored.sort((a, b) => b.score.compareTo(a.score));
 
-      final selected = _allocateChunks(scored);
+      final selected = _allocateChunks(scored, settings: memorySettings);
       final rotatedChunks = selected.where((item) => item.rotated).length;
       final averageScore = selected.isEmpty
           ? 0.0
@@ -15577,7 +16386,9 @@ final class NazaVectorMemory {
         lastActionMode: actionProfile.label,
         phase: selected.isEmpty
             ? 'no memory allocated'
-            : 'allocated ${selected.length} memory chunks, rotated $rotatedChunks',
+            : 'allocated ${selected.length} memory chunks with '
+                  '${(memorySettings.diversity * 100).round()}% diversity, '
+                  'rotated $rotatedChunks',
         clearError: true,
       );
 
@@ -15607,12 +16418,12 @@ final class NazaVectorMemory {
   }) {
     final operation = _storageTail.then((_) async {
       await prepareSettings();
-      if (!settings.value.enabled) return;
+      final memorySettings = settings.value;
+      if (!memorySettings.enabled) return;
       final chunks = await _readChunksNow();
       final turnId = NazaHistoryRow._id();
       final createdAt = DateTime.now();
-      final next = <NazaMemoryChunk>[
-        ...chunks,
+      final additions = <NazaMemoryChunk>[
         ..._chunksForMessage(
           turnId: turnId,
           role: 'user',
@@ -15630,9 +16441,29 @@ final class NazaVectorMemory {
           createdAt: createdAt,
         ),
       ];
+      final next = chunks.toList(growable: true);
+      for (final addition in additions) {
+        final duplicateIndex = _findNearDuplicate(next, addition);
+        if (duplicateIndex < 0) {
+          next.add(addition);
+          continue;
+        }
+        final prior = next[duplicateIndex];
+        next[duplicateIndex] = prior.copyWith(
+          accessCount: prior.accessCount + 1,
+          lastAccessedAt: createdAt,
+          importance: math
+              .max(prior.importance, addition.importance)
+              .toDouble(),
+        );
+      }
 
       if (next.length > NazaAppConfig.memoryMaxChunks) {
-        final trimmed = _forgetToBudget(next, NazaAppConfig.memoryMaxChunks);
+        final trimmed = memorySettings.autoConsolidation
+            ? _forgetToBudget(next, NazaAppConfig.memoryMaxChunks)
+            : next
+                  .skip(next.length - NazaAppConfig.memoryMaxChunks)
+                  .toList(growable: false);
         next
           ..clear()
           ..addAll(trimmed);
@@ -15652,6 +16483,34 @@ final class NazaVectorMemory {
       onError: (Object _, StackTrace _) {},
     );
     return operation;
+  }
+
+  int _findNearDuplicate(
+    List<NazaMemoryChunk> chunks,
+    NazaMemoryChunk candidate,
+  ) {
+    final candidateText = _normalize(candidate.text).toLowerCase();
+    final candidateTokens = _tokenSet(candidate.text);
+    if (candidateText.length < 28 || candidateTokens.length < 6) return -1;
+    for (var i = math.max(0, chunks.length - 320); i < chunks.length; i++) {
+      final prior = chunks[i];
+      if (prior.role != candidate.role) continue;
+      final priorText = _normalize(prior.text).toLowerCase();
+      if (priorText == candidateText) return i;
+      final priorTokens = _tokenSet(prior.text);
+      if (priorTokens.length < 6) continue;
+      final overlap =
+          candidateTokens.intersection(priorTokens).length /
+          math.max(1, math.min(candidateTokens.length, priorTokens.length));
+      final semantic =
+          candidate.embedding.length ==
+                  NazaAppConfig.memoryEmbeddingDimensions &&
+              prior.embedding.length == NazaAppConfig.memoryEmbeddingDimensions
+          ? _cosine(candidate.embedding, prior.embedding)
+          : 0.0;
+      if (overlap >= 0.90 || semantic >= 0.985) return i;
+    }
+    return -1;
   }
 
   Future<void> _loadSettings() async {
@@ -15700,6 +16559,11 @@ final class NazaVectorMemory {
   }
 
   Future<List<NazaMemoryChunk>> _readChunksSafe() {
+    // A completed in-memory snapshot is safe to use while an encrypted write
+    // is queued. Waiting for the entire persistence tail here made the next
+    // prompt inherit vector-memory latency and could starve continuation work.
+    final cached = _chunks;
+    if (cached != null) return Future<List<NazaMemoryChunk>>.value(cached);
     return _storageTail.then((_) => _readChunksNow());
   }
 
@@ -15713,6 +16577,7 @@ final class NazaVectorMemory {
     );
     if (payload == null) {
       _chunks = <NazaMemoryChunk>[];
+      _chunkTokenCache.clear();
       return _chunks!;
     }
 
@@ -15726,6 +16591,7 @@ final class NazaVectorMemory {
           .where((chunk) => chunk.text.trim().isNotEmpty)
           .map(_hydrateChunk)
           .toList(growable: false);
+      _chunkTokenCache.clear();
       _chunks = rows;
       snapshot.value = snapshot.value.copyWith(chunks: rows.length);
       return rows;
@@ -15735,6 +16601,7 @@ final class NazaVectorMemory {
         error: error.toString(),
       );
       _chunks = <NazaMemoryChunk>[];
+      _chunkTokenCache.clear();
       return _chunks!;
     }
   }
@@ -16060,48 +16927,63 @@ final class NazaVectorMemory {
     return math.max(1, (text.length / 4).ceil());
   }
 
-  List<_ScoredMemoryChunk> _allocateChunks(List<_ScoredMemoryChunk> scored) {
+  List<_ScoredMemoryChunk> _allocateChunks(
+    List<_ScoredMemoryChunk> scored, {
+    required NazaMemorySettings settings,
+  }) {
     final selected = <_ScoredMemoryChunk>[];
     var remaining = NazaAppConfig.memoryContextBudgetChars;
     final candidates = scored
-        .take(NazaAppConfig.memoryRetrievalCandidates)
+        .take(settings.candidateLimit)
         .toList(growable: false);
-    for (final item in candidates) {
-      if (selected.length >=
-          math.max(4, NazaAppConfig.memoryAllocationChunks ~/ 2)) {
-        break;
-      }
-      final text = item.chunk.text.trim();
-      if (text.isEmpty) continue;
-      if (item.certainty < 0.34 && selected.isNotEmpty) continue;
-      final cost = _contextCost(item.chunk);
-      if (cost > remaining && selected.isNotEmpty) continue;
-      if (_tooSimilarToSelected(item.chunk, selected)) continue;
-      selected.add(item);
-      remaining -= cost;
-      if (remaining <= 420) break;
-    }
-
-    if (remaining > 420 &&
-        selected.length < NazaAppConfig.memoryAllocationChunks) {
-      final pool = candidates
-          .where((item) => item.certainty >= 0.26)
-          .where((item) => !selected.any((s) => s.chunk.id == item.chunk.id))
-          .toList(growable: false);
-      if (pool.isNotEmpty) {
-        final start = _rotationCursor % pool.length;
-        _rotationCursor++;
-        for (var step = 0; step < pool.length; step++) {
-          if (selected.length >= NazaAppConfig.memoryAllocationChunks) break;
-          final item = pool[(start + step) % pool.length];
-          final cost = _contextCost(item.chunk);
-          if (cost > remaining && selected.isNotEmpty) continue;
-          if (_tooSimilarToSelected(item.chunk, selected)) continue;
-          selected.add(item.asRotated());
-          remaining -= cost;
-          if (remaining <= 420) break;
+    final available = candidates.toList(growable: true);
+    final rotation = available.isEmpty
+        ? 0
+        : _rotationCursor++ % available.length;
+    while (available.isNotEmpty &&
+        selected.length < settings.maxRetrievedChunks &&
+        remaining > 180) {
+      _ScoredMemoryChunk? best;
+      var bestMmr = -double.infinity;
+      var bestIndex = -1;
+      for (var i = 0; i < available.length; i++) {
+        final item = available[i];
+        final text = item.chunk.text.trim();
+        if (text.isEmpty) continue;
+        if (item.certainty < 0.34 && selected.isNotEmpty) continue;
+        final cost = _contextCost(item.chunk);
+        if (cost > remaining && selected.isNotEmpty) continue;
+        final maxSimilarity = selected.isEmpty
+            ? 0.0
+            : selected
+                  .map(
+                    (other) =>
+                        _cosine(item.chunk.embedding, other.chunk.embedding),
+                  )
+                  .reduce(math.max);
+        if (maxSimilarity >= 0.965) continue;
+        final rotationBonus =
+            available.length > 1 &&
+                i == (rotation + selected.length) % available.length
+            ? 0.012
+            : 0.0;
+        final mmr =
+            item.score - settings.diversity * maxSimilarity + rotationBonus;
+        if (mmr > bestMmr) {
+          bestMmr = mmr;
+          best = item;
+          bestIndex = i;
         }
       }
+      if (best == null) break;
+      final chosen =
+          selected.length >= math.max(4, settings.maxRetrievedChunks ~/ 2)
+          ? best.asRotated()
+          : best;
+      selected.add(chosen);
+      remaining -= _contextCost(best.chunk);
+      available.removeAt(bestIndex);
+      if (remaining <= 420) break;
     }
     selected.sort((a, b) => a.chunk.createdAt.compareTo(b.chunk.createdAt));
     return selected;
@@ -16111,23 +16993,6 @@ final class NazaVectorMemory {
     final summaryCost = chunk.summary.isEmpty ? 0 : chunk.summary.length;
     final detailCost = math.min(chunk.text.length, 760);
     return math.max(180, math.min(960, summaryCost + detailCost + 160));
-  }
-
-  bool _tooSimilarToSelected(
-    NazaMemoryChunk chunk,
-    List<_ScoredMemoryChunk> selected,
-  ) {
-    final tokens = _tokenSet(chunk.text);
-    if (tokens.length < 8) return false;
-    for (final item in selected) {
-      final other = _tokenSet(item.chunk.text);
-      if (other.isEmpty) continue;
-      final overlap =
-          tokens.intersection(other).length /
-          math.min(tokens.length, other.length);
-      if (overlap >= 0.78) return true;
-    }
-    return false;
   }
 
   String _buildContextBlock(List<_ScoredMemoryChunk> selected) {
@@ -16178,9 +17043,7 @@ final class NazaVectorMemory {
     required NazaMemoryChunk chunk,
   }) {
     if (queryTokens.isEmpty && focus.isEmpty) return 0;
-    final chunkTokens = _tokenSet(
-      '${chunk.summary} ${chunk.keywords.join(' ')} ${chunk.text}',
-    );
+    final chunkTokens = _cachedChunkTokens(chunk);
     if (chunkTokens.isEmpty) return 0;
     final queryOverlap = queryTokens.isEmpty
         ? 0.0
@@ -16192,6 +17055,16 @@ final class NazaVectorMemory {
     return (queryOverlap * 0.68 + focusOverlap * 0.32)
         .clamp(0.0, 1.0)
         .toDouble();
+  }
+
+  Set<String> _cachedChunkTokens(NazaMemoryChunk chunk) {
+    final cacheKey = '${chunk.id}:${chunk.text.hashCode}';
+    return _chunkTokenCache.putIfAbsent(
+      cacheKey,
+      () => _tokenSet(
+        '${chunk.summary} ${chunk.keywords.join(' ')} ${chunk.text}',
+      ),
+    );
   }
 
   double _tagAffinity({
@@ -16381,70 +17254,88 @@ final class NazaVectorMemory {
 class NazaOneApp extends StatelessWidget {
   final bool requireVaultUnlock;
   final NazaVisionPickerCallback? visionPicker;
+  final NazaChatPromptSender? chatPromptSender;
+  final NazaChatPromptCanceller? chatPromptCanceller;
 
   const NazaOneApp({
     super.key,
     this.requireVaultUnlock = true,
     this.visionPicker,
+    this.chatPromptSender,
+    this.chatPromptCanceller,
   });
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: NazaAppConfig.appName,
-      debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.dark,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        fontFamily: NazaFonts.display,
-        scaffoldBackgroundColor: NazaPalette.inkDeep,
-        splashFactory: NoSplash.splashFactory,
-        splashColor: Colors.transparent,
-        highlightColor: Colors.transparent,
-        hoverColor: Colors.transparent,
-        focusColor: Colors.transparent,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: NazaPalette.mint,
-          brightness: Brightness.dark,
-        ),
-        textTheme: const TextTheme(
-          displayLarge: TextStyle(fontFamily: NazaFonts.display),
-          displayMedium: TextStyle(fontFamily: NazaFonts.display),
-          displaySmall: TextStyle(fontFamily: NazaFonts.display),
-          headlineLarge: TextStyle(fontFamily: NazaFonts.display),
-          headlineMedium: TextStyle(fontFamily: NazaFonts.display),
-          headlineSmall: TextStyle(fontFamily: NazaFonts.display),
-          titleLarge: TextStyle(fontFamily: NazaFonts.display),
-          titleMedium: TextStyle(fontFamily: NazaFonts.display),
-          titleSmall: TextStyle(fontFamily: NazaFonts.display),
-          bodyLarge: TextStyle(fontFamily: NazaFonts.display),
-          bodyMedium: TextStyle(fontFamily: NazaFonts.display),
-          bodySmall: TextStyle(fontFamily: NazaFonts.display),
-          labelLarge: TextStyle(fontFamily: NazaFonts.display),
-          labelMedium: TextStyle(fontFamily: NazaFonts.display),
-          labelSmall: TextStyle(fontFamily: NazaFonts.display),
-        ),
-        textSelectionTheme: const TextSelectionThemeData(
-          cursorColor: NazaPalette.mintSoft,
-          selectionColor: Color(0x554CE9A0),
-          selectionHandleColor: NazaPalette.mintSoft,
-        ),
-      ),
-      home: requireVaultUnlock
-          ? NazaVaultGate(visionPicker: visionPicker)
-          : NazaStableHome(
-              visionPicker: visionPicker,
-              initializeServices: false,
-            ),
+    return ValueListenableBuilder<String>(
+      valueListenable: NazaThemeStore.selectedId,
+      builder: (_, themeId, _) {
+        final selectedTheme = NazaBootThemeCatalog.byId(themeId);
+        final theme = selectedTheme.build().copyWith(
+          splashFactory: NoSplash.splashFactory,
+          splashColor: Colors.transparent,
+          highlightColor: Colors.transparent,
+          hoverColor: Colors.transparent,
+          focusColor: Colors.transparent,
+          textTheme: const TextTheme(
+            displayLarge: TextStyle(fontFamily: NazaFonts.display),
+            displayMedium: TextStyle(fontFamily: NazaFonts.display),
+            displaySmall: TextStyle(fontFamily: NazaFonts.display),
+            headlineLarge: TextStyle(fontFamily: NazaFonts.display),
+            headlineMedium: TextStyle(fontFamily: NazaFonts.display),
+            headlineSmall: TextStyle(fontFamily: NazaFonts.display),
+            titleLarge: TextStyle(fontFamily: NazaFonts.display),
+            titleMedium: TextStyle(fontFamily: NazaFonts.display),
+            titleSmall: TextStyle(fontFamily: NazaFonts.display),
+            bodyLarge: TextStyle(fontFamily: NazaFonts.display),
+            bodyMedium: TextStyle(fontFamily: NazaFonts.display),
+            bodySmall: TextStyle(fontFamily: NazaFonts.display),
+            labelLarge: TextStyle(fontFamily: NazaFonts.display),
+            labelMedium: TextStyle(fontFamily: NazaFonts.display),
+            labelSmall: TextStyle(fontFamily: NazaFonts.display),
+          ),
+          textSelectionTheme: TextSelectionThemeData(
+            cursorColor: selectedTheme.accent,
+            selectionColor: selectedTheme.seed.withValues(alpha: 0.34),
+            selectionHandleColor: selectedTheme.accent,
+          ),
+        );
+        return MaterialApp(
+          title: NazaAppConfig.appName,
+          debugShowCheckedModeBanner: false,
+          themeMode: selectedTheme.brightness == Brightness.light
+              ? ThemeMode.light
+              : ThemeMode.dark,
+          theme: theme,
+          home: requireVaultUnlock
+              ? NazaVaultGate(
+                  visionPicker: visionPicker,
+                  chatPromptSender: chatPromptSender,
+                  chatPromptCanceller: chatPromptCanceller,
+                )
+              : NazaStableHome(
+                  visionPicker: visionPicker,
+                  chatPromptSender: chatPromptSender,
+                  chatPromptCanceller: chatPromptCanceller,
+                  initializeServices: false,
+                ),
+        );
+      },
     );
   }
 }
 
 class NazaVaultGate extends StatefulWidget {
   final NazaVisionPickerCallback? visionPicker;
+  final NazaChatPromptSender? chatPromptSender;
+  final NazaChatPromptCanceller? chatPromptCanceller;
 
-  const NazaVaultGate({super.key, this.visionPicker});
+  const NazaVaultGate({
+    super.key,
+    this.visionPicker,
+    this.chatPromptSender,
+    this.chatPromptCanceller,
+  });
 
   @override
   State<NazaVaultGate> createState() => _NazaVaultGateState();
@@ -16478,17 +17369,22 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
     super.dispose();
   }
 
+  Future<void> _markUnlocked() async {
+    await NazaThemeStore.load();
+    if (mounted) setState(() => _unlocked = true);
+  }
+
   Future<void> _inspectAndMaybeUnlock() async {
     try {
       final inspection = await NazaVault.instance.inspect();
       if (inspection.access == NazaVaultAccess.unlocked) {
-        if (mounted) setState(() => _unlocked = true);
+        await _markUnlocked();
         return;
       }
       if (inspection.access == NazaVaultAccess.locked &&
           !inspection.passwordRequired) {
         await NazaVault.instance.unlockWithDeviceKey();
-        if (mounted) setState(() => _unlocked = true);
+        await _markUnlocked();
         return;
       }
       if (!mounted) return;
@@ -16535,7 +17431,7 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
       }
       _password.clear();
       _confirmation.clear();
-      if (mounted) setState(() => _unlocked = true);
+      await _markUnlocked();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -16639,7 +17535,7 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
       );
       _password.clear();
       _confirmation.clear();
-      if (mounted) setState(() => _unlocked = true);
+      await _markUnlocked();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -16663,6 +17559,8 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
     if (_unlocked) {
       return NazaStableHome(
         visionPicker: widget.visionPicker,
+        chatPromptSender: widget.chatPromptSender,
+        chatPromptCanceller: widget.chatPromptCanceller,
         initialPanel: _openPostQuantumSetup
             ? NazaPanel.settings
             : NazaPanel.chat,
@@ -16690,7 +17588,7 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.enhanced_encryption_rounded,
                             color: NazaPalette.mintSoft,
                             size: 42,
@@ -16713,14 +17611,14 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                                 ? 'Your password wraps the vault key. It is never stored and cannot be recovered.'
                                 : 'Enter the startup password to unlock local data for this app process.',
                             textAlign: TextAlign.center,
-                            style: const TextStyle(
+                            style: TextStyle(
                               color: NazaPalette.subtext,
                               height: 1.4,
                             ),
                           ),
                           if (inspection?.legacyDataPresent == true) ...[
                             const SizedBox(height: 12),
-                            const Text(
+                            Text(
                               'Existing encrypted data will be authenticated, migrated, read back, and only then retired.',
                               textAlign: TextAlign.center,
                               style: TextStyle(
@@ -16732,9 +17630,9 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                           ],
                           if (_busy) ...[
                             const SizedBox(height: 24),
-                            const LinearProgressIndicator(
+                            NazaProgressBar(
                               color: NazaPalette.mintSoft,
-                              backgroundColor: Color(0x221AD697),
+                              backgroundColor: NazaPalette.panelSoft,
                             ),
                           ] else ...[
                             const SizedBox(height: 20),
@@ -16794,11 +17692,11 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                                   contentPadding: EdgeInsets.zero,
                                   value: _passwordRequired,
                                   activeThumbColor: NazaPalette.mintSoft,
-                                  title: const Text(
+                                  title: Text(
                                     'Require password at each app start',
                                     style: TextStyle(color: NazaPalette.text),
                                   ),
-                                  subtitle: const Text(
+                                  subtitle: Text(
                                     'Recommended and enabled by default. Turning it off delegates unlock to the operating-system secure key store.',
                                     style: TextStyle(
                                       color: NazaPalette.subtext,
@@ -16814,13 +17712,13 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                               Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
-                                  color: const Color(0x331AD697),
+                                  color: NazaPalette.selection,
                                   border: Border.all(
-                                    color: const Color(0x665EE8A6),
+                                    color: NazaPalette.borderStrong,
                                   ),
                                   borderRadius: BorderRadius.circular(14),
                                 ),
-                                child: const Row(
+                                child: Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Icon(
@@ -16847,7 +17745,7 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                               Text(
                                 _error!,
                                 key: const ValueKey('vault-error'),
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: NazaPalette.danger,
                                   height: 1.35,
                                 ),
@@ -16871,8 +17769,8 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                               const SizedBox(height: 8),
                               OutlinedButton.icon(
                                 onPressed: _restoreRecovery,
-                                icon: const Icon(Icons.settings_backup_restore),
-                                label: const Text('Restore Hybrid Recovery'),
+                                icon: Icon(Icons.settings_backup_restore),
+                                label: Text('Restore Hybrid Recovery'),
                               ),
                             ],
                           ],
@@ -17154,9 +18052,11 @@ final class NazaScannerResult {
   Color get riskColor {
     switch (riskLabel.toLowerCase()) {
       case 'low':
-        return const Color(0xFF57EFAE);
+        return NazaPalette.success;
+      case 'medium':
+        return NazaPalette.warning;
       case 'high':
-        return const Color(0xFFFF7C5C);
+        return NazaPalette.danger;
       default:
         return NazaPalette.muted;
     }
@@ -17165,9 +18065,9 @@ final class NazaScannerResult {
   Color get safetyColor {
     final score = safetyScore;
     if (score == null) return NazaPalette.muted;
-    if (score >= 74) return const Color(0xFF57EFAE);
-    if (score >= 45) return const Color(0xFFFFD166);
-    return const Color(0xFFFF7C5C);
+    if (score >= 74) return NazaPalette.success;
+    if (score >= 45) return NazaPalette.warning;
+    return NazaPalette.danger;
   }
 
   String get safetyBand {
@@ -17234,8 +18134,24 @@ final class NazaScannerResult {
 
 enum NazaPanel { chat, roadScanner, foodWater, settings, history }
 
+class _NazaThemeSurface extends StatelessWidget {
+  final Widget child;
+
+  const _NazaThemeSurface({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    // Palette colors are resolved from the selected theme by the widgets
+    // themselves. Avoid a full-screen tint layer here: on the desktop
+    // software renderer it forces every frame through another large blend.
+    return child;
+  }
+}
+
 class NazaStableHome extends StatefulWidget {
   final NazaVisionPickerCallback? visionPicker;
+  final NazaChatPromptSender? chatPromptSender;
+  final NazaChatPromptCanceller? chatPromptCanceller;
   final bool initializeServices;
   final FoodRepository? foodRepository;
   final FoodPhotoPicker? foodPhotoPicker;
@@ -17244,6 +18160,8 @@ class NazaStableHome extends StatefulWidget {
   const NazaStableHome({
     super.key,
     this.visionPicker,
+    this.chatPromptSender,
+    this.chatPromptCanceller,
     this.initializeServices = true,
     this.foodRepository,
     this.foodPhotoPicker,
@@ -17259,6 +18177,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
   final TextEditingController _inputController = TextEditingController();
   final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
+  final ValueNotifier<int> _messageRevision = ValueNotifier<int>(0);
   late final FoodRepository _foodRepository;
   late final FoodPhotoPicker _foodPhotoPicker;
   final FoodVisionDraftController _foodVisionDraft =
@@ -17267,6 +18186,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
   final List<NazaUiMessage> _messages = <NazaUiMessage>[];
   String _activeThreadId = NazaHistoryRow._id();
   final List<NazaHistoryRow> _threadRows = <NazaHistoryRow>[];
+  List<NazaConversationThread> _recentThreads =
+      const <NazaConversationThread>[];
+  int _recentLoadSerial = 0;
   String? _continuationOriginalPrompt;
   String? _continuationTurnId;
   String? _continuationAssistantMessageId;
@@ -17286,6 +18208,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
   NazaVisionImage? _pendingVisionImage;
   String _status = 'ready';
   DateTime _lastScrollRequestAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _followOutput = true;
   final Map<NazaPanel, Widget> _panelCache = <NazaPanel, Widget>{};
 
   @override
@@ -17300,7 +18223,14 @@ class _NazaStableHomeState extends State<NazaStableHome>
             : MemoryFoodRepository());
     _foodPhotoPicker = widget.foodPhotoPicker ?? FoodPhotoPicker.instance;
     WidgetsBinding.instance.addObserver(this);
+    _scrollController.addListener(_handleScrollPosition);
+    NazaVault.instance.revision.addListener(_reloadRecentConversations);
+    NazaThemeStore.selectedId.addListener(_handleThemeChanged);
+    unawaited(NazaSettingsModeStore.load());
+    unawaited(NazaVectorMemory.instance.prepareSettings());
     if (widget.initializeServices) {
+      final recentLoad = _loadRecentConversations();
+      unawaited(recentLoad);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(NazaLocalGemma.instance.prepareBackendPreference());
         unawaited(NazaGenerationSettingsStore.instance.prepare());
@@ -17317,9 +18247,19 @@ class _NazaStableHomeState extends State<NazaStableHome>
     if (widget.initializeServices) unawaited(_persistScannerDrafts());
     _inputController.dispose();
     _inputFocus.dispose();
+    _scrollController.removeListener(_handleScrollPosition);
     _scrollController.dispose();
+    _messageRevision.dispose();
     _foodVisionDraft.dispose();
+    NazaVault.instance.revision.removeListener(_reloadRecentConversations);
+    NazaThemeStore.selectedId.removeListener(_handleThemeChanged);
     super.dispose();
+  }
+
+  void _handleThemeChanged() {
+    if (!mounted) return;
+    _panelCache.clear();
+    setState(() {});
   }
 
   @override
@@ -17338,6 +18278,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   Future<void> _closeDetachedProcess() async {
     if (widget.initializeServices) await _persistScannerDrafts();
+    await NazaLocalGemma.instance.waitForActiveTurnToSettle();
     await NazaLocalGemma.instance.close(phase: 'closed with app process');
     if (widget.initializeServices) await NazaVault.instance.lock();
   }
@@ -17345,6 +18286,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
   Future<void> _loadScannerDrafts() async {
     final drafts = await NazaVault.instance.readScannerDrafts();
     if (!mounted) return;
+    _panelCache
+      ..remove(NazaPanel.roadScanner)
+      ..remove(NazaPanel.foodWater);
     setState(() {
       _roadDraft = Map<String, String>.from(drafts['road'] ?? const {});
       _foodDraft = Map<String, String>.from(drafts['food'] ?? const {});
@@ -17353,6 +18297,37 @@ class _NazaStableHomeState extends State<NazaStableHome>
         ...Map<String, String>.from(drafts['foodPlanner'] ?? const {}),
       };
     });
+  }
+
+  void _reloadRecentConversations() {
+    if (!widget.initializeServices) return;
+    unawaited(_loadRecentConversations());
+  }
+
+  Future<void> _loadRecentConversations() async {
+    final serial = ++_recentLoadSerial;
+    try {
+      final rows = await NazaVault.instance.readHistory();
+      if (!mounted || serial != _recentLoadSerial) return;
+      _panelCache.remove(NazaPanel.history);
+      // This snapshot feeds the next prompt only; History owns its own vault
+      // listener. Rebuilding the entire shell after every encrypted response
+      // save caused a visible completion hitch for data that is not rendered.
+      _recentThreads = NazaConversationThread.group(
+        rows,
+      ).take(6).toList(growable: false);
+    } catch (_) {
+      // Recent browsing is supplemental; the chat surface remains usable if
+      // history is temporarily unavailable.
+    }
+  }
+
+  void _handleScrollPosition() {
+    if (!_scrollController.hasClients) return;
+    final distance =
+        _scrollController.position.maxScrollExtent -
+        _scrollController.position.pixels;
+    _followOutput = distance <= 72;
   }
 
   void _updateRoadDraft(Map<String, String> draft) {
@@ -17475,7 +18450,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
     if (prompt.isEmpty || _sending) return;
     final selectedMode = mode ?? NazaChatModeRouter.route(prompt);
     final turnId = NazaHistoryRow._id();
-    final threadContext = NazaThreadContext.fromRows(_threadRows);
+    final threadId = _activeThreadId;
 
     final workingMessage = NazaUiMessage.assistant(
       workingText,
@@ -17507,6 +18482,15 @@ class _NazaStableHomeState extends State<NazaStableHome>
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
 
+    // Recent-history browsing is supplemental. Never hold a visible prompt or
+    // the native generation lock behind encrypted history I/O; use the latest
+    // context already available in memory and let the background load finish.
+    final threadContext = [
+      NazaThreadContext.fromRows(_threadRows),
+      if (_threadRows.isEmpty)
+        NazaThreadContext.fromRecentThreads(_recentThreads),
+    ].where((item) => item.trim().isNotEmpty).join('\n');
+
     NazaResponse response;
     var lastPartialPaint = DateTime.fromMillisecondsSinceEpoch(0);
     var lastPartialText = '';
@@ -17527,34 +18511,33 @@ class _NazaStableHomeState extends State<NazaStableHome>
       lastPartialPaint = now;
       lastPartialText = cleaned;
 
-      setState(() {
-        final workingIndex = _messages.indexWhere(
-          (m) => m.id == workingMessage.id,
+      final workingIndex = _messages.indexWhere(
+        (m) => m.id == workingMessage.id,
+      );
+      if (workingIndex >= 0) {
+        _messages[workingIndex] = NazaUiMessage.assistant(
+          cleaned,
+          id: workingMessage.id,
+          route: 'streaming',
+          score: 1,
+          isWorking: true,
         );
-        if (workingIndex >= 0) {
-          _messages[workingIndex] = NazaUiMessage.assistant(
-            cleaned,
-            id: workingMessage.id,
-            route: 'streaming',
-            score: 1,
-            isWorking: true,
-          );
-        }
-      });
+        if (_panel == NazaPanel.chat) _messageRevision.value++;
+      }
 
       _scrollToBottom();
     }
 
     try {
-      response = await NazaLocalGemma.instance.send(
-        prompt,
+      final request = NazaChatPromptRequest(
+        prompt: prompt,
         onPartial: paintPartial,
         historyUserText: visionImage == null
             ? visibleUserText
             : '[Image attached: ${visionImage.name} • ${visionImage.dimensions}]\n$visibleUserText',
         visionImage: visionImage,
         useMemory: visionImage == null,
-        historyThreadId: _activeThreadId,
+        historyThreadId: threadId,
         historyTurnId: turnId,
         threadContext: threadContext,
         maxContinuationsOverride:
@@ -17563,8 +18546,23 @@ class _NazaStableHomeState extends State<NazaStableHome>
                 selectedMode == NazaChatMode.chef
             ? 0
             : null,
-        systemInstructionOverride: NazaChatModeRouter.prompt(selectedMode),
+        systemInstruction: NazaChatModeRouter.prompt(selectedMode),
       );
+      final sender = widget.chatPromptSender;
+      response = sender == null
+          ? await NazaLocalGemma.instance.send(
+              request.prompt,
+              onPartial: request.onPartial,
+              historyUserText: request.historyUserText,
+              visionImage: request.visionImage,
+              useMemory: request.useMemory,
+              historyThreadId: request.historyThreadId,
+              historyTurnId: request.historyTurnId,
+              threadContext: request.threadContext,
+              maxContinuationsOverride: request.maxContinuationsOverride,
+              systemInstructionOverride: request.systemInstruction,
+            )
+          : await sender(request);
     } catch (error) {
       response = NazaResponse(
         text: 'Local model error: $error',
@@ -17609,7 +18607,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
       final row = NazaHistoryRow(
         id: turnId,
-        threadId: _activeThreadId,
+        threadId: threadId,
         timestamp: response.createdAt,
         user: visibleUserText.trim(),
         assistant: response.text,
@@ -17630,7 +18628,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
       }
     });
 
-    _scrollToBottom(force: true);
+    _scrollToBottom();
     if (focusComposerWhenDone) {
       _inputFocus.requestFocus();
     }
@@ -17942,9 +18940,11 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _stopActiveGeneration() {
     if (!_sending || _stopping) return;
-    final accepted = NazaLocalGemma.instance.cancelActiveGeneration(
-      reason: 'user pressed Stop',
-    );
+    final accepted =
+        widget.chatPromptCanceller?.call() ??
+        NazaLocalGemma.instance.cancelActiveGeneration(
+          reason: 'user pressed Stop',
+        );
     if (!accepted) return;
     setState(() {
       _stopping = true;
@@ -17990,18 +18990,17 @@ class _NazaStableHomeState extends State<NazaStableHome>
       final now = DateTime.now();
       if (now.difference(lastPaint) < const Duration(milliseconds: 260)) return;
       lastPaint = now;
-      setState(() {
-        final index = _messages.indexWhere((item) => item.id == assistantId);
-        if (index >= 0) {
-          _messages[index] = NazaUiMessage.assistant(
-            partial,
-            id: assistantId,
-            route: 'manual-continuation',
-            score: 1,
-            isWorking: true,
-          );
-        }
-      });
+      final index = _messages.indexWhere((item) => item.id == assistantId);
+      if (index >= 0) {
+        _messages[index] = NazaUiMessage.assistant(
+          partial,
+          id: assistantId,
+          route: 'manual-continuation',
+          score: 1,
+          isWorking: true,
+        );
+        if (_panel == NazaPanel.chat) _messageRevision.value++;
+      }
       _scrollToBottom();
     }
 
@@ -18043,7 +19042,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
       }
       _continuationText = finalText;
     });
-    _scrollToBottom(force: true);
+    _scrollToBottom();
   }
 
   void _newThread() {
@@ -18065,6 +19064,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _openThread(NazaConversationThread thread) {
     if (_sending) return;
+    if (_panel == NazaPanel.history) {
+      _panelCache.remove(NazaPanel.history);
+    }
     final turns = thread.turns.toList(growable: false);
     setState(() {
       _activeThreadId = thread.id;
@@ -18099,6 +19101,12 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _openScannerHistory(NazaScannerHistoryRow row) {
     if (_sending) return;
+    if (_panel == NazaPanel.history) {
+      _panelCache.remove(NazaPanel.history);
+    }
+    _panelCache.remove(
+      row.mode == 'road' ? NazaPanel.roadScanner : NazaPanel.foodWater,
+    );
     setState(() {
       switch (row.mode) {
         case 'food':
@@ -18164,12 +19172,18 @@ class _NazaStableHomeState extends State<NazaStableHome>
       return;
     }
     if (!mounted) return;
+    _panelCache.remove(NazaPanel.history);
     setState(() {
       _status = 'history cleared';
     });
   }
 
   void _setPanel(NazaPanel panel) {
+    if (_panel == NazaPanel.history && panel != NazaPanel.history) {
+      // History owns vault listeners and performs encrypted reads. Dispose it
+      // when hidden so every generated turn does not rebuild an offstage list.
+      _panelCache.remove(NazaPanel.history);
+    }
     setState(() {
       _panel = panel;
       _status = _labelForPanel(panel);
@@ -18177,6 +19191,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
   }
 
   void _scrollToBottom({bool force = false}) {
+    if (!force && !_followOutput) return;
+    if (force) _followOutput = true;
     final now = DateTime.now();
     if (!force &&
         now.difference(_lastScrollRequestAt) <
@@ -18187,6 +19203,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
+      if (!force && !_followOutput) return;
       _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
     });
   }
@@ -18195,58 +19212,61 @@ class _NazaStableHomeState extends State<NazaStableHome>
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 760;
 
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      backgroundColor: NazaPalette.inkDeep,
-      body: Stack(
-        children: [
-          const _NazaStaticBackdrop(),
-          SafeArea(
-            child: Row(
-              children: [
-                if (wide) _SideRail(panel: _panel, onPanel: _setPanel),
-                Expanded(
-                  child: Column(
-                    children: [
-                      _TopBar(
-                        panel: _panel,
-                        status: _status,
-                        wide: wide,
-                        sending: _sending,
-                        stopping: _stopping,
-                        onStop: _stopActiveGeneration,
-                        onNewThread: _newThread,
-                        onPanel: _setPanel,
-                      ),
-                      Expanded(
-                        child: Row(
-                          children: [Expanded(child: _buildPanelStack())],
-                        ),
-                      ),
-                      if (_panel == NazaPanel.chat)
-                        _ComposerBar(
-                          controller: _inputController,
-                          focusNode: _inputFocus,
+    return _NazaThemeSurface(
+      child: Scaffold(
+        resizeToAvoidBottomInset: true,
+        backgroundColor: NazaPalette.inkDeep,
+        body: Stack(
+          children: [
+            const _NazaStaticBackdrop(),
+            SafeArea(
+              child: Row(
+                children: [
+                  if (wide) _SideRail(panel: _panel, onPanel: _setPanel),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        _TopBar(
+                          panel: _panel,
+                          status: _status,
+                          wide: wide,
                           sending: _sending,
-                          pickingImage: _pickingImage,
-                          selectedImage: _pendingVisionImage,
-                          canContinue:
-                              _continuationText.trim().isNotEmpty &&
-                              _continuationTurnId != null,
-                          onPickImage: _pickVisionImage,
-                          onRemoveImage: _removeVisionImage,
-                          onSend: _send,
+                          stopping: _stopping,
                           onStop: _stopActiveGeneration,
-                          onContinue: _continueWhereLeftOff,
+                          onNewThread: _newThread,
+                          onPanel: _setPanel,
                         ),
-                      if (!wide) _BottomTabs(panel: _panel, onPanel: _setPanel),
-                    ],
+                        Expanded(
+                          child: Row(
+                            children: [Expanded(child: _buildPanelStack())],
+                          ),
+                        ),
+                        if (_panel == NazaPanel.chat)
+                          _ComposerBar(
+                            controller: _inputController,
+                            focusNode: _inputFocus,
+                            sending: _sending,
+                            pickingImage: _pickingImage,
+                            selectedImage: _pendingVisionImage,
+                            canContinue:
+                                _continuationText.trim().isNotEmpty &&
+                                _continuationTurnId != null,
+                            onPickImage: _pickVisionImage,
+                            onRemoveImage: _removeVisionImage,
+                            onSend: _send,
+                            onStop: _stopActiveGeneration,
+                            onContinue: _continueWhereLeftOff,
+                          ),
+                        if (!wide)
+                          _BottomTabs(panel: _panel, onPanel: _setPanel),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -18262,24 +19282,26 @@ class _NazaStableHomeState extends State<NazaStableHome>
                 !modelStatus.installed ||
                 modelStatus.busy ||
                 modelStatus.error != null;
-            return ListView.builder(
-              controller: _scrollController,
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              itemCount: _messages.length + (showModelCard ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (showModelCard && index == 0) {
-                  return const _ModelFirstBootCard();
-                }
-                final message = _messages[index - (showModelCard ? 1 : 0)];
-                if (message.isWorking && message.text.trim().isEmpty) {
-                  return const SizedBox.shrink();
-                }
-                return _StableMessageBubble(
-                  key: ValueKey<String>(message.id),
-                  message: message,
-                );
-              },
+            return ValueListenableBuilder<int>(
+              valueListenable: _messageRevision,
+              builder: (context, _, _) => ListView.builder(
+                controller: _scrollController,
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                itemCount: _messages.length + (showModelCard ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (showModelCard && index == 0) {
+                    return const _ModelFirstBootCard();
+                  }
+                  final messageIndex = index - (showModelCard ? 1 : 0);
+                  final message = _messages[messageIndex];
+                  return _StableMessageBubble(
+                    key: ValueKey<String>(message.id),
+                    message: message,
+                  );
+                },
+              ),
             );
           },
         );
@@ -18389,18 +19411,20 @@ class _NazaStaticBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const IgnorePointer(
-      child: RepaintBoundary(
-        child: Stack(
-          children: [
-            Positioned.fill(child: ColoredBox(color: NazaPalette.inkDeep)),
-            Positioned.fill(
-              child: CustomPaint(painter: _NazaBackdropPainter()),
-            ),
-          ],
-        ),
-      ),
-    );
+    // Keep the decorative canvas available for GPU builds, but use an opaque
+    // surface on the software renderer. The large translucent circles, paths,
+    // and grid were the dominant source of raster jank behind every panel.
+    final background = NazaPalette.reduceRasterEffects
+        ? ColoredBox(color: NazaPalette.inkDeep)
+        : Stack(
+            children: [
+              Positioned.fill(child: ColoredBox(color: NazaPalette.inkDeep)),
+              Positioned.fill(
+                child: CustomPaint(painter: _NazaBackdropPainter()),
+              ),
+            ],
+          );
+    return IgnorePointer(child: RepaintBoundary(child: background));
   }
 }
 
@@ -18508,13 +19532,15 @@ class _ModelWorkingBeaconState extends State<_ModelWorkingBeacon>
   Widget build(BuildContext context) {
     return Tooltip(
       message: 'Local model is working',
-      child: SizedBox(
-        width: 38,
-        height: 38,
-        child: AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) => CustomPaint(
-            painter: _ModelWorkingBeaconPainter(_controller.value),
+      child: RepaintBoundary(
+        child: SizedBox(
+          width: 38,
+          height: 38,
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => CustomPaint(
+              painter: _ModelWorkingBeaconPainter(_controller.value),
+            ),
           ),
         ),
       ),
@@ -18531,13 +19557,8 @@ class _ModelWorkingBeaconPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final center = size.center(Offset.zero);
     final radius = size.shortestSide * 0.13;
-    canvas.drawCircle(
-      center,
-      radius * 2.5,
-      Paint()
-        ..color = NazaPalette.mintSoft.withAlpha(35)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
-    );
+    // Keep the beacon as solid geometry. Blur-backed mask filters compile a
+    // new fragment shader on first use and are especially costly on desktop.
     canvas.drawCircle(center, radius, Paint()..color = NazaPalette.mintSoft);
     for (var i = 0; i < 3; i++) {
       final phase = (progress + i / 3) % 1.0;
@@ -18593,19 +19614,28 @@ class _TopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final title = _title(panel);
+    final narrow = MediaQuery.sizeOf(context).width < 380;
+    final compactButtonStyle = IconButton.styleFrom(
+      minimumSize: const Size(38, 40),
+      fixedSize: const Size(38, 40),
+      padding: EdgeInsets.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
     return Container(
       height: 68,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: EdgeInsets.symmetric(horizontal: narrow ? 8 : 14),
       decoration: BoxDecoration(
-        color: const Color(0xC6071611),
-        border: const Border(bottom: BorderSide(color: Color(0x22FFFFFF))),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF59EFA9).withAlpha(22),
-            blurRadius: 24,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        color: NazaPalette.shell,
+        border: Border(bottom: BorderSide(color: NazaPalette.border)),
+        boxShadow: NazaPalette.reduceRasterEffects
+            ? const []
+            : [
+                BoxShadow(
+                  color: NazaPalette.mint.withAlpha(22),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
+                ),
+              ],
       ),
       child: Row(
         children: [
@@ -18617,7 +19647,7 @@ class _TopBar extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 220),
+              duration: const Duration(milliseconds: 120),
               switchInCurve: Curves.easeOutCubic,
               child: title == null
                   ? const SizedBox.shrink(
@@ -18627,7 +19657,7 @@ class _TopBar extends StatelessWidget {
                       title,
                       key: ValueKey<NazaPanel>(panel),
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.text,
                         fontWeight: FontWeight.w900,
                         fontSize: 23,
@@ -18638,37 +19668,37 @@ class _TopBar extends StatelessWidget {
             ),
           ),
           if (panel == NazaPanel.chat) ...[
-            if (sending) const _ModelWorkingBeacon(),
+            if (sending && !narrow) const _ModelWorkingBeacon(),
             IconButton(
               onPressed: sending ? null : onNewThread,
               tooltip: 'Start new thread',
-              icon: const Icon(Icons.add_comment_rounded),
+              icon: Icon(Icons.add_comment_rounded),
               color: NazaPalette.mintSoft,
+              style: narrow ? compactButtonStyle : null,
             ),
-            const SizedBox(width: 4),
           ],
           ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: wide ? 260 : 110),
+            constraints: BoxConstraints(
+              maxWidth: wide
+                  ? 260
+                  : narrow
+                  ? 76
+                  : 110,
+            ),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: const Color(0x55101E19),
+                color: NazaPalette.shellSoft,
                 borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0x228DFFC4)),
+                border: Border.all(color: NazaPalette.border),
               ),
-              child: Text(
-                status,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: NazaPalette.subtext,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 11,
-                  fontFamily: NazaFonts.mono,
-                  letterSpacing: 0.2,
-                ),
-              ),
+              child: sending
+                  ? ValueListenableBuilder<NazaRuntimeSnapshot>(
+                      valueListenable: NazaLocalGemma.instance.snapshot,
+                      builder: (_, snap, _) =>
+                          _TopStatusText(snap.busy ? snap.phase : status),
+                    )
+                  : _TopStatusText(status),
             ),
           ),
           if (sending) ...[
@@ -18679,19 +19709,15 @@ class _TopBar extends StatelessWidget {
               icon: Icon(
                 stopping ? Icons.hourglass_top_rounded : Icons.stop_rounded,
               ),
-              color: const Color(0xFFFFE8E1),
+              color: NazaPalette.text,
               style: IconButton.styleFrom(
-                backgroundColor: const Color(0xFF9F3A2C),
-                disabledBackgroundColor: const Color(0x665B332C),
+                minimumSize: narrow ? const Size(40, 40) : null,
+                fixedSize: narrow ? const Size(40, 40) : null,
+                padding: narrow ? EdgeInsets.zero : null,
+                tapTargetSize: narrow ? MaterialTapTargetSize.shrinkWrap : null,
+                backgroundColor: NazaPalette.danger,
+                disabledBackgroundColor: NazaPalette.danger.withAlpha(100),
               ),
-            ),
-          ],
-          if (!wide) ...[
-            const SizedBox(width: 8),
-            _IconPill(
-              icon: Icons.settings_rounded,
-              selected: panel == NazaPanel.settings,
-              onTap: () => onPanel(NazaPanel.settings),
             ),
           ],
         ],
@@ -18715,6 +19741,29 @@ class _TopBar extends StatelessWidget {
   }
 }
 
+class _TopStatusText extends StatelessWidget {
+  final String text;
+
+  const _TopStatusText(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        color: NazaPalette.subtext,
+        fontWeight: FontWeight.w800,
+        fontSize: 11,
+        fontFamily: NazaFonts.mono,
+        letterSpacing: 0.2,
+      ),
+    );
+  }
+}
+
 class _SideRail extends StatelessWidget {
   final NazaPanel panel;
   final ValueChanged<NazaPanel> onPanel;
@@ -18725,9 +19774,9 @@ class _SideRail extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: 88,
-      decoration: const BoxDecoration(
-        color: Color(0xCC04100B),
-        border: Border(right: BorderSide(color: Color(0x22FFFFFF))),
+      decoration: BoxDecoration(
+        color: NazaPalette.shell,
+        border: Border(right: BorderSide(color: NazaPalette.border)),
       ),
       child: ListView(
         padding: const EdgeInsets.only(top: 12),
@@ -18789,23 +19838,25 @@ class _RailButton extends StatelessWidget {
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
         child: AnimatedScale(
-          scale: selected ? 1.035 : 1.0,
-          duration: const Duration(milliseconds: 180),
+          scale: selected ? 1.015 : 1.0,
+          duration: const Duration(milliseconds: 110),
           curve: Curves.easeOutCubic,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
+            duration: const Duration(milliseconds: 120),
             curve: Curves.easeOutCubic,
             height: selected ? 66 : 60,
             decoration: BoxDecoration(
-              color: selected ? const Color(0x2E3EFF92) : Colors.transparent,
+              color: selected ? NazaPalette.selection : Colors.transparent,
               borderRadius: BorderRadius.circular(selected ? 22 : 18),
               border: Border.all(
-                color: selected ? const Color(0x888DFFC4) : Colors.transparent,
+                color: selected ? NazaPalette.borderStrong : Colors.transparent,
               ),
-              boxShadow: selected
+              boxShadow: NazaPalette.reduceRasterEffects
+                  ? const []
+                  : selected
                   ? [
                       BoxShadow(
-                        color: const Color(0xFF59EFA9).withAlpha(32),
+                        color: NazaPalette.mint.withAlpha(32),
                         blurRadius: 18,
                         offset: const Offset(0, 8),
                       ),
@@ -18855,9 +19906,9 @@ class _BottomTabs extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 62,
-      decoration: const BoxDecoration(
-        color: Color(0xBB04100B),
-        border: Border(top: BorderSide(color: Color(0x22FFFFFF))),
+      decoration: BoxDecoration(
+        color: NazaPalette.shell,
+        border: Border(top: BorderSide(color: NazaPalette.border)),
       ),
       child: Row(
         children: [
@@ -18921,33 +19972,39 @@ class _BottomTab extends StatelessWidget {
           curve: Curves.easeOutCubic,
           margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 7),
           decoration: BoxDecoration(
-            color: selected ? const Color(0x263EFF92) : Colors.transparent,
+            color: selected ? NazaPalette.selection : Colors.transparent,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: selected ? const Color(0x558DFFC4) : Colors.transparent,
+              color: selected ? NazaPalette.borderStrong : Colors.transparent,
             ),
           ),
           child: AnimatedScale(
             scale: selected ? 1.06 : 1.0,
             duration: const Duration(milliseconds: 180),
             curve: Curves.easeOutCubic,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  icon,
-                  color: selected ? NazaPalette.mintSoft : NazaPalette.subtext,
-                  size: selected ? 22 : 20,
-                ),
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: selected ? NazaPalette.text : NazaPalette.subtext,
-                    fontSize: 10,
-                    fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    icon,
+                    color: selected
+                        ? NazaPalette.mintSoft
+                        : NazaPalette.subtext,
+                    size: selected ? 22 : 20,
                   ),
-                ),
-              ],
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: selected ? NazaPalette.text : NazaPalette.subtext,
+                      fontSize: 10,
+                      fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -18973,25 +20030,25 @@ class _NazaGlassCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 240),
-      curve: Curves.easeOutCubic,
+    return Container(
       margin: margin,
       padding: padding,
       decoration: BoxDecoration(
-        color: active ? const Color(0xBB10261E) : const Color(0x99101E19),
+        color: active ? NazaPalette.panel : NazaPalette.panelSoft,
         borderRadius: BorderRadius.circular(radius),
         border: Border.all(
-          color: active ? const Color(0x558DFFC4) : const Color(0x22FFFFFF),
+          color: active ? NazaPalette.borderStrong : NazaPalette.border,
         ),
-        boxShadow: [
-          if (active)
-            BoxShadow(
-              color: const Color(0xFF59EFA9).withAlpha(25),
-              blurRadius: 22,
-              offset: const Offset(0, 10),
-            ),
-        ],
+        boxShadow: NazaPalette.reduceRasterEffects
+            ? const []
+            : [
+                if (active)
+                  BoxShadow(
+                    color: NazaPalette.mint.withAlpha(25),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
+                  ),
+              ],
       ),
       child: child,
     );
@@ -19060,15 +20117,17 @@ class _ComposerBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
       decoration: BoxDecoration(
-        color: const Color(0xD606110D),
-        border: const Border(top: BorderSide(color: Color(0x22FFFFFF))),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF000000).withAlpha(90),
-            blurRadius: 24,
-            offset: const Offset(0, -8),
-          ),
-        ],
+        color: NazaPalette.shell,
+        border: Border(top: BorderSide(color: NazaPalette.border)),
+        boxShadow: NazaPalette.reduceRasterEffects
+            ? const []
+            : [
+                BoxShadow(
+                  color: const Color(0xFF000000).withAlpha(90),
+                  blurRadius: 24,
+                  offset: const Offset(0, -8),
+                ),
+              ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -19078,11 +20137,11 @@ class _ComposerBar extends StatelessWidget {
               alignment: Alignment.centerRight,
               child: OutlinedButton.icon(
                 onPressed: onContinue,
-                icon: const Icon(Icons.fast_forward_rounded, size: 18),
-                label: const Text('Continue where left off'),
+                icon: Icon(Icons.fast_forward_rounded, size: 18),
+                label: Text('Continue where left off'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: NazaPalette.mintSoft,
-                  side: const BorderSide(color: Color(0x668DFFC4)),
+                  side: BorderSide(color: NazaPalette.borderStrong),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
                   ),
@@ -19097,9 +20156,9 @@ class _ComposerBar extends StatelessWidget {
               margin: const EdgeInsets.only(bottom: 10),
               padding: const EdgeInsets.all(9),
               decoration: BoxDecoration(
-                color: const Color(0xAA101E19),
+                color: NazaPalette.panelSoft,
                 borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0x668DFFC4)),
+                border: Border.all(color: NazaPalette.borderStrong),
               ),
               child: Row(
                 children: [
@@ -19111,7 +20170,7 @@ class _ComposerBar extends StatelessWidget {
                       height: 62,
                       cacheWidth: 320,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const SizedBox(
+                      errorBuilder: (_, _, _) => SizedBox(
                         width: 62,
                         height: 62,
                         child: Icon(
@@ -19130,7 +20189,7 @@ class _ComposerBar extends StatelessWidget {
                           selectedImage!.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: NazaPalette.text,
                             fontWeight: FontWeight.w900,
                             fontFamily: NazaFonts.display,
@@ -19139,7 +20198,7 @@ class _ComposerBar extends StatelessWidget {
                         const SizedBox(height: 3),
                         Text(
                           '${selectedImage!.dimensions} • processed locally • 1 image max',
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: NazaPalette.subtext,
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
@@ -19152,7 +20211,7 @@ class _ComposerBar extends StatelessWidget {
                   IconButton(
                     onPressed: sending ? null : onRemoveImage,
                     tooltip: 'Remove image',
-                    icon: const Icon(Icons.close_rounded),
+                    icon: Icon(Icons.close_rounded),
                     color: NazaPalette.subtext,
                   ),
                 ],
@@ -19178,22 +20237,24 @@ class _ComposerBar extends StatelessWidget {
                   animation: focusNode,
                   builder: (context, child) {
                     return AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
+                      duration: const Duration(milliseconds: 120),
                       curve: Curves.easeOutCubic,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 16,
                         vertical: 14,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xAA101E19),
+                        color: NazaPalette.panelSoft,
                         borderRadius: BorderRadius.circular(22),
                         border: Border.all(
                           color: focusNode.hasFocus
                               ? NazaPalette.mintSoft
-                              : const Color(0x44FFFFFF),
+                              : NazaPalette.border,
                           width: focusNode.hasFocus ? 2 : 1,
                         ),
-                        boxShadow: focusNode.hasFocus
+                        boxShadow: NazaPalette.reduceRasterEffects
+                            ? const []
+                            : focusNode.hasFocus
                             ? [
                                 BoxShadow(
                                   color: NazaPalette.mintSoft.withAlpha(35),
@@ -19218,18 +20279,28 @@ class _ComposerBar extends StatelessWidget {
                     minLines: 1,
                     onSubmitted: sending ? null : (_) => onSend(),
                     cursorColor: NazaPalette.mintSoft,
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: NazaPalette.text,
                       fontSize: 17,
                       height: 1.28,
                       fontWeight: FontWeight.w700,
                       fontFamily: NazaFonts.display,
                     ),
-                    decoration: InputDecoration.collapsed(
+                    decoration: InputDecoration(
+                      isCollapsed: true,
+                      filled: false,
+                      fillColor: Colors.transparent,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      disabledBorder: InputBorder.none,
+                      errorBorder: InputBorder.none,
+                      focusedErrorBorder: InputBorder.none,
+                      contentPadding: EdgeInsets.zero,
                       hintText: sending
                           ? 'Write the next message...'
                           : 'Ask anything...',
-                      hintStyle: const TextStyle(
+                      hintStyle: TextStyle(
                         color: NazaPalette.muted,
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
@@ -19264,10 +20335,10 @@ class _ModelFirstBootCard extends StatelessWidget {
       valueListenable: NazaSecureModelStore.status,
       builder: (_, status, _) {
         final color = status.installed
-            ? const Color(0xFF57EFAE)
+            ? NazaPalette.success
             : status.error == null
-            ? const Color(0xFFFFD166)
-            : const Color(0xFFFF7C5C);
+            ? NazaPalette.warning
+            : NazaPalette.danger;
         return _NazaGlassCard(
           margin: const EdgeInsets.only(bottom: 12),
           padding: const EdgeInsets.all(15),
@@ -19290,7 +20361,7 @@ class _ModelFirstBootCard extends StatelessWidget {
                       status.installed
                           ? 'Local Gemma model ready'
                           : 'Local Gemma model setup',
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.text,
                         fontWeight: FontWeight.w900,
                         fontSize: 17,
@@ -19309,21 +20380,22 @@ class _ModelFirstBootCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: LinearProgressIndicator(
-                  minHeight: 7,
-                  value: status.busy || status.progress > 0
-                      ? status.progress.clamp(0, 100).toDouble() / 100
-                      : null,
-                  color: color,
-                  backgroundColor: const Color(0x33101E19),
-                ),
+              NazaProgressBar(
+                minHeight: 7,
+                value: status.installed
+                    ? 1
+                    : status.busy && status.progress > 0
+                    ? status.progress.clamp(0, 100).toDouble() / 100
+                    : status.busy
+                    ? null
+                    : 0,
+                color: color,
+                backgroundColor: NazaPalette.panelSoft,
               ),
               const SizedBox(height: 10),
               Text(
                 status.phase,
-                style: const TextStyle(
+                style: TextStyle(
                   color: NazaPalette.subtext,
                   height: 1.35,
                   fontWeight: FontWeight.w700,
@@ -19336,7 +20408,7 @@ class _ModelFirstBootCard extends StatelessWidget {
                   'Using verified local path: ${status.localPath}',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.mintSoft,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
@@ -19348,7 +20420,7 @@ class _ModelFirstBootCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(
                   status.error!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.danger,
                     height: 1.3,
                     fontWeight: FontWeight.w700,
@@ -19367,7 +20439,7 @@ class _ModelFirstBootCard extends StatelessWidget {
                         : () => unawaited(
                             NazaSecureModelStore.ensureVerifiedModel(),
                           ),
-                    icon: const Icon(Icons.download_for_offline_rounded),
+                    icon: Icon(Icons.download_for_offline_rounded),
                     label: Text(
                       status.localPath == null
                           ? 'Download / Verify Model'
@@ -19379,8 +20451,8 @@ class _ModelFirstBootCard extends StatelessWidget {
                     onPressed: status.busy
                         ? null
                         : () => unawaited(NazaSecureModelStore.refresh()),
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('Refresh'),
+                    icon: Icon(Icons.refresh_rounded),
+                    label: Text('Refresh'),
                     filled: false,
                     minimumSize: const Size(120, 42),
                   ),
@@ -19403,6 +20475,171 @@ class _ModelDownloadCard extends StatelessWidget {
   }
 }
 
+class _ModelPendingStatus extends StatefulWidget {
+  const _ModelPendingStatus();
+
+  @override
+  State<_ModelPendingStatus> createState() => _ModelPendingStatusState();
+}
+
+class _ModelPendingStatusState extends State<_ModelPendingStatus> {
+  final Stopwatch _elapsed = Stopwatch()..start();
+  Timer? _elapsedTimer;
+  bool _elapsedTickerEnabled = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final enabled = TickerMode.valuesOf(context).enabled;
+    if (enabled == _elapsedTickerEnabled) return;
+    _elapsedTickerEnabled = enabled;
+    _elapsedTimer?.cancel();
+    _elapsedTimer = enabled
+        ? Timer.periodic(const Duration(seconds: 1), (_) {
+            if (mounted && _elapsedTickerEnabled) setState(() {});
+          })
+        : null;
+  }
+
+  @override
+  void dispose() {
+    _elapsedTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NazaModelStoreStatus>(
+      valueListenable: NazaSecureModelStore.status,
+      builder: (_, store, _) {
+        return ValueListenableBuilder<NazaRuntimeSnapshot>(
+          valueListenable: NazaLocalGemma.instance.snapshot,
+          builder: (_, runtime, _) {
+            return ValueListenableBuilder<NazaGenerationTelemetry>(
+              valueListenable: NazaLocalGemma.instance.generation,
+              builder: (_, generation, _) {
+                final fileReady = store.installed || runtime.modelInstalled;
+                late final int step;
+                late final String label;
+                late final String detail;
+                int? measuredFileProgress;
+
+                if (!fileReady) {
+                  step = 1;
+                  final measured = store.busy
+                      ? store.progress
+                      : runtime.installProgress;
+                  measuredFileProgress = measured.clamp(0, 100).toInt();
+                  label = store.busy ? store.phase : runtime.phase;
+                  detail = measured > 0
+                      ? 'Measured model-file progress: $measured%'
+                      : 'Checking the verified local model file';
+                } else if (!runtime.modelLoaded) {
+                  step = 2;
+                  label = runtime.phase;
+                  detail =
+                      'Native engine load has no reliable percentage; the app stays usable.';
+                } else if (!generation.active) {
+                  step = 3;
+                  label = runtime.phase;
+                  detail = 'Opening one bounded local response context';
+                } else {
+                  step = 4;
+                  label = generation.stage;
+                  detail = generation.tokens > 0
+                      ? '${generation.tokens} local tokens received'
+                      : 'Waiting for the first local token';
+                }
+
+                return Column(
+                  key: const ValueKey<String>('model-pending-status'),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.auto_awesome_rounded,
+                          size: 16,
+                          color: NazaPalette.mintSoft,
+                        ),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Text(
+                            label.isEmpty
+                                ? 'Preparing the local response…'
+                                : label,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: NazaPalette.text,
+                              fontSize: 13.5,
+                              height: 1.35,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '$step / 4',
+                          style: TextStyle(
+                            color: NazaPalette.mintSoft,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w900,
+                            fontFamily: NazaFonts.mono,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 9),
+                    Row(
+                      children: List<Widget>.generate(4, (index) {
+                        final current = index == step - 1;
+                        final complete = index < step - 1;
+                        return Expanded(
+                          child: Container(
+                            height: 5,
+                            margin: EdgeInsets.only(right: index == 3 ? 0 : 5),
+                            color: complete
+                                ? NazaPalette.mintSoft
+                                : current
+                                ? NazaPalette.mintSoft.withValues(alpha: 0.55)
+                                : NazaPalette.border,
+                          ),
+                        );
+                      }),
+                    ),
+                    if (measuredFileProgress != null &&
+                        measuredFileProgress > 0) ...[
+                      const SizedBox(height: 6),
+                      NazaProgressBar(
+                        value: measuredFileProgress / 100,
+                        minHeight: 3,
+                        color: NazaPalette.success,
+                        backgroundColor: NazaPalette.border,
+                      ),
+                    ],
+                    const SizedBox(height: 7),
+                    Text(
+                      '$detail • ${_elapsed.elapsed.inSeconds}s elapsed',
+                      style: TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 10.5,
+                        height: 1.3,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
 class _StableMessageBubble extends StatelessWidget {
   final NazaUiMessage message;
 
@@ -19422,7 +20659,7 @@ class _StableMessageBubble extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: 12),
           padding: const EdgeInsets.fromLTRB(16, 13, 16, 12),
           decoration: BoxDecoration(
-            color: isUser ? const Color(0xEE0D4B2C) : const Color(0xD612241D),
+            color: isUser ? NazaPalette.userBubble : NazaPalette.panelSoft,
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(22),
               topRight: const Radius.circular(22),
@@ -19431,19 +20668,22 @@ class _StableMessageBubble extends StatelessWidget {
             ),
             border: Border.all(
               color: message.isWorking
-                  ? const Color(0x778DFFC4)
+                  ? NazaPalette.borderStrong
                   : isUser
-                  ? const Color(0x663EFF92)
-                  : const Color(0x24FFFFFF),
+                  ? NazaPalette.borderStrong
+                  : NazaPalette.border,
             ),
-            boxShadow: [
-              BoxShadow(
-                color: (isUser ? NazaPalette.mintDim : NazaPalette.mintSoft)
-                    .withAlpha(message.isWorking ? 38 : 18),
-                blurRadius: message.isWorking ? 24 : 14,
-                offset: const Offset(0, 8),
-              ),
-            ],
+            boxShadow: NazaPalette.reduceRasterEffects
+                ? const []
+                : [
+                    BoxShadow(
+                      color:
+                          (isUser ? NazaPalette.mintDim : NazaPalette.mintSoft)
+                              .withAlpha(message.isWorking ? 38 : 18),
+                      blurRadius: message.isWorking ? 24 : 14,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -19457,7 +20697,7 @@ class _StableMessageBubble extends StatelessWidget {
                     height: 190,
                     cacheWidth: 640,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const SizedBox(
+                    errorBuilder: (_, _, _) => SizedBox(
                       height: 96,
                       child: Center(
                         child: Icon(
@@ -19473,7 +20713,7 @@ class _StableMessageBubble extends StatelessWidget {
                   '${message.image!.name} • ${message.image!.dimensions} • local Gemma vision',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.subtext,
                     fontSize: 10.5,
                     fontWeight: FontWeight.w800,
@@ -19482,19 +20722,26 @@ class _StableMessageBubble extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
               ],
-              _NazaMarkdownText(
-                text: message.text,
-                compact: false,
-                selectable: !message.isWorking,
-                cache: !message.isWorking,
-              ),
+              if (message.isWorking && message.text.trim().isEmpty)
+                const _ModelPendingStatus()
+              else if (message.isWorking)
+                Text(
+                  message.text,
+                  style: TextStyle(
+                    color: NazaPalette.text,
+                    fontSize: 14,
+                    height: 1.48,
+                  ),
+                )
+              else
+                _NazaMarkdownText(text: message.text, compact: false),
               const SizedBox(height: 7),
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     '${_clock(message.createdAt)}${isUser ? '' : ' • ${message.route}'}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: NazaPalette.subtext,
                       fontSize: 10.5,
                       fontWeight: FontWeight.w800,
@@ -19543,15 +20790,8 @@ class _NazaMarkdownText extends StatelessWidget {
 
   final String text;
   final bool compact;
-  final bool selectable;
-  final bool cache;
 
-  const _NazaMarkdownText({
-    required this.text,
-    required this.compact,
-    this.selectable = true,
-    this.cache = true,
-  });
+  const _NazaMarkdownText({required this.text, required this.compact});
 
   @override
   Widget build(BuildContext context) {
@@ -19560,12 +20800,15 @@ class _NazaMarkdownText extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: blocks.isEmpty ? const [SizedBox.shrink()] : blocks,
     );
-    return selectable ? SelectionArea(child: content) : content;
+    return SelectionArea(child: content);
   }
 
   List<Widget> _cachedBlocks() {
-    if (!cache) return _buildBlocks();
-    final key = _NazaMarkdownCacheKey(text, compact, selectable);
+    final key = _NazaMarkdownCacheKey(
+      text,
+      compact,
+      NazaThemeStore.selectedId.value,
+    );
     final cached = _blockCache[key];
     if (cached != null) return cached;
 
@@ -19771,17 +21014,13 @@ class _NazaMarkdownText extends StatelessWidget {
 
   Widget _codeBlock(String value) {
     final code = value.trimRight();
-    final style = const TextStyle(
+    final style = TextStyle(
       color: NazaPalette.mintSoft,
       fontSize: 12.5,
       height: 1.35,
       fontFamily: NazaFonts.mono,
     );
-    return _blockShell(
-      child: selectable
-          ? SelectableText(code, style: style)
-          : Text(code, style: style),
-    );
+    return _blockShell(child: SelectableText(code, style: style));
   }
 
   Widget _equationBlock(String value) {
@@ -19789,8 +21028,8 @@ class _NazaMarkdownText extends StatelessWidget {
       icon: Icons.functions_rounded,
       child: SelectableText(
         value.trim(),
-        style: const TextStyle(
-          color: Color(0xFFFFE4A3),
+        style: TextStyle(
+          color: NazaPalette.warning,
           fontSize: 14,
           height: 1.35,
           fontWeight: FontWeight.w800,
@@ -19806,16 +21045,16 @@ class _NazaMarkdownText extends StatelessWidget {
       margin: EdgeInsets.only(bottom: compact ? 5 : 8),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0x99101E19),
+        color: NazaPalette.panelSoft,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0x22FFFFFF)),
+        border: Border.all(color: NazaPalette.border),
       ),
       child: icon == null
           ? child
           : Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, color: const Color(0xFFFFE4A3), size: 17),
+                Icon(icon, color: NazaPalette.mintDim, size: 17),
                 const SizedBox(width: 8),
                 Expanded(child: child),
               ],
@@ -19871,7 +21110,7 @@ class _NazaMarkdownText extends StatelessWidget {
               color: NazaPalette.mintSoft,
               fontFamily: NazaFonts.mono,
               fontWeight: FontWeight.w800,
-              backgroundColor: const Color(0x44101E19),
+              backgroundColor: NazaPalette.panelSoft,
             ),
           ),
         );
@@ -19886,7 +21125,7 @@ class _NazaMarkdownText extends StatelessWidget {
           TextSpan(
             text: value.substring(next + 1, end),
             style: base.copyWith(
-              color: const Color(0xFFFFE4A3),
+              color: NazaPalette.mintDim,
               fontFamily: NazaFonts.mono,
               fontWeight: FontWeight.w800,
               fontStyle: FontStyle.italic,
@@ -19934,7 +21173,7 @@ class _CopyIconButton extends StatelessWidget {
             ),
           );
         },
-        child: const Padding(
+        child: Padding(
           padding: EdgeInsets.all(3),
           child: Icon(Icons.copy_rounded, color: NazaPalette.subtext, size: 14),
         ),
@@ -19946,20 +21185,20 @@ class _CopyIconButton extends StatelessWidget {
 final class _NazaMarkdownCacheKey {
   final String text;
   final bool compact;
-  final bool selectable;
+  final String themeId;
 
-  const _NazaMarkdownCacheKey(this.text, this.compact, this.selectable);
+  const _NazaMarkdownCacheKey(this.text, this.compact, this.themeId);
 
   @override
   bool operator ==(Object other) {
     return other is _NazaMarkdownCacheKey &&
         other.text == text &&
         other.compact == compact &&
-        other.selectable == selectable;
+        other.themeId == themeId;
   }
 
   @override
-  int get hashCode => Object.hash(text, compact, selectable);
+  int get hashCode => Object.hash(text, compact, themeId);
 }
 
 class _RoadScannerPanel extends StatefulWidget {
@@ -20633,7 +21872,7 @@ class _ScannerIdleSurface extends StatelessWidget {
                 Expanded(
                   child: Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: NazaPalette.text,
                       fontSize: 18,
                       fontWeight: FontWeight.w900,
@@ -20647,7 +21886,7 @@ class _ScannerIdleSurface extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               body,
-              style: const TextStyle(
+              style: TextStyle(
                 color: NazaPalette.subtext,
                 height: 1.35,
                 fontWeight: FontWeight.w700,
@@ -20663,7 +21902,7 @@ class _ScannerIdleSurface extends StatelessWidget {
           ],
         );
 
-        final wheel = const _ChromographicWheel(
+        final wheel = _ChromographicWheel(
           label: 'Ready',
           subtitle: 'chromographic',
           progress: 0.18,
@@ -20704,7 +21943,7 @@ class _ScannerLoadingSurface extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= 620;
-        const wheel = _ChromographicWheel(
+        final wheel = _ChromographicWheel(
           label: 'Scanning',
           subtitle: 'one-pass local',
           progress: 0.64,
@@ -20721,7 +21960,7 @@ class _ScannerLoadingSurface extends StatelessWidget {
                 Expanded(
                   child: Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: NazaPalette.text,
                       fontSize: 18,
                       fontWeight: FontWeight.w900,
@@ -20733,7 +21972,7 @@ class _ScannerLoadingSurface extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               'Running one local model pass with combined risk and safety scoring.',
               style: TextStyle(
                 color: NazaPalette.subtext,
@@ -20745,7 +21984,7 @@ class _ScannerLoadingSurface extends StatelessWidget {
             const SizedBox(height: 14),
             const _NazaSheen(height: 2),
             const SizedBox(height: 12),
-            const Wrap(
+            Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
@@ -20839,7 +22078,7 @@ class _ScannerResultSurface extends StatelessWidget {
                   Expanded(
                     child: Text(
                       result.title,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.text,
                         fontSize: 18,
                         fontWeight: FontWeight.w900,
@@ -20850,7 +22089,7 @@ class _ScannerResultSurface extends StatelessWidget {
                   ),
                   Text(
                     _clock(result.createdAt),
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: NazaPalette.subtext,
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
@@ -20942,19 +22181,19 @@ class _RiskBadgeRow extends StatelessWidget {
         _RiskBadge(
           label: 'Low',
           active: activeRisk.toLowerCase() == 'low',
-          color: const Color(0xFF57EFAE),
+          color: NazaPalette.success,
         ),
         const SizedBox(width: 8),
         _RiskBadge(
           label: 'Medium',
           active: activeRisk.toLowerCase() == 'medium',
-          color: const Color(0xFFFFD166),
+          color: NazaPalette.warning,
         ),
         const SizedBox(width: 8),
         _RiskBadge(
           label: 'High',
           active: activeRisk.toLowerCase() == 'high',
-          color: const Color(0xFFFF7C5C),
+          color: NazaPalette.danger,
         ),
       ],
     );
@@ -20980,10 +22219,12 @@ class _RiskBadge extends StatelessWidget {
         curve: Curves.easeOutCubic,
         padding: const EdgeInsets.symmetric(vertical: 9),
         decoration: BoxDecoration(
-          color: active ? color.withAlpha(44) : const Color(0x44101E19),
+          color: active ? color.withAlpha(44) : NazaPalette.panelSoft,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: active ? color : const Color(0x22FFFFFF)),
-          boxShadow: active
+          border: Border.all(color: active ? color : NazaPalette.border),
+          boxShadow: NazaPalette.reduceRasterEffects
+              ? const []
+              : active
               ? [
                   BoxShadow(
                     color: color.withAlpha(32),
@@ -21025,7 +22266,7 @@ class _ScannerResultBlock extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(13),
         decoration: BoxDecoration(
-          color: const Color(0x77101E19),
+          color: NazaPalette.panelSoft,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: color.withAlpha(70)),
         ),
@@ -21045,7 +22286,7 @@ class _ScannerResultBlock extends StatelessWidget {
               text,
               maxLines: 16,
               overflow: TextOverflow.fade,
-              style: const TextStyle(
+              style: TextStyle(
                 color: NazaPalette.text,
                 height: 1.36,
                 fontWeight: FontWeight.w600,
@@ -21075,9 +22316,9 @@ class _ScannerMetricPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0x66101E19),
+        color: NazaPalette.panelSoft,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0x228DFFC4)),
+        border: Border.all(color: NazaPalette.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -21086,7 +22327,7 @@ class _ScannerMetricPill extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             '$label: ',
-            style: const TextStyle(
+            style: TextStyle(
               color: NazaPalette.subtext,
               fontSize: 11,
               fontWeight: FontWeight.w800,
@@ -21098,7 +22339,7 @@ class _ScannerMetricPill extends StatelessWidget {
             child: Text(
               value,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 color: NazaPalette.text,
                 fontSize: 11,
                 fontWeight: FontWeight.w900,
@@ -21168,7 +22409,7 @@ class _ChromographicWheel extends StatelessWidget {
                 Text(
                   subtitle,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.subtext,
                     fontSize: 10.5,
                     fontWeight: FontWeight.w900,
@@ -21247,20 +22488,20 @@ class _ChromographicWheelPainter extends CustomPainter {
 
     final dot = Paint()..color = tone;
     canvas.drawCircle(marker, loading ? 5.5 : 6.5, dot);
-    canvas.drawCircle(center, 35, Paint()..color = const Color(0xAA06110D));
+    canvas.drawCircle(
+      center,
+      35,
+      Paint()..color = NazaPalette.inkDeep.withAlpha(170),
+    );
   }
 
   Color _spectrum(double phase) {
     if (phase < 0.50) {
-      return Color.lerp(
-        const Color(0xFF57EFAE),
-        const Color(0xFFFFD166),
-        phase / 0.50,
-      )!;
+      return Color.lerp(NazaPalette.danger, NazaPalette.warning, phase / 0.50)!;
     }
     return Color.lerp(
-      const Color(0xFFFFD166),
-      const Color(0xFFFF7C5C),
+      NazaPalette.warning,
+      NazaPalette.success,
       (phase - 0.50) / 0.50,
     )!;
   }
@@ -21326,7 +22567,7 @@ class _SafetyScoreGauge extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(
                       available ? '$band safety' : 'not classified',
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.subtext,
                         fontSize: 10,
                         fontWeight: FontWeight.w900,
@@ -21368,8 +22609,8 @@ class _SafetyGaugePainter extends CustomPainter {
     for (var i = 0; i < active; i++) {
       final phase = i / segments;
       paint.color = Color.lerp(
-        const Color(0xFFFF7C5C),
-        const Color(0xFF57EFAE),
+        NazaPalette.danger,
+        NazaPalette.success,
         phase,
       )!.withAlpha(220);
       canvas.drawArc(
@@ -21381,7 +22622,11 @@ class _SafetyGaugePainter extends CustomPainter {
       );
     }
 
-    canvas.drawCircle(center, 36, Paint()..color = const Color(0xAA06110D));
+    canvas.drawCircle(
+      center,
+      36,
+      Paint()..color = NazaPalette.inkDeep.withAlpha(170),
+    );
     canvas.drawCircle(
       center,
       radius - 2,
@@ -21430,7 +22675,7 @@ class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
         final value = _draftMaxContinuations ?? settings.maxContinuations;
         final enabled = value > 0;
         final label = enabled ? '$value pass${value == 1 ? '' : 'es'}' : 'off';
-        final accent = enabled ? NazaPalette.mintSoft : const Color(0xFFFFCE78);
+        final accent = enabled ? NazaPalette.success : NazaPalette.warning;
         return _NazaGlassCard(
           padding: const EdgeInsets.all(13),
           radius: 18,
@@ -21445,7 +22690,7 @@ class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
                   Expanded(
                     child: Text(
                       'Auto-continuation: $label',
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.text,
                         fontWeight: FontWeight.w900,
                         fontFamily: NazaFonts.display,
@@ -21464,12 +22709,12 @@ class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
                       onPressed: value > NazaAppConfig.minAutoContinuationPasses
                           ? () => unawaited(_commitMaxContinuations(value - 1))
                           : null,
-                      icon: const Icon(Icons.remove_rounded),
+                      icon: Icon(Icons.remove_rounded),
                       color: NazaPalette.text,
                       style: IconButton.styleFrom(
                         fixedSize: const Size(42, 42),
-                        backgroundColor: const Color(0x66101E19),
-                        disabledBackgroundColor: const Color(0x33101E19),
+                        backgroundColor: NazaPalette.panelSoft,
+                        disabledBackgroundColor: NazaPalette.panelSoft,
                       ),
                     ),
                   ),
@@ -21477,11 +22722,11 @@ class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
                     child: SliderTheme(
                       data: SliderTheme.of(context).copyWith(
                         activeTrackColor: accent,
-                        inactiveTrackColor: const Color(0x335EE8A6),
+                        inactiveTrackColor: NazaPalette.mint.withAlpha(80),
                         thumbColor: accent,
                         overlayColor: accent.withAlpha(35),
-                        valueIndicatorColor: const Color(0xEE0B1B15),
-                        valueIndicatorTextStyle: const TextStyle(
+                        valueIndicatorColor: NazaPalette.panel,
+                        valueIndicatorTextStyle: TextStyle(
                           color: NazaPalette.text,
                           fontWeight: FontWeight.w900,
                           fontFamily: NazaFonts.mono,
@@ -21509,12 +22754,12 @@ class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
                       onPressed: value < NazaAppConfig.maxAutoContinuationPasses
                           ? () => unawaited(_commitMaxContinuations(value + 1))
                           : null,
-                      icon: const Icon(Icons.add_rounded),
+                      icon: Icon(Icons.add_rounded),
                       color: NazaPalette.text,
                       style: IconButton.styleFrom(
                         fixedSize: const Size(42, 42),
-                        backgroundColor: const Color(0x66101E19),
-                        disabledBackgroundColor: const Color(0x33101E19),
+                        backgroundColor: NazaPalette.panelSoft,
+                        disabledBackgroundColor: NazaPalette.panelSoft,
                       ),
                     ),
                   ),
@@ -21533,7 +22778,7 @@ class _GenerationSettingsCardState extends State<_GenerationSettingsCard> {
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
                       error,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.danger,
                         height: 1.35,
                         fontWeight: FontWeight.w700,
@@ -21575,9 +22820,7 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
           valueListenable: NazaVectorMemory.instance.snapshot,
           builder: (_, snap, _) {
             final enabled = settings.enabled;
-            final accent = enabled
-                ? NazaPalette.mintSoft
-                : const Color(0xFFFFCE78);
+            final accent = enabled ? NazaPalette.success : NazaPalette.warning;
             return _NazaGlassCard(
               padding: const EdgeInsets.all(13),
               radius: 18,
@@ -21600,7 +22843,7 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                           enabled
                               ? 'Encrypted vector memory enabled'
                               : 'Encrypted vector memory paused',
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: NazaPalette.text,
                             fontWeight: FontWeight.w900,
                             fontFamily: NazaFonts.display,
@@ -21611,7 +22854,7 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  const Text(
+                  Text(
                     'Prior turns are summarized, keyworded, embedded, and stored as authenticated AES-GCM records in the encrypted SQLite vault. The context manager rotates relevant memory, shrinks overflow, and fills the active Gemma window with [action], [format], [context], and [rag] prompt blocks.',
                     style: TextStyle(
                       color: NazaPalette.subtext,
@@ -21666,6 +22909,95 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                     label: 'Prompt surface cap',
                     value: '${NazaAppConfig.ragPromptSurfaceChars} chars',
                   ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Advanced retrieval controls',
+                    style: TextStyle(
+                      color: NazaPalette.mintSoft,
+                      fontWeight: FontWeight.w900,
+                      fontFamily: NazaFonts.display,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Hybrid relevance is balanced with MMR diversity so one repeated topic cannot consume the whole context window.',
+                    style: TextStyle(
+                      color: NazaPalette.subtext,
+                      fontSize: 11,
+                      height: 1.3,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  _MemorySliderRow(
+                    label: 'Retrieved chunks',
+                    value: settings.maxRetrievedChunks.toDouble(),
+                    min: 4,
+                    max: 24,
+                    divisions: 20,
+                    suffix: '${settings.maxRetrievedChunks}',
+                    onChangeEnd: (value) => unawaited(
+                      NazaVectorMemory.instance.updateSettings(
+                        (current) =>
+                            current.copyWith(maxRetrievedChunks: value.round()),
+                      ),
+                    ),
+                  ),
+                  _MemorySliderRow(
+                    label: 'Candidate pool',
+                    value: settings.candidateLimit.toDouble(),
+                    min: 24,
+                    max: 180,
+                    divisions: 13,
+                    suffix: '${settings.candidateLimit}',
+                    onChangeEnd: (value) => unawaited(
+                      NazaVectorMemory.instance.updateSettings(
+                        (current) =>
+                            current.copyWith(candidateLimit: value.round()),
+                      ),
+                    ),
+                  ),
+                  _MemorySliderRow(
+                    label: 'Diversity pressure',
+                    value: settings.diversity,
+                    min: 0,
+                    max: 0.72,
+                    divisions: 12,
+                    suffix: '${(settings.diversity * 100).round()}%',
+                    onChangeEnd: (value) => unawaited(
+                      NazaVectorMemory.instance.updateSettings(
+                        (current) => current.copyWith(diversity: value),
+                      ),
+                    ),
+                  ),
+                  Material(
+                    type: MaterialType.transparency,
+                    child: SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        'Automatic consolidation',
+                        style: TextStyle(
+                          color: NazaPalette.text,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                        ),
+                      ),
+                      subtitle: Text(
+                        'Deduplicate repeated memories and retain high-value facts when the encrypted index reaches its budget.',
+                        style: TextStyle(
+                          color: NazaPalette.subtext,
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
+                      ),
+                      value: settings.autoConsolidation,
+                      onChanged: (value) => unawaited(
+                        NazaVectorMemory.instance.updateSettings(
+                          (current) =>
+                              current.copyWith(autoConsolidation: value),
+                        ),
+                      ),
+                    ),
+                  ),
                   _InfoRow(
                     label: 'Last action mode',
                     value: snap.lastActionMode,
@@ -21680,7 +23012,7 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                     const SizedBox(height: 10),
                     Text(
                       snap.error!,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: NazaPalette.danger,
                         height: 1.35,
                         fontWeight: FontWeight.w700,
@@ -21708,8 +23040,8 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                       _NazaActionButton(
                         onPressed: () =>
                             unawaited(NazaVectorMemory.instance.clear()),
-                        icon: const Icon(Icons.delete_sweep_rounded),
-                        label: const Text('Clear Memory'),
+                        icon: Icon(Icons.delete_sweep_rounded),
+                        label: Text('Clear Memory'),
                         filled: false,
                         minimumSize: const Size(150, 42),
                       ),
@@ -21721,6 +23053,82 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
           },
         );
       },
+    );
+  }
+}
+
+class _MemorySliderRow extends StatefulWidget {
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final String suffix;
+  final ValueChanged<double> onChangeEnd;
+
+  const _MemorySliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.suffix,
+    required this.onChangeEnd,
+  });
+
+  @override
+  State<_MemorySliderRow> createState() => _MemorySliderRowState();
+}
+
+class _MemorySliderRowState extends State<_MemorySliderRow> {
+  late double _value = widget.value;
+
+  @override
+  void didUpdateWidget(covariant _MemorySliderRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value != widget.value) _value = widget.value;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                widget.label,
+                style: TextStyle(
+                  color: NazaPalette.text,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            Text(
+              widget.suffix,
+              style: TextStyle(
+                color: NazaPalette.mintSoft,
+                fontWeight: FontWeight.w900,
+                fontFamily: NazaFonts.mono,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: _value.clamp(widget.min, widget.max),
+          min: widget.min,
+          max: widget.max,
+          divisions: widget.divisions,
+          label: widget.suffix,
+          onChanged: (value) => setState(() => _value = value),
+          onChangeEnd: (value) {
+            _value = value;
+            widget.onChangeEnd(value);
+          },
+        ),
+      ],
     );
   }
 }
@@ -22225,7 +23633,7 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Versioned encrypted SQLite vault',
             style: TextStyle(
               color: NazaPalette.text,
@@ -22234,7 +23642,7 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
             ),
           ),
           const SizedBox(height: 9),
-          const Text(
+          Text(
             'Argon2id or the operating-system key store unwraps a stable vault key. That key unwraps versioned data keys; every logical record is independently authenticated with AES-256-GCM.',
             style: TextStyle(color: NazaPalette.subtext, height: 1.4),
           ),
@@ -22258,11 +23666,11 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
                 pqReady
                     ? Icons.verified_user_rounded
                     : Icons.security_update_warning_rounded,
-                color: pqReady ? NazaPalette.mintSoft : const Color(0xFFFFCE78),
+                color: pqReady ? NazaPalette.success : NazaPalette.warning,
                 size: 22,
               ),
               const SizedBox(width: 9),
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Default hybrid post-quantum recovery',
                   style: TextStyle(
@@ -22275,7 +23683,7 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
             ],
           ),
           const SizedBox(height: 7),
-          const Text(
+          Text(
             'The live vault remains AES-256-GCM encrypted. Recovery uses a separate ML-KEM/X25519 identity so the private key kit can be kept offline from encrypted backups. Nothing is uploaded.',
             style: TextStyle(color: NazaPalette.subtext, height: 1.4),
           ),
@@ -22309,23 +23717,23 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
           const SizedBox(height: 8),
           Text(
             _phase,
-            style: const TextStyle(
+            style: TextStyle(
               color: NazaPalette.mintSoft,
               fontWeight: FontWeight.w700,
             ),
           ),
           if (_busy) ...[
             const SizedBox(height: 10),
-            const LinearProgressIndicator(
+            NazaProgressBar(
               color: NazaPalette.mintSoft,
-              backgroundColor: Color(0x221AD697),
+              backgroundColor: NazaPalette.panelSoft,
             ),
           ],
           if (_error != null) ...[
             const SizedBox(height: 10),
             Text(
               _error!,
-              style: const TextStyle(color: NazaPalette.danger, height: 1.35),
+              style: TextStyle(color: NazaPalette.danger, height: 1.35),
             ),
           ],
           const SizedBox(height: 12),
@@ -22335,20 +23743,20 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
             children: [
               _NazaActionButton(
                 onPressed: widget.enabled && !_busy ? _rotate : null,
-                icon: const Icon(Icons.sync_lock_rounded),
-                label: const Text('Rotate Data Key'),
+                icon: Icon(Icons.sync_lock_rounded),
+                label: Text('Rotate Data Key'),
                 minimumSize: const Size(158, 42),
               ),
               _NazaActionButton(
                 onPressed: widget.enabled && !_busy ? _changeUnlock : null,
-                icon: const Icon(Icons.password_rounded),
-                label: const Text('Change Boot Unlock'),
+                icon: Icon(Icons.password_rounded),
+                label: Text('Change Boot Unlock'),
                 filled: false,
                 minimumSize: const Size(178, 42),
               ),
               _NazaActionButton(
                 onPressed: widget.enabled && !_busy ? _exportRecovery : null,
-                icon: const Icon(Icons.shield_rounded),
+                icon: Icon(Icons.shield_rounded),
                 label: Text(
                   pqState.publicKeyJson == null
                       ? 'Set Up PQ Recovery'
@@ -22360,8 +23768,8 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
               if (pqState.publicKeyJson != null)
                 _NazaActionButton(
                   onPressed: widget.enabled && !_busy ? _verifyRecovery : null,
-                  icon: const Icon(Icons.fact_check_rounded),
-                  label: const Text('Verify Recovery Files'),
+                  icon: Icon(Icons.fact_check_rounded),
+                  label: Text('Verify Recovery Files'),
                   filled: false,
                   minimumSize: const Size(190, 42),
                 ),
@@ -22426,7 +23834,7 @@ class _UnlockChangeDialogState extends State<_UnlockChangeDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Change startup unlock'),
+      title: Text('Change startup unlock'),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
         child: Column(
@@ -22435,7 +23843,7 @@ class _UnlockChangeDialogState extends State<_UnlockChangeDialog> {
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _required,
-              title: const Text('Require password at each app start'),
+              title: Text('Require password at each app start'),
               onChanged: (value) => setState(() {
                 _required = value;
                 _error = null;
@@ -22463,13 +23871,13 @@ class _UnlockChangeDialogState extends State<_UnlockChangeDialog> {
                 ),
               ),
             ] else
-              const Text(
+              Text(
                 'The vault key will be delegated to the operating-system secure key store. This is less portable than a startup password.',
                 style: TextStyle(color: NazaPalette.subtext, height: 1.35),
               ),
             if (_error != null) ...[
               const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: NazaPalette.danger)),
+              Text(_error!, style: TextStyle(color: NazaPalette.danger)),
             ],
           ],
         ),
@@ -22477,9 +23885,9 @@ class _UnlockChangeDialogState extends State<_UnlockChangeDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text('Cancel'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('Apply')),
+        FilledButton(onPressed: _submit, child: Text('Apply')),
       ],
     );
   }
@@ -22547,7 +23955,7 @@ class _RecoveryPasswordDialogState extends State<_RecoveryPasswordDialog> {
           children: [
             Text(
               widget.description,
-              style: const TextStyle(color: NazaPalette.subtext, height: 1.35),
+              style: TextStyle(color: NazaPalette.subtext, height: 1.35),
             ),
             const SizedBox(height: 12),
             TextField(
@@ -22579,7 +23987,7 @@ class _RecoveryPasswordDialogState extends State<_RecoveryPasswordDialog> {
             ],
             if (_error != null) ...[
               const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: NazaPalette.danger)),
+              Text(_error!, style: TextStyle(color: NazaPalette.danger)),
             ],
           ],
         ),
@@ -22587,10 +23995,471 @@ class _RecoveryPasswordDialogState extends State<_RecoveryPasswordDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text('Cancel'),
         ),
         FilledButton(onPressed: _submit, child: Text(widget.actionLabel)),
       ],
+    );
+  }
+}
+
+class _ThemeSettingsCard extends StatelessWidget {
+  final bool compact;
+
+  const _ThemeSettingsCard({this.compact = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<String>(
+      valueListenable: NazaThemeStore.selectedId,
+      builder: (_, selectedId, _) {
+        final card = _NazaGlassCard(
+          padding: const EdgeInsets.all(13),
+          radius: 18,
+          active: true,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (compact)
+                _buildCompactThemePicker(selectedId)
+              else ...[
+                Text(
+                  'The selected theme is saved in the encrypted vault and applies immediately.',
+                  style: TextStyle(
+                    color: NazaPalette.subtext,
+                    height: 1.35,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: NazaFonts.display,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _buildThemeGrid(selectedId),
+              ],
+            ],
+          ),
+        );
+        if (!compact) return card;
+        return PopupMenuButton<String>(
+          tooltip: 'Change theme',
+          position: PopupMenuPosition.under,
+          onSelected: (id) => unawaited(NazaThemeStore.select(id)),
+          itemBuilder: (_) => _themeMenuItems(selectedId),
+          child: card,
+        );
+      },
+    );
+  }
+
+  Widget _buildCompactThemePicker(String selectedId) {
+    final selected = NazaBootThemeCatalog.byId(selectedId);
+    return Row(
+      children: [
+        _ThemeDot(color: selected.seed),
+        const SizedBox(width: 9),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                selected.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: NazaPalette.text,
+                  fontWeight: FontWeight.w900,
+                  fontFamily: NazaFonts.display,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Saved securely and applied now',
+                style: TextStyle(
+                  color: NazaPalette.subtext,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Icon(Icons.palette_outlined, color: selected.accent),
+      ],
+    );
+  }
+
+  List<PopupMenuEntry<String>> _themeMenuItems(String selectedId) {
+    return [
+      for (final option in NazaBootThemeCatalog.all)
+        PopupMenuItem<String>(
+          value: option.id,
+          child: Row(
+            children: [
+              _ThemeDot(color: option.seed),
+              const SizedBox(width: 8),
+              Expanded(child: Text(option.label)),
+              if (option.id == selectedId)
+                Icon(Icons.check_rounded, color: option.seed, size: 18),
+            ],
+          ),
+        ),
+    ];
+  }
+
+  Widget _buildThemeGrid(String selectedId) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth >= 520
+            ? 3
+            : constraints.maxWidth >= 300
+            ? 2
+            : 1;
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: NazaBootThemeCatalog.all.length,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: columns == 1 ? 4.8 : 2.45,
+          ),
+          itemBuilder: (context, index) {
+            final option = NazaBootThemeCatalog.all[index];
+            final selected = option.id == selectedId;
+            return InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: selected
+                  ? null
+                  : () => unawaited(NazaThemeStore.select(option.id)),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  color: option.seed.withValues(alpha: selected ? 0.22 : 0.09),
+                  border: Border.all(
+                    color: selected ? option.seed : NazaPalette.border,
+                    width: selected ? 2 : 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    _ThemeDot(color: option.seed),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        option.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: NazaPalette.text,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 12,
+                          fontFamily: NazaFonts.display,
+                        ),
+                      ),
+                    ),
+                    if (selected)
+                      Icon(
+                        Icons.check_circle_rounded,
+                        color: option.seed,
+                        size: 17,
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _ThemeDot extends StatelessWidget {
+  final Color color;
+
+  const _ThemeDot({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 13,
+      height: 13,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        boxShadow: NazaPalette.reduceRasterEffects
+            ? const []
+            : [BoxShadow(color: color.withAlpha(110), blurRadius: 7)],
+      ),
+    );
+  }
+}
+
+class _SettingsModeCard extends StatelessWidget {
+  final bool advanced;
+  final ValueChanged<bool> onChanged;
+
+  const _SettingsModeCard({required this.advanced, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return _NazaGlassCard(
+      padding: const EdgeInsets.all(13),
+      radius: 18,
+      active: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.tune_rounded, color: scheme.primary, size: 21),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  'Settings mode',
+                  style: TextStyle(
+                    color: NazaPalette.text,
+                    fontWeight: FontWeight.w900,
+                    fontFamily: NazaFonts.display,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+              Text(
+                advanced ? 'Advanced' : 'Simple',
+                style: TextStyle(
+                  color: scheme.primary,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 11,
+                  fontFamily: NazaFonts.mono,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Text(
+            'Simple keeps everyday controls easy to scan. Advanced reveals the full local model, memory, security, and rendering controls.',
+            style: TextStyle(
+              color: NazaPalette.subtext,
+              height: 1.35,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 11),
+          Row(
+            children: [
+              Expanded(
+                child: _SettingsModeButton(
+                  label: 'Simple',
+                  icon: Icons.auto_awesome_outlined,
+                  selected: !advanced,
+                  color: scheme.primary,
+                  onTap: () => onChanged(false),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _SettingsModeButton(
+                  label: 'Advanced',
+                  icon: Icons.developer_mode_rounded,
+                  selected: advanced,
+                  color: scheme.secondary,
+                  onTap: () => onChanged(true),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsModeButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _SettingsModeButton({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: selected ? null : onTap,
+      borderRadius: BorderRadius.circular(13),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: selected ? 0.18 : 0.06),
+          borderRadius: BorderRadius.circular(13),
+          border: Border.all(
+            color: selected ? color : NazaPalette.border,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: selected ? color : NazaPalette.subtext, size: 16),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: selected ? NazaPalette.text : NazaPalette.subtext,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SimpleModelStatusCard extends StatelessWidget {
+  const _SimpleModelStatusCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NazaRuntimeSnapshot>(
+      valueListenable: NazaLocalGemma.instance.snapshot,
+      builder: (_, snap, _) {
+        final ready = snap.modelLoaded;
+        final busy = snap.busy;
+        final color = ready
+            ? NazaPalette.success
+            : busy
+            ? NazaPalette.warning
+            : NazaPalette.subtext;
+        return _NazaGlassCard(
+          padding: const EdgeInsets.all(13),
+          radius: 18,
+          active: ready,
+          child: Row(
+            children: [
+              Icon(
+                ready
+                    ? Icons.check_circle_rounded
+                    : busy
+                    ? Icons.hourglass_top_rounded
+                    : Icons.radio_button_unchecked_rounded,
+                color: color,
+                size: 24,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      ready
+                          ? 'Naza One is ready'
+                          : busy
+                          ? 'Preparing your private AI'
+                          : 'AI will prepare when needed',
+                      style: TextStyle(
+                        color: NazaPalette.text,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      ready ? 'Runs locally on this device.' : snap.phase,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SimpleMemoryCard extends StatelessWidget {
+  const _SimpleMemoryCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NazaMemorySettings>(
+      valueListenable: NazaVectorMemory.instance.settings,
+      builder: (_, settings, _) {
+        return _NazaGlassCard(
+          padding: const EdgeInsets.fromLTRB(13, 10, 9, 10),
+          radius: 18,
+          active: settings.enabled,
+          child: Row(
+            children: [
+              Icon(
+                settings.enabled
+                    ? Icons.auto_awesome_rounded
+                    : Icons.pause_circle_outline_rounded,
+                color: settings.enabled
+                    ? NazaPalette.mintSoft
+                    : NazaPalette.subtext,
+                size: 22,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Remember useful details',
+                      style: TextStyle(
+                        color: NazaPalette.text,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
+                    SizedBox(height: 3),
+                    Text(
+                      'Keeps relevant preferences and past context encrypted on this device.',
+                      style: TextStyle(
+                        color: NazaPalette.subtext,
+                        fontSize: 11,
+                        height: 1.3,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch.adaptive(
+                value: settings.enabled,
+                onChanged: (value) =>
+                    unawaited(NazaVectorMemory.instance.setEnabled(value)),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -22608,82 +24477,134 @@ class _SettingsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _PanelScaffold(
-      title: 'Settings',
-      children: [
-        const _SettingsSectionTitle('Generation'),
-        const _InfoRow(label: 'Context window', value: '3072 tokens'),
-        const _InfoRow(label: 'Output cap', value: '768 tokens'),
-        const _GenerationSettingsCard(),
-        const SizedBox(height: 14),
-        const _InfoRow(label: 'Stream paint throttle', value: '360 ms'),
-        const _InfoRow(label: 'Telemetry throttle', value: '500 ms'),
-        const _InfoRow(label: 'Scroll throttle', value: '240 ms'),
-        const _InfoRow(label: 'Display font', value: 'Inter'),
-        const _InfoRow(label: 'Telemetry font', value: 'JetBrains Mono'),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Vector memory / long context'),
-        const _VectorMemorySettingsCard(),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Model status'),
-        const _ModelStatusSection(),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Model download / cache'),
-        const _ModelDownloadCard(),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Model backend'),
-        const _BackendPreferenceSection(),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Security'),
-        _VaultSecurityCard(enabled: actionsEnabled),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Scanner defense'),
-        const _InfoRow(label: 'Road scanner', value: 'enabled'),
-        const _InfoRow(label: 'Food / Water tabs', value: 'enabled'),
-        const _InfoRow(label: 'Chromatic RGB gate', value: 'U3-style analytic'),
-        const _InfoRow(
-          label: 'RGB timing surface',
-          value: 'phase/velocity/curvature',
-        ),
-        const _InfoRow(
-          label: 'Ribbon diagnostics',
-          value: 'coherence + nonlocal',
-        ),
-        const _InfoRow(label: 'Metric samples', value: '5 logical samples'),
-        const _InfoRow(label: 'Max defense passes', value: '5'),
-        const _InfoRow(label: 'Risk labels', value: 'Low / Medium / High'),
-        const _InfoRow(label: 'Safety reminder', value: 'verify on-site'),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('Rendering / desktop stability'),
-        const _InfoRow(label: 'UI mode', value: 'Stable desktop v2'),
-        const _InfoRow(label: 'Menus', value: 'Inline only'),
-        const _InfoRow(label: 'Routes / sheets', value: 'Disabled'),
-        const _InfoRow(label: 'Blur shaders', value: 'Disabled'),
-        const _InfoRow(label: 'Display font', value: 'Inter'),
-        const _InfoRow(label: 'Telemetry font', value: 'JetBrains Mono'),
-        const _InfoRow(label: 'Backdrop', value: 'static glass/ribbon field'),
-        const _InfoRow(label: 'Linux renderer', value: 'software default'),
-        const _InfoRow(label: 'Model backend control', value: 'Settings card'),
-        const SizedBox(height: 14),
-        const _SettingsSectionTitle('About / Tools'),
-        const _AboutToolsSection(),
-        const SizedBox(height: 12),
-        _NazaActionButton(
-          onPressed: actionsEnabled ? () => unawaited(onResetChat()) : null,
-          icon: const Icon(Icons.refresh_rounded),
-          label: const Text('Reset Chat Context'),
-          minimumSize: const Size(220, 46),
-        ),
-        const SizedBox(height: 8),
-        _NazaActionButton(
-          onPressed: actionsEnabled ? () => unawaited(onClearHistory()) : null,
-          icon: const Icon(Icons.delete_outline_rounded),
-          label: const Text('Clear Vault History'),
-          filled: false,
-          minimumSize: const Size(220, 46),
-        ),
-      ],
+    return ValueListenableBuilder<bool>(
+      valueListenable: NazaSettingsModeStore.advanced,
+      builder: (_, advanced, _) {
+        return _PanelScaffold(
+          title: advanced ? 'Advanced Settings' : 'Settings',
+          children: [
+            _SettingsModeCard(
+              advanced: advanced,
+              onChanged: (value) =>
+                  unawaited(NazaSettingsModeStore.setAdvanced(value)),
+            ),
+            const SizedBox(height: 14),
+            ...(advanced ? _advancedChildren() : _simpleChildren()),
+          ],
+        );
+      },
     );
+  }
+
+  List<Widget> _simpleChildren() {
+    return [
+      const _SettingsSectionTitle('Appearance'),
+      const _ThemeSettingsCard(compact: true),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Local AI'),
+      const _SimpleModelStatusCard(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Memory'),
+      const _SimpleMemoryCard(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Privacy'),
+      const _InfoRow(label: 'Vault', value: 'Encrypted on this device'),
+      const _InfoRow(label: 'Network model calls', value: 'Disabled'),
+      const SizedBox(height: 12),
+      _NazaActionButton(
+        onPressed: actionsEnabled ? () => unawaited(onResetChat()) : null,
+        icon: Icon(Icons.refresh_rounded),
+        label: Text('Reset Chat'),
+        minimumSize: const Size(190, 46),
+      ),
+      const SizedBox(height: 8),
+      _NazaActionButton(
+        onPressed: actionsEnabled ? () => unawaited(onClearHistory()) : null,
+        icon: Icon(Icons.delete_outline_rounded),
+        label: Text('Clear Local History'),
+        filled: false,
+        minimumSize: const Size(190, 46),
+      ),
+    ];
+  }
+
+  List<Widget> _advancedChildren() {
+    return [
+      const _SettingsSectionTitle('Theme'),
+      const _ThemeSettingsCard(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Generation'),
+      const _InfoRow(label: 'Context window', value: '3072 tokens'),
+      const _InfoRow(label: 'Output cap', value: '768 tokens'),
+      const _GenerationSettingsCard(),
+      const SizedBox(height: 14),
+      const _InfoRow(label: 'Stream paint throttle', value: '360 ms'),
+      const _InfoRow(label: 'Telemetry throttle', value: '500 ms'),
+      const _InfoRow(label: 'Scroll throttle', value: '240 ms'),
+      const _InfoRow(label: 'Display font', value: 'Inter'),
+      const _InfoRow(label: 'Telemetry font', value: 'JetBrains Mono'),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Vector memory / long context'),
+      const _VectorMemorySettingsCard(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Model status'),
+      const _ModelStatusSection(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Model download / cache'),
+      const _ModelDownloadCard(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Model backend'),
+      const _BackendPreferenceSection(),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Security'),
+      _VaultSecurityCard(enabled: actionsEnabled),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Scanner defense'),
+      const _InfoRow(label: 'Road scanner', value: 'enabled'),
+      const _InfoRow(label: 'Food / Water tabs', value: 'enabled'),
+      const _InfoRow(label: 'Chromatic RGB gate', value: 'U3-style analytic'),
+      const _InfoRow(
+        label: 'RGB timing surface',
+        value: 'phase/velocity/curvature',
+      ),
+      const _InfoRow(
+        label: 'Ribbon diagnostics',
+        value: 'coherence + nonlocal',
+      ),
+      const _InfoRow(label: 'Metric samples', value: '5 logical samples'),
+      const _InfoRow(label: 'Max defense passes', value: '5'),
+      const _InfoRow(label: 'Risk labels', value: 'Low / Medium / High'),
+      const _InfoRow(label: 'Safety reminder', value: 'verify on-site'),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('Rendering / desktop stability'),
+      const _InfoRow(label: 'UI mode', value: 'Stable desktop v2'),
+      const _InfoRow(label: 'Menus', value: 'Inline only'),
+      const _InfoRow(label: 'Routes / sheets', value: 'Disabled'),
+      const _InfoRow(label: 'Blur shaders', value: 'Disabled'),
+      const _InfoRow(label: 'Display font', value: 'Inter'),
+      const _InfoRow(label: 'Telemetry font', value: 'JetBrains Mono'),
+      const _InfoRow(label: 'Backdrop', value: 'static glass/ribbon field'),
+      const _InfoRow(label: 'Linux renderer', value: 'software default'),
+      const _InfoRow(label: 'Model backend control', value: 'Settings card'),
+      const SizedBox(height: 14),
+      const _SettingsSectionTitle('About / Tools'),
+      const _AboutToolsSection(),
+      const SizedBox(height: 12),
+      _NazaActionButton(
+        onPressed: actionsEnabled ? () => unawaited(onResetChat()) : null,
+        icon: Icon(Icons.refresh_rounded),
+        label: Text('Reset Chat Context'),
+        minimumSize: const Size(220, 46),
+      ),
+      const SizedBox(height: 8),
+      _NazaActionButton(
+        onPressed: actionsEnabled ? () => unawaited(onClearHistory()) : null,
+        icon: Icon(Icons.delete_outline_rounded),
+        label: Text('Clear Vault History'),
+        filled: false,
+        minimumSize: const Size(220, 46),
+      ),
+    ];
   }
 }
 
@@ -22749,7 +24670,7 @@ class _ModelStatusSection extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text(
                   snap.error!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.danger,
                     height: 1.35,
                     fontFamily: NazaFonts.display,
@@ -22757,7 +24678,7 @@ class _ModelStatusSection extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 10),
-              const Text(
+              Text(
                 'A matching model in /models or NAZA_MODEL_PATH is preferred in place after SHA-256 verification. '
                 'The pinned HTTPS source is used only when no verified local model exists.',
                 style: TextStyle(
@@ -22793,7 +24714,7 @@ class _BackendPreferenceSection extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Choose how the local Gemma LiteRT-LM model runs. Changes '
                     'close the loaded model and take effect on the next send.',
                     style: TextStyle(
@@ -22823,7 +24744,7 @@ class _BackendPreferenceSection extends StatelessWidget {
                   ),
                   if (busy) ...[
                     const SizedBox(height: 10),
-                    const Text(
+                    Text(
                       'Backend switching is locked while the model is loading '
                       'or generating.',
                       style: TextStyle(
@@ -22877,8 +24798,8 @@ class _BackendPreferenceChipState extends State<_BackendPreferenceChip> {
   Color get _accent {
     return switch (widget.option) {
       NazaModelBackendPreference.gpuFirst => NazaPalette.mintSoft,
-      NazaModelBackendPreference.gpuOnly => const Color(0xFF7FD7FF),
-      NazaModelBackendPreference.cpuOnly => const Color(0xFFFFCE78),
+      NazaModelBackendPreference.gpuOnly => NazaPalette.info,
+      NazaModelBackendPreference.cpuOnly => NazaPalette.warning,
     };
   }
 
@@ -22916,14 +24837,14 @@ class _BackendPreferenceChipState extends State<_BackendPreferenceChip> {
             constraints: const BoxConstraints(minHeight: 82),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: selected ? accent.withAlpha(34) : const Color(0x66101E19),
+              color: selected ? accent.withAlpha(34) : NazaPalette.panelSoft,
               borderRadius: BorderRadius.circular(selected ? 20 : 17),
               border: Border.all(
-                color: selected
-                    ? accent.withAlpha(160)
-                    : const Color(0x22FFFFFF),
+                color: selected ? accent.withAlpha(160) : NazaPalette.border,
               ),
-              boxShadow: selected
+              boxShadow: NazaPalette.reduceRasterEffects
+                  ? const []
+                  : selected
                   ? [
                       BoxShadow(
                         color: accent.withAlpha(_hovered ? 42 : 26),
@@ -23056,10 +24977,10 @@ class _HistoryPanelState extends State<_HistoryPanel> {
         if (_error != null)
           Text(
             'History could not be loaded: $_error',
-            style: const TextStyle(color: NazaPalette.danger),
+            style: TextStyle(color: NazaPalette.danger),
           )
         else if (_rows == null || _scannerRows == null)
-          const Padding(
+          Padding(
             padding: EdgeInsets.all(16),
             child: Text(
               'Loading history...',
@@ -23067,7 +24988,7 @@ class _HistoryPanelState extends State<_HistoryPanel> {
             ),
           )
         else if (_rows!.isEmpty && _scannerRows!.isEmpty)
-          const Text(
+          Text(
             'No encrypted history yet.',
             style: TextStyle(color: NazaPalette.subtext),
           )
@@ -23130,7 +25051,7 @@ class _HistorySectionTitle extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.text,
                     fontWeight: FontWeight.w900,
                     fontFamily: NazaFonts.display,
@@ -23138,7 +25059,7 @@ class _HistorySectionTitle extends StatelessWidget {
                 ),
                 Text(
                   subtitle,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.subtext,
                     fontSize: 12,
                     height: 1.3,
@@ -23184,7 +25105,7 @@ class _HistoryScannerCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   result.title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.text,
                     fontWeight: FontWeight.w900,
                     fontFamily: NazaFonts.display,
@@ -23194,8 +25115,8 @@ class _HistoryScannerCard extends StatelessWidget {
               ),
               TextButton.icon(
                 onPressed: onOpen,
-                icon: const Icon(Icons.open_in_new_rounded, size: 17),
-                label: const Text('Open'),
+                icon: Icon(Icons.open_in_new_rounded, size: 17),
+                label: Text('Open'),
               ),
             ],
           ),
@@ -23204,7 +25125,7 @@ class _HistoryScannerCard extends StatelessWidget {
             result.visibleSummary,
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+            style: TextStyle(
               color: NazaPalette.subtext,
               height: 1.35,
               fontWeight: FontWeight.w700,
@@ -23263,18 +25184,14 @@ class _HistoryThreadCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(
-                Icons.forum_rounded,
-                color: NazaPalette.mintSoft,
-                size: 20,
-              ),
+              Icon(Icons.forum_rounded, color: NazaPalette.mintSoft, size: 20),
               const SizedBox(width: 9),
               Expanded(
                 child: Text(
                   thread.title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.text,
                     fontWeight: FontWeight.w900,
                     fontFamily: NazaFonts.display,
@@ -23284,8 +25201,8 @@ class _HistoryThreadCard extends StatelessWidget {
               ),
               TextButton.icon(
                 onPressed: onOpen,
-                icon: const Icon(Icons.open_in_new_rounded, size: 17),
-                label: const Text('Open'),
+                icon: Icon(Icons.open_in_new_rounded, size: 17),
+                label: Text('Open'),
               ),
             ],
           ),
@@ -23294,7 +25211,7 @@ class _HistoryThreadCard extends StatelessWidget {
             last.assistant,
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+            style: TextStyle(
               color: NazaPalette.subtext,
               height: 1.35,
               fontWeight: FontWeight.w700,
@@ -23334,7 +25251,7 @@ class _AboutToolsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _NazaGlassCard(
@@ -23400,44 +25317,36 @@ class _PanelScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Transform.translate(
-            offset: Offset((1 - value) * 18, 0),
-            child: child,
-          ),
-        );
-      },
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xB304100B),
-          border: const Border(left: BorderSide(color: Color(0x22FFFFFF))),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF000000).withAlpha(80),
-              blurRadius: 22,
-              offset: const Offset(-8, 0),
-            ),
-          ],
-        ),
-        child: embedded
-            ? Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: _panelChildren(),
+    // Panels are mounted as the active child of an IndexedStack. A
+    // per-panel opacity/translate animation creates a saveLayer on every
+    // navigation, including the first home frame; keep the initial surface
+    // direct so shader compilation cannot land in that frame.
+    return Container(
+      decoration: BoxDecoration(
+        color: NazaPalette.shell,
+        border: Border(left: BorderSide(color: NazaPalette.border)),
+        boxShadow: NazaPalette.reduceRasterEffects
+            ? const []
+            : [
+                BoxShadow(
+                  color: const Color(0xFF000000).withAlpha(80),
+                  blurRadius: 22,
+                  offset: const Offset(-8, 0),
                 ),
-              )
-            : ListView(
-                padding: const EdgeInsets.all(16),
+              ],
+      ),
+      child: embedded
+          ? Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: _panelChildren(),
               ),
-      ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: _panelChildren(),
+            ),
     );
   }
 
@@ -23445,7 +25354,7 @@ class _PanelScaffold extends StatelessWidget {
     return [
       Text(
         title,
-        style: const TextStyle(
+        style: TextStyle(
           color: NazaPalette.text,
           fontSize: 21,
           fontWeight: FontWeight.w900,
@@ -23479,7 +25388,7 @@ class _InfoRow extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 color: NazaPalette.subtext,
                 fontWeight: FontWeight.w700,
                 fontFamily: NazaFonts.display,
@@ -23492,7 +25401,7 @@ class _InfoRow extends StatelessWidget {
               value,
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 color: NazaPalette.mintSoft,
                 fontWeight: FontWeight.w900,
                 fontFamily: NazaFonts.mono,
@@ -23517,7 +25426,7 @@ class _SettingsSectionTitle extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Text(
         text,
-        style: const TextStyle(
+        style: TextStyle(
           color: NazaPalette.text,
           fontSize: 13,
           fontWeight: FontWeight.w900,
@@ -23564,7 +25473,7 @@ class _ScannerNotice extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.text,
                     fontWeight: FontWeight.w900,
                     fontFamily: NazaFonts.display,
@@ -23573,7 +25482,7 @@ class _ScannerNotice extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(
                   body,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.subtext,
                     height: 1.35,
                     fontWeight: FontWeight.w600,
@@ -23611,10 +25520,10 @@ class _ScannerModeChip extends StatelessWidget {
         height: 42,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? const Color(0x223EFF92) : const Color(0x66101E19),
+          color: selected ? NazaPalette.selection : NazaPalette.panelSoft,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: selected ? const Color(0x778DFFC4) : const Color(0x22FFFFFF),
+            color: selected ? NazaPalette.borderStrong : NazaPalette.border,
           ),
         ),
         child: Text(
@@ -23657,7 +25566,7 @@ class _NazaTextInput extends StatelessWidget {
             padding: const EdgeInsets.only(left: 4, bottom: 6),
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 color: NazaPalette.subtext,
                 fontWeight: FontWeight.w900,
                 fontSize: 12,
@@ -23669,7 +25578,7 @@ class _NazaTextInput extends StatelessWidget {
             keyboardType: keyboardType ?? TextInputType.text,
             maxLines: maxLines,
             cursorColor: NazaPalette.mintSoft,
-            style: const TextStyle(
+            style: TextStyle(
               color: NazaPalette.text,
               fontWeight: FontWeight.w700,
               height: 1.25,
@@ -23678,27 +25587,24 @@ class _NazaTextInput extends StatelessWidget {
             decoration: InputDecoration(
               isDense: true,
               hintText: hint,
-              hintStyle: const TextStyle(
+              hintStyle: TextStyle(
                 color: NazaPalette.muted,
                 fontWeight: FontWeight.w600,
                 fontFamily: NazaFonts.display,
               ),
               filled: true,
-              fillColor: const Color(0xAA101E19),
+              fillColor: NazaPalette.panelSoft,
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 13,
                 vertical: 12,
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
-                borderSide: const BorderSide(color: Color(0x33FFFFFF)),
+                borderSide: BorderSide(color: NazaPalette.border),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
-                borderSide: const BorderSide(
-                  color: NazaPalette.mintSoft,
-                  width: 2,
-                ),
+                borderSide: BorderSide(color: NazaPalette.mintSoft, width: 2),
               ),
             ),
           ),
@@ -23731,9 +25637,9 @@ class _ToolTile extends StatelessWidget {
             width: 38,
             height: 38,
             decoration: BoxDecoration(
-              color: const Color(0x223EFF92),
+              color: NazaPalette.selection,
               borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: const Color(0x338DFFC4)),
+              border: Border.all(color: NazaPalette.border),
             ),
             child: Icon(icon, color: NazaPalette.mintSoft, size: 21),
           ),
@@ -23744,7 +25650,7 @@ class _ToolTile extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.text,
                     fontWeight: FontWeight.w900,
                     fontFamily: NazaFonts.display,
@@ -23753,7 +25659,7 @@ class _ToolTile extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   body,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: NazaPalette.subtext,
                     height: 1.3,
                     fontFamily: NazaFonts.display,
@@ -23796,9 +25702,9 @@ class _NazaActionButtonState extends State<_NazaActionButton> {
     final enabled = widget.onPressed != null;
     final background = enabled
         ? (widget.filled ? NazaPalette.mintDim : Colors.transparent)
-        : const Color(0xFF24342E);
+        : NazaPalette.panelSoft;
     final foreground = enabled
-        ? (widget.filled ? const Color(0xFF021007) : NazaPalette.mintSoft)
+        ? (widget.filled ? NazaPalette.onMint : NazaPalette.mintSoft)
         : NazaPalette.muted;
 
     return MouseRegion(
@@ -23814,11 +25720,11 @@ class _NazaActionButtonState extends State<_NazaActionButton> {
         onTapCancel: enabled ? () => setState(() => _pressed = false) : null,
         behavior: HitTestBehavior.opaque,
         child: AnimatedScale(
-          scale: _pressed ? 0.97 : (_hovered && enabled ? 1.035 : 1.0),
-          duration: const Duration(milliseconds: 130),
+          scale: _pressed ? 0.985 : (_hovered && enabled ? 1.015 : 1.0),
+          duration: const Duration(milliseconds: 80),
           curve: Curves.easeOutCubic,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
+            duration: const Duration(milliseconds: 120),
             curve: Curves.easeOutCubic,
             constraints: BoxConstraints(
               minWidth: widget.minimumSize.width,
@@ -23831,11 +25737,11 @@ class _NazaActionButtonState extends State<_NazaActionButton> {
               border: Border.all(
                 color: widget.filled
                     ? Colors.transparent
-                    : (enabled
-                          ? const Color(0x668DFFC4)
-                          : const Color(0x22FFFFFF)),
+                    : (enabled ? NazaPalette.borderStrong : NazaPalette.border),
               ),
-              boxShadow: enabled
+              boxShadow: NazaPalette.reduceRasterEffects
+                  ? const []
+                  : enabled
                   ? [
                       BoxShadow(
                         color: NazaPalette.mintDim.withAlpha(
@@ -23892,17 +25798,19 @@ class _IconPill extends StatelessWidget {
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
+        duration: const Duration(milliseconds: 120),
         curve: Curves.easeOutCubic,
         width: selected ? 48 : 44,
         height: selected ? 48 : 44,
         decoration: BoxDecoration(
-          color: selected ? const Color(0x223EFF92) : const Color(0x22101E19),
+          color: selected ? NazaPalette.selection : NazaPalette.panelSoft,
           borderRadius: BorderRadius.circular(22),
           border: Border.all(
-            color: selected ? const Color(0x668DFFC4) : const Color(0x22FFFFFF),
+            color: selected ? NazaPalette.borderStrong : NazaPalette.border,
           ),
-          boxShadow: selected
+          boxShadow: NazaPalette.reduceRasterEffects
+              ? const []
+              : selected
               ? [
                   BoxShadow(
                     color: NazaPalette.mintDim.withAlpha(30),
@@ -23915,7 +25823,7 @@ class _IconPill extends StatelessWidget {
         alignment: Alignment.center,
         child: AnimatedScale(
           scale: selected ? 1.08 : 1,
-          duration: const Duration(milliseconds: 180),
+          duration: const Duration(milliseconds: 100),
           child: Icon(
             icon,
             color: selected ? NazaPalette.mintSoft : NazaPalette.subtext,

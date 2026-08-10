@@ -1,8 +1,11 @@
 #include "my_application.h"
 
 #include <cstdlib>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <flutter_linux/flutter_linux.h>
+#include <glib/gstdio.h>
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
 #endif
@@ -16,6 +19,8 @@ struct _MyApplication {
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
+static gboolean flutter_software_renderer = FALSE;
+
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
@@ -26,6 +31,32 @@ static gboolean env_value_is_true(const gchar* value) {
          (g_strcmp0(value, "1") == 0 || g_strcmp0(value, "true") == 0 ||
           g_strcmp0(value, "TRUE") == 0 || g_strcmp0(value, "yes") == 0 ||
           g_strcmp0(value, "YES") == 0);
+}
+
+static gboolean has_linux_render_node() {
+  GError* error = nullptr;
+  GDir* directory = g_dir_open("/dev/dri", 0, &error);
+  if (directory == nullptr) {
+    if (error != nullptr) {
+      g_error_free(error);
+    }
+    return FALSE;
+  }
+
+  gboolean found = FALSE;
+  while (const gchar* name = g_dir_read_name(directory)) {
+    if (g_str_has_prefix(name, "renderD")) {
+      g_autofree gchar* path = g_build_filename("/dev/dri", name, nullptr);
+      GStatBuf info;
+      if (g_stat(path, &info) == 0 && S_ISCHR(info.st_mode) &&
+          g_access(path, R_OK | W_OK) == 0) {
+        found = TRUE;
+        break;
+      }
+    }
+  }
+  g_dir_close(directory);
+  return found;
 }
 
 static void queue_draw_child(GtkWidget* widget, gpointer user_data);
@@ -93,25 +124,49 @@ static void append_flutter_engine_switch(const gchar* switch_value) {
 }
 
 static void configure_flutter_rendering() {
-  // The app state is updating, but on the affected Linux setup the OpenGL
-  // surface is not presenting new frames until a compositor damage event
-  // (resize/move) arrives.
+  flutter_software_renderer = FALSE;
+  // The Linux embedder chooses kOpenGL vs kSoftware from
+  // FLUTTER_LINUX_RENDERER before engine startup. Use Impeller on the
+  // accelerated path: Skia's first GL program compile is the one-frame
+  // shader jank reported by DevTools even after the app warm-up.
   //
-  // Important Flutter/Linux detail: the Linux embedder chooses kOpenGL vs
-  // kSoftware from FLUTTER_LINUX_RENDERER before engine startup. The generic
-  // `--enable-software-rendering` engine switch alone does not make FlView use
-  // the software compositor on this engine version.
-  //
-  // Keep software rendering as the safe default for this project. If a machine
-  // presents GPU frames correctly, launch with NAZA_FLUTTER_GPU=1 to opt out.
-  if (env_value_is_true(g_getenv("NAZA_FLUTTER_GPU"))) {
-    g_message("Naza One: using Flutter Linux OpenGL renderer");
+  // Set NAZA_FLUTTER_SKIA=1 to keep the old Skia path for driver diagnostics.
+  // Set NAZA_FLUTTER_SOFTWARE=1 as a compatibility fallback on systems whose
+  // OpenGL surface does not present frames correctly.
+  if (env_value_is_true(g_getenv("NAZA_FLUTTER_SOFTWARE"))) {
+    flutter_software_renderer = TRUE;
+    g_setenv("FLUTTER_LINUX_RENDERER", "software", TRUE);
+    append_flutter_engine_switch("enable-impeller=false");
+    append_flutter_engine_switch("enable-software-rendering=true");
+    g_message("Naza One: using Flutter Linux software renderer (fallback)");
     return;
   }
 
-  g_setenv("FLUTTER_LINUX_RENDERER", "software", TRUE);
-  append_flutter_engine_switch("enable-software-rendering=true");
-  g_message("Naza One: using Flutter Linux software renderer");
+  if (env_value_is_true(g_getenv("NAZA_FLUTTER_SKIA"))) {
+    g_unsetenv("FLUTTER_LINUX_RENDERER");
+    append_flutter_engine_switch("enable-impeller=false");
+    g_message("Naza One: using Flutter Linux Skia renderer (diagnostic)");
+    return;
+  }
+
+  // Impeller on a host with no DRM render node falls through to a software GL
+  // stack while still paying the accelerated compositor overhead. That path
+  // competes with CPU-only Gemma inference and presents as whole-window raster
+  // jank. Select Flutter's direct software renderer automatically; explicit
+  // Skia/software diagnostics above still take precedence.
+  if (!has_linux_render_node()) {
+    flutter_software_renderer = TRUE;
+    g_setenv("FLUTTER_LINUX_RENDERER", "software", TRUE);
+    append_flutter_engine_switch("enable-impeller=false");
+    append_flutter_engine_switch("enable-software-rendering=true");
+    g_message(
+        "Naza One: no Linux render node; using Flutter software renderer");
+    return;
+  }
+
+  g_unsetenv("FLUTTER_LINUX_RENDERER");
+  append_flutter_engine_switch("enable-impeller=true");
+  g_message("Naza One: using Flutter Linux accelerated Impeller renderer");
 }
 
 static gboolean redraw_flutter_view_tick_cb(GtkWidget* widget,
@@ -136,7 +191,8 @@ static void install_render_damage_workaround(FlView* view) {
   //
   // Enable with NAZA_GTK_REDRAW=1 only if the software renderer still fails to
   // damage the internal drawing area on a particular GTK/compositor stack.
-  if (!env_value_is_true(g_getenv("NAZA_GTK_REDRAW"))) {
+  if (!flutter_software_renderer ||
+      !env_value_is_true(g_getenv("NAZA_GTK_REDRAW"))) {
     return;
   }
 

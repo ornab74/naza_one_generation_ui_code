@@ -157,6 +157,126 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('paints a pending turn immediately and delivers the reply', (
+    tester,
+  ) async {
+    final response = Completer<NazaResponse>();
+    NazaChatPromptRequest? capturedRequest;
+    var sendCount = 0;
+
+    await tester.pumpWidget(
+      NazaOneApp(
+        requireVaultUnlock: false,
+        chatPromptSender: (request) {
+          sendCount++;
+          capturedRequest = request;
+          return response.future;
+        },
+      ),
+    );
+    await tester.pump();
+
+    final composer = find.byType(TextField, skipOffstage: true);
+    await tester.enterText(composer, 'Why is the sky blue?');
+    final sendButton = find.text('Send');
+    await tester.tap(sendButton);
+    // Exercise the stale pre-pump button callback too: the synchronous send
+    // lease must reject this second submission before either Future completes.
+    await tester.tap(sendButton);
+    await tester.pump();
+    await tester.pump();
+
+    expect(sendCount, 1);
+    expect(capturedRequest?.prompt, 'Why is the sky blue?');
+    expect(find.text('Why is the sky blue?'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('model-pending-status')),
+      findsOneWidget,
+    );
+    expect(find.text('Stop'), findsOneWidget);
+
+    capturedRequest!.onPartial?.call('A streaming local reply.');
+    await tester.pump();
+    expect(find.text('A streaming local reply.'), findsOneWidget);
+    expect(sendCount, 1);
+
+    response.complete(
+      NazaResponse(
+        text: 'Because shorter blue wavelengths scatter more strongly.',
+        score: 1,
+        route: 'test-local',
+        cancelled: false,
+        createdAt: DateTime(2026, 8, 9),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.text('Because shorter blue wavelengths scatter more strongly.'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('model-pending-status')),
+      findsNothing,
+    );
+    expect(find.text('Send'), findsOneWidget);
+    expect(sendCount, 1);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Stop is actionable before the sender produces a token', (
+    tester,
+  ) async {
+    final response = Completer<NazaResponse>();
+    var cancelCount = 0;
+
+    await tester.pumpWidget(
+      NazaOneApp(
+        requireVaultUnlock: false,
+        chatPromptSender: (_) => response.future,
+        chatPromptCanceller: () {
+          cancelCount++;
+          if (!response.isCompleted) {
+            response.complete(
+              NazaResponse(
+                text: 'Stopped before the prompt reached the model.',
+                score: 0,
+                route: 'model-warmup-cancelled',
+                cancelled: true,
+                createdAt: DateTime(2026, 8, 9),
+              ),
+            );
+          }
+          return true;
+        },
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(
+      find.byType(TextField, skipOffstage: true),
+      'Please answer locally.',
+    );
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+    expect(find.text('Stop'), findsOneWidget);
+
+    await tester.tap(find.text('Stop'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(cancelCount, 1);
+    expect(
+      find.text('Stopped before the prompt reached the model.'),
+      findsOneWidget,
+    );
+    expect(find.text('Send'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('keeps scanner text visible when switching panels', (
     tester,
   ) async {
@@ -209,6 +329,49 @@ void main() {
       'Bottled water retention check',
     );
 
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('settings defaults to simple and can reveal advanced controls', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
+    await tester.pump();
+
+    await tester.tap(find.text('Settings'));
+    await tester.pump(const Duration(milliseconds: 240));
+    expect(find.text('Settings mode'), findsOneWidget);
+    expect(find.text('Appearance'), findsOneWidget);
+    expect(find.text('Rendering / desktop stability'), findsNothing);
+
+    await tester.tap(find.text('Advanced').last);
+    await tester.pump(const Duration(milliseconds: 240));
+    expect(find.text('Advanced Settings'), findsOneWidget);
+
+    await tester.tap(find.text('Simple').last);
+    await tester.pump(const Duration(milliseconds: 240));
+    expect(find.text('Settings'), findsWidgets);
+    expect(find.text('Advanced Settings'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('the whole simple appearance card opens the theme chooser', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
+    await tester.pump();
+
+    await tester.tap(find.text('Settings'));
+    await tester.pump(const Duration(milliseconds: 160));
+    await tester.tap(find.text('Saved securely and applied now'));
+    await tester.pump();
+
+    expect(find.text('Rose Dark'), findsOneWidget);
+    expect(find.text('Quantum Cyan'), findsWidgets);
+
+    await NazaThemeStore.select('naza-emerald');
+    await tester.pump();
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

@@ -46,38 +46,51 @@ enum _PhotoChoice { camera, gallery, files }
 
 class _FoodVisionHubState extends State<FoodVisionHub> {
   final ShelfRepository _shelfRepository = EncryptedShelfRepository();
+  final Map<_WorkspaceTab, Widget> _tabCache = <_WorkspaceTab, Widget>{};
   _WorkspaceTab _tab = _WorkspaceTab.fridge;
+
+  Widget _tabFor(_WorkspaceTab tab) {
+    return _tabCache.putIfAbsent(tab, () {
+      return switch (tab) {
+        _WorkspaceTab.fridge => _CleanFridgePane(
+          repository: widget.repository,
+          photoPicker: widget.photoPicker,
+          analyzer: widget.analyzeFridgeImage,
+          onCancel: widget.onCancel,
+        ),
+        _WorkspaceTab.shelf => ShelfScannerPane(
+          repository: _shelfRepository,
+          photoPicker: widget.photoPicker,
+          analyzeVision: widget.analyzeFridgeImage,
+          onCancel: widget.onCancel,
+        ),
+        _WorkspaceTab.more => legacy.FoodVisionHub(
+          repository: widget.repository,
+          photoPicker: widget.photoPicker,
+          analyzeFridgeImage: widget.analyzeFridgeImage,
+          analyzeBakeImage: widget.analyzeBakeImage,
+          regenerateRecipes: widget.regenerateRecipes,
+          onCancel: widget.onCancel,
+          foodSafetyChild: widget.foodSafetyChild,
+          draftController: widget.draftController,
+        ),
+      };
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final wide = constraints.maxWidth >= 960;
+        // Keep already visited tabs alive, but do not build hidden workspaces
+        // on the first frame. The legacy More workspace is intentionally
+        // large and used to cause a visible build hitch on Fridge startup.
         final body = IndexedStack(
           index: _tab.index,
-          children: <Widget>[
-            _CleanFridgePane(
-              repository: widget.repository,
-              photoPicker: widget.photoPicker,
-              analyzer: widget.analyzeFridgeImage,
-              onCancel: widget.onCancel,
-            ),
-            ShelfScannerPane(
-              repository: _shelfRepository,
-              photoPicker: widget.photoPicker,
-              analyzeVision: widget.analyzeFridgeImage,
-              onCancel: widget.onCancel,
-            ),
-            legacy.FoodVisionHub(
-              repository: widget.repository,
-              photoPicker: widget.photoPicker,
-              analyzeFridgeImage: widget.analyzeFridgeImage,
-              analyzeBakeImage: widget.analyzeBakeImage,
-              regenerateRecipes: widget.regenerateRecipes,
-              onCancel: widget.onCancel,
-              foodSafetyChild: widget.foodSafetyChild,
-              draftController: widget.draftController,
-            ),
+          children: [
+            for (final tab in _WorkspaceTab.values)
+              tab == _tab ? _tabFor(tab) : (_tabCache[tab] ?? const SizedBox()),
           ],
         );
 
@@ -273,9 +286,9 @@ class _CleanFridgePaneState extends State<_CleanFridgePane> {
       onClear: _busy
           ? null
           : () => setState(() {
-                _image = null;
-                _status = 'Picture cleared';
-              }),
+              _image = null;
+              _status = 'Picture cleared';
+            }),
       onAnalyze: _busy || !_started || _image == null ? null : _analyze,
     );
     final results = _FridgeResults(log: _latest);
@@ -347,57 +360,57 @@ class _ScannerHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 11, 10, 11),
-          child: Row(
-            children: <Widget>[
-              Icon(
-                Icons.kitchen_rounded,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      title,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w900,
-                          ),
-                    ),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-              if (started && onPicture != null)
-                IconButton.filledTonal(
-                  onPressed: onPicture,
-                  tooltip: 'Photo Scanner',
-                  icon: const Icon(Icons.add_a_photo_rounded),
-                ),
-              const SizedBox(width: 6),
-              if (!started)
-                FilledButton.icon(
-                  onPressed: onStart,
-                  icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text('Start'),
-                )
-              else if (busy)
-                FilledButton.tonalIcon(
-                  onPressed: onStop,
-                  icon: const Icon(Icons.stop_rounded),
-                  label: const Text('Stop'),
-                ),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 11, 10, 11),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            Icons.kitchen_rounded,
+            color: Theme.of(context).colorScheme.primary,
           ),
-        ),
-      );
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          if (started && onPicture != null)
+            IconButton.filledTonal(
+              onPressed: onPicture,
+              tooltip: 'Photo Scanner',
+              icon: const Icon(Icons.add_a_photo_rounded),
+            ),
+          const SizedBox(width: 6),
+          if (!started)
+            FilledButton.icon(
+              onPressed: onStart,
+              icon: const Icon(Icons.play_arrow_rounded),
+              label: const Text('Start'),
+            )
+          else if (busy)
+            FilledButton.tonalIcon(
+              onPressed: onStop,
+              icon: const Icon(Icons.stop_rounded),
+              label: const Text('Stop'),
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _FridgeControls extends StatelessWidget {
@@ -421,95 +434,95 @@ class _FridgeControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  const Icon(Icons.photo_camera_back_outlined),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Photo Scanner',
-                      style: TextStyle(fontWeight: FontWeight.w900),
-                    ),
-                  ),
-                  FilledButton.tonalIcon(
-                    onPressed: busy || !started ? null : onPicture,
-                    icon: const Icon(Icons.add_a_photo_rounded),
-                    label: Text(image == null ? 'Picture' : 'Replace'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              if (image == null)
-                Container(
-                  height: 150,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.outlineVariant,
-                    ),
-                  ),
-                  child: Text(
-                    started
-                        ? 'No fridge picture selected'
-                        : 'Press Start, then choose a picture',
-                  ),
-                )
-              else
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: Image.memory(
-                      image!.bytes,
-                      fit: BoxFit.cover,
-                      cacheWidth: 1280,
-                    ),
-                  ),
-                ),
-              if (image != null)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    onPressed: onClear,
-                    icon: const Icon(Icons.delete_outline_rounded),
-                    label: const Text('Clear'),
-                  ),
-                ),
-              const SizedBox(height: 4),
-              TextField(
-                controller: note,
-                enabled: !busy,
-                maxLines: 2,
-                maxLength: 1200,
-                decoration: const InputDecoration(
-                  labelText: 'Optional note',
-                  hintText: 'Grocery day, leftovers on top shelf…',
+              const Icon(Icons.photo_camera_back_outlined),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Photo Scanner',
+                  style: TextStyle(fontWeight: FontWeight.w900),
                 ),
               ),
-              FilledButton.icon(
-                onPressed: onAnalyze,
-                icon: const Icon(Icons.auto_awesome_rounded),
-                label: Text(
-                  !started
-                      ? 'Start scanner to analyze'
-                      : busy
-                          ? 'Analyzing locally…'
-                          : 'Analyze & save encrypted',
-                ),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(50),
-                ),
+              FilledButton.tonalIcon(
+                onPressed: busy || !started ? null : onPicture,
+                icon: const Icon(Icons.add_a_photo_rounded),
+                label: Text(image == null ? 'Picture' : 'Replace'),
               ),
             ],
           ),
-        ),
-      );
+          const SizedBox(height: 12),
+          if (image == null)
+            Container(
+              height: 150,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              child: Text(
+                started
+                    ? 'No fridge picture selected'
+                    : 'Press Start, then choose a picture',
+              ),
+            )
+          else
+            ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: Image.memory(
+                  image!.bytes,
+                  fit: BoxFit.cover,
+                  cacheWidth: 1280,
+                ),
+              ),
+            ),
+          if (image != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: onClear,
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Clear'),
+              ),
+            ),
+          const SizedBox(height: 4),
+          TextField(
+            controller: note,
+            enabled: !busy,
+            maxLines: 2,
+            maxLength: 1200,
+            decoration: const InputDecoration(
+              labelText: 'Optional note',
+              hintText: 'Grocery day, leftovers on top shelf…',
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: onAnalyze,
+            icon: const Icon(Icons.auto_awesome_rounded),
+            label: Text(
+              !started
+                  ? 'Start scanner to analyze'
+                  : busy
+                  ? 'Analyzing locally…'
+                  : 'Analyze & save encrypted',
+            ),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(50),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _FridgeResults extends StatelessWidget {
@@ -545,8 +558,8 @@ class _FridgeResults extends StatelessWidget {
                 child: Text(
                   'Encrypted inventory',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
               ),
               Chip(label: Text(analysis.status.name)),
@@ -586,48 +599,49 @@ class _FridgeResults extends StatelessWidget {
   }
 }
 
-Future<_PhotoChoice?> _choosePhotoSource(BuildContext context) =>
-    showModalBottomSheet<_PhotoChoice>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                'Photo Scanner',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Images are normalized locally before scanner storage; original EXIF/GPS metadata is not retained.',
-              ),
-              const SizedBox(height: 12),
-              ListTile(
-                leading: const Icon(Icons.photo_camera_rounded),
-                title: const Text('Camera'),
-                subtitle: const Text('Take a new picture'),
-                onTap: () => Navigator.pop(context, _PhotoChoice.camera),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined),
-                title: const Text('Photo library'),
-                subtitle: const Text('Use the system photo picker'),
-                onTap: () => Navigator.pop(context, _PhotoChoice.gallery),
-              ),
-              ListTile(
-                leading: const Icon(Icons.folder_open_rounded),
-                title: const Text('Files'),
-                subtitle: const Text('Choose JPG, PNG, or WebP from files'),
-                onTap: () => Navigator.pop(context, _PhotoChoice.files),
-              ),
-            ],
+Future<_PhotoChoice?> _choosePhotoSource(
+  BuildContext context,
+) => showModalBottomSheet<_PhotoChoice>(
+  context: context,
+  showDragHandle: true,
+  builder: (context) => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text(
+            'Photo Scanner',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
           ),
-        ),
+          const SizedBox(height: 4),
+          const Text(
+            'Images are normalized locally before scanner storage; original EXIF/GPS metadata is not retained.',
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            leading: const Icon(Icons.photo_camera_rounded),
+            title: const Text('Camera'),
+            subtitle: const Text('Take a new picture'),
+            onTap: () => Navigator.pop(context, _PhotoChoice.camera),
+          ),
+          ListTile(
+            leading: const Icon(Icons.photo_library_outlined),
+            title: const Text('Photo library'),
+            subtitle: const Text('Use the system photo picker'),
+            onTap: () => Navigator.pop(context, _PhotoChoice.gallery),
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_open_rounded),
+            title: const Text('Files'),
+            subtitle: const Text('Choose JPG, PNG, or WebP from files'),
+            onTap: () => Navigator.pop(context, _PhotoChoice.files),
+          ),
+        ],
       ),
-    );
+    ),
+  ),
+);

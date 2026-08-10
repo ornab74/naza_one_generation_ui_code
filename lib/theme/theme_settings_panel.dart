@@ -31,15 +31,7 @@ final class NazaThemeSettingsPanel extends StatelessWidget {
                   width: 54,
                   height: 54,
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: <Color>[
-                        active.primary,
-                        active.secondary,
-                        active.tertiary,
-                      ],
-                    ),
+                    color: active.primary,
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: const Icon(Icons.palette_rounded),
@@ -52,8 +44,8 @@ final class NazaThemeSettingsPanel extends StatelessWidget {
                       Text(
                         'Appearance',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w900,
-                            ),
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -72,9 +64,9 @@ final class NazaThemeSettingsPanel extends StatelessWidget {
         const SizedBox(height: 14),
         Text(
           'Themes',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 4),
         const Text(
