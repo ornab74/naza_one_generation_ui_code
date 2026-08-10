@@ -379,8 +379,8 @@ final class NazaAppConfig {
       'naza_generation_settings.sqlite.aesgcm.json';
   static const int memoryEmbeddingDimensions = 128;
   static const int memoryMaxChunks = 1800;
-  static const int memoryRetrievalCandidates = 72;
-  static const int memoryAllocationChunks = 6;
+  static const int memoryRetrievalCandidates = 108;
+  static const int memoryAllocationChunks = 7;
   static const int memoryContextBudgetChars = 2800;
   static const int memorySummaryChars = 560;
   static const int memoryKeywordCount = 18;
@@ -16132,7 +16132,7 @@ final class NazaMemorySettings {
     required this.enabled,
     this.maxRetrievedChunks = NazaAppConfig.memoryAllocationChunks,
     this.candidateLimit = NazaAppConfig.memoryRetrievalCandidates,
-    this.diversity = 0.28,
+    this.diversity = 0.48,
     this.autoConsolidation = true,
   });
 
@@ -16147,7 +16147,7 @@ final class NazaMemorySettings {
     final rawCandidates =
         (json['candidateLimit'] as num?)?.toInt() ??
         NazaAppConfig.memoryRetrievalCandidates;
-    final rawDiversity = (json['diversity'] as num?)?.toDouble() ?? 0.28;
+    final rawDiversity = (json['diversity'] as num?)?.toDouble() ?? 0.48;
     return NazaMemorySettings(
       enabled: json['enabled'] != false,
       maxRetrievedChunks: rawChunks.clamp(2, 8).toInt(),
@@ -18604,7 +18604,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   String _status = 'ready';
   DateTime _lastScrollRequestAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _followOutput = true;
-  final Map<NazaPanel, Widget> _panelCache = <NazaPanel, Widget>{};
 
   @override
   void initState() {
@@ -18653,7 +18652,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _handleThemeChanged() {
     if (!mounted) return;
-    _panelCache.clear();
     setState(() {});
   }
 
@@ -18681,9 +18679,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   Future<void> _loadScannerDrafts() async {
     final drafts = await NazaVault.instance.readScannerDrafts();
     if (!mounted) return;
-    _panelCache
-      ..remove(NazaPanel.roadScanner)
-      ..remove(NazaPanel.foodWater);
     setState(() {
       _roadDraft = Map<String, String>.from(drafts['road'] ?? const {});
       _foodDraft = Map<String, String>.from(drafts['food'] ?? const {});
@@ -18704,7 +18699,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
     try {
       final rows = await NazaVault.instance.readHistory();
       if (!mounted || serial != _recentLoadSerial) return;
-      _panelCache.remove(NazaPanel.history);
       // This snapshot feeds the next prompt only; History owns its own vault
       // listener. Rebuilding the entire shell after every encrypted response
       // save caused a visible completion hitch for data that is not rendered.
@@ -19460,9 +19454,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   void _openThread(NazaConversationThread thread) {
     if (_sending) return;
     _activeStreamingMessage.value = null;
-    if (_panel == NazaPanel.history) {
-      _panelCache.remove(NazaPanel.history);
-    }
     final turns = thread.turns.toList(growable: false);
     setState(() {
       _activeThreadId = thread.id;
@@ -19497,12 +19488,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _openScannerHistory(NazaScannerHistoryRow row) {
     if (_sending) return;
-    if (_panel == NazaPanel.history) {
-      _panelCache.remove(NazaPanel.history);
-    }
-    _panelCache.remove(
-      row.mode == 'road' ? NazaPanel.roadScanner : NazaPanel.foodWater,
-    );
     setState(() {
       switch (row.mode) {
         case 'food':
@@ -19568,18 +19553,13 @@ class _NazaStableHomeState extends State<NazaStableHome>
       return;
     }
     if (!mounted) return;
-    _panelCache.remove(NazaPanel.history);
     setState(() {
       _status = 'history cleared';
     });
   }
 
   void _setPanel(NazaPanel panel) {
-    if (_panel == NazaPanel.history && panel != NazaPanel.history) {
-      // History owns vault listeners and performs encrypted reads. Dispose it
-      // when hidden so every generated turn does not rebuild an offstage list.
-      _panelCache.remove(NazaPanel.history);
-    }
+    if (_panel == panel) return;
     setState(() {
       _panel = panel;
       _status = _labelForPanel(panel);
@@ -19763,41 +19743,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
   }
 
   Widget _buildPanelStack() {
-    final activeIndex = _panelIndex(_panel);
-    final children = <Widget>[
-      _tickerPanel(NazaPanel.chat, _panelForStack(NazaPanel.chat)),
-      _tickerPanel(
-        NazaPanel.roadScanner,
-        _panelForStack(NazaPanel.roadScanner),
-      ),
-      _tickerPanel(NazaPanel.foodWater, _panelForStack(NazaPanel.foodWater)),
-      _tickerPanel(NazaPanel.settings, _panelForStack(NazaPanel.settings)),
-      _tickerPanel(NazaPanel.history, _panelForStack(NazaPanel.history)),
-    ];
-    return IndexedStack(index: activeIndex, children: children);
-  }
-
-  Widget _tickerPanel(NazaPanel panel, Widget child) {
-    return TickerMode(enabled: _panel == panel, child: child);
-  }
-
-  Widget _panelForStack(NazaPanel panel) {
-    if (_panel == panel) {
-      final child = _buildMainPanel(panel);
-      _panelCache[panel] = child;
-      return child;
-    }
-    return _panelCache[panel] ?? const SizedBox.shrink();
-  }
-
-  int _panelIndex(NazaPanel panel) {
-    return switch (panel) {
-      NazaPanel.chat => 0,
-      NazaPanel.roadScanner => 1,
-      NazaPanel.foodWater => 2,
-      NazaPanel.settings => 3,
-      NazaPanel.history => 4,
-    };
+    // Only the visible workspace participates in build/layout. Hidden heavy
+    // panels are recreated on navigation instead of remaining offstage.
+    return RepaintBoundary(child: _buildMainPanel(_panel));
   }
 
   String _labelForPanel(NazaPanel panel) {
