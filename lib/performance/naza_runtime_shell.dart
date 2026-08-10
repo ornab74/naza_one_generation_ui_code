@@ -169,8 +169,8 @@ final class NazaFramePacedChatSender {
   static String _livePreview(String text) {
     if (text.length <= _maxLivePreviewChars) return text;
 
-    var headEnd = _headChars.clamp(0, text.length);
-    var tailStart = (text.length - _tailChars).clamp(0, text.length);
+    var headEnd = _headChars < text.length ? _headChars : text.length;
+    var tailStart = text.length > _tailChars ? text.length - _tailChars : 0;
 
     // Avoid splitting UTF-16 surrogate pairs at either preview boundary.
     if (headEnd > 0 &&
