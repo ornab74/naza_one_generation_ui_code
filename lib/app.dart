@@ -380,8 +380,8 @@ final class NazaAppConfig {
   static const int memoryEmbeddingDimensions = 128;
   static const int memoryMaxChunks = 1800;
   static const int memoryRetrievalCandidates = 72;
-  static const int memoryAllocationChunks = 16;
-  static const int memoryContextBudgetChars = 6200;
+  static const int memoryAllocationChunks = 6;
+  static const int memoryContextBudgetChars = 2800;
   static const int memorySummaryChars = 560;
   static const int memoryKeywordCount = 18;
   static const int ragPromptSurfaceChars = 7600;
@@ -902,6 +902,179 @@ enum NazaGenerationOrigin { chat, scanner }
 /// Keep this deliberately small: mode selection controls prompt/tool policy,
 /// while the existing quantum router remains responsible for artifact details.
 enum NazaChatMode { writer, coder, visual, chef, general }
+
+final class NazaResourcePressure {
+  final double cpu;
+  final double memory;
+
+  const NazaResourcePressure({required this.cpu, required this.memory});
+
+  static const unknown = NazaResourcePressure(cpu: 0.35, memory: 0.45);
+
+  double get combined => (cpu * 0.42 + memory * 0.58)
+      .clamp(0.0, 1.0)
+      .toDouble();
+
+  static Future<NazaResourcePressure> sample() async {
+    if (!Platform.isLinux) return unknown;
+    try {
+      final results = await Future.wait<String>([
+        File('/proc/loadavg').readAsString(),
+        File('/proc/meminfo').readAsString(),
+      ]);
+      final load = double.tryParse(results[0].trim().split(RegExp(r'\s+')).first);
+      final values = <String, double>{};
+      for (final line in results[1].split('\n')) {
+        final match = RegExp(r'^([^:]+):\s+(\d+)').firstMatch(line);
+        if (match == null) continue;
+        values[match.group(1)!] = double.parse(match.group(2)!);
+      }
+      final total = values['MemTotal'] ?? 0;
+      final available = values['MemAvailable'] ?? 0;
+      final memory = total <= 0 ? unknown.memory : 1 - available / total;
+      final cpu = load == null
+          ? unknown.cpu
+          : load / math.max(1, Platform.numberOfProcessors);
+      return NazaResourcePressure(
+        cpu: cpu.clamp(0.0, 1.0).toDouble(),
+        memory: memory.clamp(0.0, 1.0).toDouble(),
+      );
+    } catch (_) {
+      return unknown;
+    }
+  }
+}
+
+final class NazaSamplingProfile {
+  final double temperature;
+  final int topK;
+  final double topP;
+  final int randomSeed;
+  final double lexicalDensity;
+  final double resourcePressure;
+
+  const NazaSamplingProfile({
+    required this.temperature,
+    required this.topK,
+    required this.topP,
+    required this.randomSeed,
+    required this.lexicalDensity,
+    required this.resourcePressure,
+  });
+
+  static const balanced = NazaSamplingProfile(
+    temperature: 0.56,
+    topK: 24,
+    topP: 0.92,
+    randomSeed: 1,
+    lexicalDensity: 0.5,
+    resourcePressure: 0.5,
+  );
+
+  String get signature =>
+      '${temperature.toStringAsFixed(3)}:$topK:${topP.toStringAsFixed(3)}:$randomSeed';
+}
+
+final class NazaAdaptiveSamplingPolicy {
+  const NazaAdaptiveSamplingPolicy._();
+
+  static final RegExp _wordRegExp = RegExp(r"[A-Za-z0-9_']+");
+  static const Set<String> _functionWords = {
+    'a',
+    'an',
+    'and',
+    'are',
+    'as',
+    'at',
+    'be',
+    'but',
+    'by',
+    'for',
+    'from',
+    'in',
+    'is',
+    'it',
+    'of',
+    'on',
+    'or',
+    'that',
+    'the',
+    'this',
+    'to',
+    'with',
+    'you',
+    'your',
+  };
+
+  static double lexicalDensity(String prompt) {
+    final words = _wordRegExp
+        .allMatches(prompt.toLowerCase())
+        .map((match) => match.group(0) ?? '')
+        .where((word) => word.isNotEmpty)
+        .take(600)
+        .toList(growable: false);
+    final unicodeContent = prompt.runes
+        .where((rune) => rune > 0x7F)
+        .take(600)
+        .length;
+    final total = words.length + unicodeContent;
+    if (total == 0) return 0.5;
+    final contentWords = words
+        .where((word) => word.length > 2 && !_functionWords.contains(word))
+        .length;
+    final unique = <String>{...words}.length + unicodeContent;
+    final contentRatio = (contentWords + unicodeContent) / total;
+    final diversity = unique / total;
+    return (contentRatio * 0.62 + diversity * 0.38)
+        .clamp(0.0, 1.0)
+        .toDouble();
+  }
+
+  static NazaSamplingProfile forTurn({
+    required String prompt,
+    required NazaChatMode mode,
+    required NazaResourcePressure pressure,
+  }) {
+    final density = lexicalDensity(prompt);
+    final base = switch (mode) {
+      NazaChatMode.writer => 0.72,
+      NazaChatMode.visual => 0.68,
+      NazaChatMode.chef => 0.56,
+      NazaChatMode.general => 0.55,
+      NazaChatMode.coder => 0.42,
+    };
+    final densityAdjustment = (0.52 - density) * 0.20;
+    final pressureAdjustment = pressure.combined * 0.13;
+    final temperature = (base + densityAdjustment - pressureAdjustment)
+        .clamp(0.28, 0.78)
+        .toDouble();
+    final normalized = ((temperature - 0.28) / 0.50)
+        .clamp(0.0, 1.0)
+        .toDouble();
+    final topK = (8 + normalized * 24 - pressure.combined * 4)
+        .round()
+        .clamp(8, 32);
+    final topP = (0.88 + normalized * 0.07 - pressure.combined * 0.015)
+        .clamp(0.86, 0.95)
+        .toDouble();
+    final seedMaterial =
+        '$prompt|${mode.name}|${(density * 1000).round()}|'
+        '${(pressure.cpu * 100).round()}|${(pressure.memory * 100).round()}';
+    var seed = 0x811C9DC5;
+    for (final unit in seedMaterial.codeUnits) {
+      seed ^= unit;
+      seed = (seed * 0x01000193) & 0x7FFFFFFF;
+    }
+    return NazaSamplingProfile(
+      temperature: temperature,
+      topK: topK,
+      topP: topP,
+      randomSeed: math.max(1, seed),
+      lexicalDensity: density,
+      resourcePressure: pressure.combined,
+    );
+  }
+}
 
 final class NazaChatModeRouter {
   const NazaChatModeRouter._();
@@ -10403,6 +10576,9 @@ final class NazaLocalGemma {
   String? _chatSystemInstruction;
   dynamic _continuationChat;
   int _chatSessionTurns = 0;
+  String? _chatThreadId;
+  int _chatRetainedTokenEstimate = 0;
+  bool _chatReusable = false;
   int _continuationSessionTurns = 0;
   Future<void>? _continuationCloseFuture;
   Future<void>? _loadingFuture;
@@ -10432,6 +10608,9 @@ final class NazaLocalGemma {
   Future<void>? _nativeGenerationDrainFuture;
   Future<dynamic>? _nativeChatOpenFuture;
   String? _nativeChatOpenSystemInstruction;
+  String? _nativeChatOpenSamplingSignature;
+  NazaSamplingProfile _requestedSamplingProfile =
+      NazaSamplingProfile.balanced;
   bool _chatRequiresRecovery = false;
   bool _nativeGenerationDrainFailed = false;
   bool _readinessContinuesInBackground = false;
@@ -10858,6 +11037,7 @@ final class NazaLocalGemma {
     String? historyThreadId,
     String? historyTurnId,
     String threadContext = '',
+    Set<String> excludedMemoryTurnIds = const <String>{},
     String? systemInstructionOverride,
   }) async {
     if (userText.trim().isEmpty) {
@@ -10925,6 +11105,7 @@ final class NazaLocalGemma {
         historyThreadId: historyThreadId,
         historyTurnId: historyTurnId,
         threadContext: threadContext,
+        excludedMemoryTurnIds: excludedMemoryTurnIds,
         systemInstructionOverride: systemInstructionOverride,
       );
     } finally {
@@ -10953,6 +11134,7 @@ final class NazaLocalGemma {
     String? historyThreadId,
     String? historyTurnId,
     String threadContext = '',
+    Set<String> excludedMemoryTurnIds = const <String>{},
     String? systemInstructionOverride,
   }) async {
     final trimmed = userText.trim();
@@ -10987,17 +11169,31 @@ final class NazaLocalGemma {
         createdAt: DateTime.now(),
       );
     }
-    final memoryAllocation = useMemory && visionImage == null
-        ? await _allocateMemoryForTurn(
+    final pressureFuture = NazaResourcePressure.sample();
+    final memoryFuture = useMemory && visionImage == null
+        ? _allocateMemoryForTurn(
             userText: trimmed,
             route: route,
             actionProfile: actionProfile,
+            excludedTurnIds: excludedMemoryTurnIds,
           )
-        : NazaMemoryAllocation.disabled();
+        : Future<NazaMemoryAllocation>.value(
+            NazaMemoryAllocation.disabled(),
+          );
+    final savedContinuationsFuture = maxContinuationsOverride == null
+        ? _savedMaxContinuations()
+        : null;
+    final memoryAllocation = await memoryFuture;
+    final pressure = await pressureFuture;
+    _requestedSamplingProfile = NazaAdaptiveSamplingPolicy.forTurn(
+      prompt: trimmed,
+      mode: scannerMode ? NazaChatMode.coder : NazaChatModeRouter.route(trimmed),
+      pressure: pressure,
+    );
     final maxContinuations = maxContinuationsOverride == null
         ? NazaContinuationEngine.recommendedMaxPasses(
             trimmed,
-            configuredPasses: await _savedMaxContinuations(),
+            configuredPasses: await savedContinuationsFuture!,
           )
         : NazaGenerationSettings.normalizeMaxContinuations(
             maxContinuationsOverride,
@@ -11614,28 +11810,86 @@ final class NazaLocalGemma {
     required String historyTurnId,
     void Function(String partialText)? onPartial,
   }) async {
-    if (_nativeGenerationDrainFuture != null || _nativeGenerationDrainFailed) {
+    NazaResponse retained({required String route, bool cancelled = false}) {
       return NazaResponse(
         text: accumulatedReply,
         score: 0,
-        route: 'manual-continuation-stopping',
-        cancelled: false,
+        route: route,
+        cancelled: cancelled,
         createdAt: DateTime.now(),
       );
+    }
+
+    if (_nativeGenerationDrainFailed) {
+      return retained(route: 'manual-continuation-restart-required');
     }
     if (_sendInFlight || _modelMutationInFlight) {
-      return NazaResponse(
-        text: accumulatedReply,
-        score: 0,
-        route: 'manual-continuation-busy',
-        cancelled: false,
-        createdAt: DateTime.now(),
-      );
+      return retained(route: 'manual-continuation-busy');
     }
     final settled = Completer<void>();
+    final turnCancellation = Completer<void>();
     _activeTurnSettled = settled;
+    _activeTurnCancellation = turnCancellation;
+    _activeGenerationOrigin = NazaGenerationOrigin.chat;
     _sendInFlight = true;
     try {
+      // A bounded UI timeout can return while LiteRT is still unwinding the
+      // previous iterator. Continue owns the normal send lane and awaits that
+      // exact retained drain instead of reporting a terminal "stopping"
+      // result. No context is reopened until the native stream has settled.
+      while (true) {
+        final drain = _nativeGenerationDrainFuture;
+        if (drain == null) break;
+        snapshot.value = snapshot.value.copyWith(
+          busy: true,
+          phase: 'waiting for the previous native response to stop safely',
+          clearError: true,
+        );
+        final drainedMarker = Object();
+        final cancelledMarker = Object();
+        Object outcome;
+        try {
+          outcome = await Future.any<Object>([
+            drain.then<Object>((_) => drainedMarker),
+            turnCancellation.future.then<Object>((_) => cancelledMarker),
+          ]);
+        } catch (error) {
+          _nativeGenerationDrainFailed = true;
+          _chatRequiresRecovery = true;
+          if (identical(_nativeGenerationDrainFuture, drain)) {
+            _nativeGenerationDrainFuture = null;
+          }
+          snapshot.value = snapshot.value.copyWith(
+            busy: false,
+            phase: 'native response did not stop; restart required',
+            error: error.toString(),
+          );
+          return retained(route: 'manual-continuation-restart-required');
+        }
+        if (identical(outcome, cancelledMarker)) {
+          snapshot.value = snapshot.value.copyWith(
+            busy: true,
+            phase: 'previous native response is still stopping safely',
+            clearError: true,
+          );
+          return retained(
+            route: 'manual-continuation-cancelled',
+            cancelled: true,
+          );
+        }
+        if (identical(_nativeGenerationDrainFuture, drain)) {
+          _nativeGenerationDrainFuture = null;
+        }
+      }
+      if (_nativeGenerationDrainFailed) {
+        return retained(route: 'manual-continuation-restart-required');
+      }
+      if (turnCancellation.isCompleted) {
+        return retained(
+          route: 'manual-continuation-cancelled',
+          cancelled: true,
+        );
+      }
       return await _continueOnceTurn(
         originalUserText: originalUserText,
         accumulatedReply: accumulatedReply,
@@ -11648,6 +11902,9 @@ final class NazaLocalGemma {
       if (!settled.isCompleted) settled.complete();
       if (identical(_activeTurnSettled, settled)) {
         _activeTurnSettled = null;
+      }
+      if (identical(_activeTurnCancellation, turnCancellation)) {
+        _activeTurnCancellation = null;
       }
     }
   }
@@ -11694,7 +11951,6 @@ final class NazaLocalGemma {
     required String historyTurnId,
     void Function(String partialText)? onPartial,
   }) async {
-    await _recoverQuarantinedChatIfNeeded();
     final original = originalUserText.trim();
     final prefix = accumulatedReply.trimRight();
     if (original.isEmpty || prefix.isEmpty) {
@@ -11708,8 +11964,64 @@ final class NazaLocalGemma {
     }
 
     final route = NazaQuantumRouter.route(original);
+    NazaResponse cancelledBeforeGeneration({required bool warming}) {
+      return NazaResponse(
+        text: prefix,
+        score: route.score,
+        route: 'manual-continuation-cancelled',
+        cancelled: true,
+        createdAt: DateTime.now(),
+      );
+    }
+
     try {
-      await ensureReady();
+      final readiness = () async {
+        await _recoverQuarantinedChatIfNeeded();
+        await ensureReady(systemInstruction: NazaAppConfig.systemInstruction);
+        final needsFreshSession =
+            _chatSessionTurns > 0 ||
+            _chatSystemInstruction != NazaAppConfig.systemInstruction;
+        if (needsFreshSession) {
+          await _replaceChatSessionForBoundedTurn();
+        }
+      }();
+      _retainedReadinessFuture = readiness;
+      unawaited(
+        readiness.then<void>(
+          (_) {
+            _readinessContinuesInBackground = false;
+            if (identical(_retainedReadinessFuture, readiness)) {
+              _retainedReadinessFuture = null;
+            }
+          },
+          onError: (Object _, StackTrace _) {
+            _readinessContinuesInBackground = false;
+            if (identical(_retainedReadinessFuture, readiness)) {
+              _retainedReadinessFuture = null;
+            }
+          },
+        ),
+      );
+      final cancellation = _activeTurnCancellation;
+      if (cancellation == null) {
+        await readiness;
+      } else {
+        final readyMarker = Object();
+        final cancelledMarker = Object();
+        final outcome = await Future.any<Object>([
+          readiness.then<Object>((_) => readyMarker),
+          cancellation.future.then<Object>((_) => cancelledMarker),
+        ]);
+        if (identical(outcome, cancelledMarker)) {
+          _readinessContinuesInBackground = true;
+          snapshot.value = snapshot.value.copyWith(
+            busy: true,
+            phase: 'continuation context warm-up continues after Stop',
+            clearError: true,
+          );
+          return cancelledBeforeGeneration(warming: true);
+        }
+      }
     } catch (error) {
       snapshot.value = snapshot.value.copyWith(
         busy: false,
@@ -11729,6 +12041,10 @@ final class NazaLocalGemma {
       );
     }
 
+    if (_activeTurnCancellation?.isCompleted == true) {
+      return cancelledBeforeGeneration(warming: false);
+    }
+
     final generationId = ++_generationSerial;
     _cancelledGeneration = -1;
     _activeGenerationOrigin = NazaGenerationOrigin.chat;
@@ -11740,16 +12056,6 @@ final class NazaLocalGemma {
     );
 
     try {
-      final needsFreshSession =
-          _chatSessionTurns > 0 ||
-          _chatSystemInstruction != NazaAppConfig.systemInstruction;
-      if (needsFreshSession) {
-        generation.value = generation.value.copyWith(
-          stage: 'opening compact continuation context',
-        );
-        await _replaceChatSessionForBoundedTurn();
-      }
-
       final prompt = NazaManualContinuationPrompt.stateless(
         originalUserText: original,
         accumulatedReply: prefix,
@@ -12411,6 +12717,7 @@ final class NazaLocalGemma {
     required String userText,
     required NazaRoute route,
     required NazaActionProfile actionProfile,
+    Set<String> excludedTurnIds = const <String>{},
   }) async {
     final memory = NazaVectorMemory.instance;
     try {
@@ -12419,6 +12726,7 @@ final class NazaLocalGemma {
             userText: userText,
             route: route,
             actionProfile: actionProfile,
+            excludedTurnIds: excludedTurnIds,
           )
           .timeout(
             const Duration(
@@ -12576,10 +12884,12 @@ final class NazaLocalGemma {
     if (continuationClose != null) await continuationClose;
 
     final active = _nativeChatOpenFuture;
+    final sampling = _requestedSamplingProfile;
     if (active != null) {
-      if (_nativeChatOpenSystemInstruction != systemInstruction) {
+      if (_nativeChatOpenSystemInstruction != systemInstruction ||
+          _nativeChatOpenSamplingSignature != sampling.signature) {
         throw StateError(
-          'A local response context is already opening for another mode.',
+          'A local response context is already opening for another mode or sampler.',
         );
       }
       return active;
@@ -12595,11 +12905,16 @@ final class NazaLocalGemma {
       final opened = model.createChat(
         systemInstruction: systemInstruction,
         maxOutputTokens: maxOutputTokens,
+        temperature: sampling.temperature,
+        randomSeed: sampling.randomSeed,
+        topK: sampling.topK,
+        topP: sampling.topP,
       );
       return opened is Future ? await opened : opened;
     }();
     _nativeChatOpenFuture = operation;
     _nativeChatOpenSystemInstruction = systemInstruction;
+    _nativeChatOpenSamplingSignature = sampling.signature;
     try {
       final opened = await operation;
       if (_modelLifecycleSerial != lifecycleSerial ||
@@ -12614,6 +12929,7 @@ final class NazaLocalGemma {
       if (identical(_nativeChatOpenFuture, operation)) {
         _nativeChatOpenFuture = null;
         _nativeChatOpenSystemInstruction = null;
+        _nativeChatOpenSamplingSignature = null;
       }
     }
   }
@@ -13002,10 +13318,10 @@ final class NazaLocalGemma {
           }
         }
 
-        if (estimatedTokens >= maxTokens) {
-          interrupted = true;
-          break;
-        }
+        // The native session owns the actual output-token ceiling. A rough
+        // character/4 estimate can reach that ceiling early for dense text,
+        // which used to interrupt a healthy iterator and leave Manual
+        // Continue waiting on an unnecessary native drain.
       }
     } catch (_) {
       interrupted = true;
@@ -13117,6 +13433,7 @@ final class NazaLocalGemma {
           assistant: response.text,
           route: response.route,
           score: response.score,
+          turnId: turnId,
         );
       }
     } catch (_) {
@@ -13155,6 +13472,7 @@ final class NazaChatPromptRequest {
   final String historyThreadId;
   final String historyTurnId;
   final String threadContext;
+  final Set<String> excludedMemoryTurnIds;
   final int? maxContinuationsOverride;
   final String systemInstruction;
 
@@ -13167,6 +13485,7 @@ final class NazaChatPromptRequest {
     required this.historyThreadId,
     required this.historyTurnId,
     required this.threadContext,
+    this.excludedMemoryTurnIds = const <String>{},
     required this.maxContinuationsOverride,
     required this.systemInstruction,
   });
@@ -15731,9 +16050,11 @@ final class NazaGenerationSettingsStore {
   final ValueNotifier<String?> error = ValueNotifier<String?>(null);
 
   Future<void>? _loadFuture;
+  bool _loaded = false;
   Future<void> _storageTail = Future<void>.value();
 
   Future<void> prepare() {
+    if (_loaded) return Future<void>.value();
     _loadFuture ??= _load();
     return _loadFuture!;
   }
@@ -15772,6 +16093,7 @@ final class NazaGenerationSettingsStore {
       settings.value = NazaGenerationSettings.defaults();
       error.value = loadError.toString();
     } finally {
+      _loaded = true;
       _loadFuture = null;
     }
   }
@@ -15828,7 +16150,7 @@ final class NazaMemorySettings {
     final rawDiversity = (json['diversity'] as num?)?.toDouble() ?? 0.28;
     return NazaMemorySettings(
       enabled: json['enabled'] != false,
-      maxRetrievedChunks: rawChunks.clamp(4, 24).toInt(),
+      maxRetrievedChunks: rawChunks.clamp(2, 8).toInt(),
       candidateLimit: rawCandidates.clamp(24, 180).toInt(),
       diversity: rawDiversity.clamp(0.0, 0.72),
       autoConsolidation: json['autoConsolidation'] != false,
@@ -15845,7 +16167,7 @@ final class NazaMemorySettings {
     return NazaMemorySettings(
       enabled: enabled ?? this.enabled,
       maxRetrievedChunks: (maxRetrievedChunks ?? this.maxRetrievedChunks)
-          .clamp(4, 24)
+          .clamp(2, 8)
           .toInt(),
       candidateLimit: (candidateLimit ?? this.candidateLimit)
           .clamp(24, 180)
@@ -16201,12 +16523,14 @@ final class NazaVectorMemory {
       ValueNotifier<NazaMemorySnapshot>(NazaMemorySnapshot.initial());
 
   Future<void>? _settingsLoadFuture;
+  bool _settingsLoaded = false;
   Future<void> _storageTail = Future<void>.value();
   List<NazaMemoryChunk>? _chunks;
   final Map<String, Set<String>> _chunkTokenCache = <String, Set<String>>{};
   int _rotationCursor = 0;
 
   Future<void> prepareSettings() {
+    if (_settingsLoaded) return Future<void>.value();
     _settingsLoadFuture ??= _loadSettings();
     return _settingsLoadFuture!;
   }
@@ -16255,6 +16579,7 @@ final class NazaVectorMemory {
     required String userText,
     required NazaRoute route,
     required NazaActionProfile actionProfile,
+    Set<String> excludedTurnIds = const <String>{},
   }) async {
     try {
       await prepareSettings();
@@ -16285,13 +16610,11 @@ final class NazaVectorMemory {
         return NazaMemoryAllocation.empty(enabled: true);
       }
 
-      final queryEmbedding = _embed(
-        '${actionProfile.label}\n${route.label}\n'
-        '${actionProfile.retrievalFocus.join(' ')}\n$userText',
-      );
-      final queryTokens = _tokenSet(
-        '$userText ${actionProfile.retrievalFocus.join(' ')}',
-      );
+      // Relevance is anchored in the current words. Route/mode metadata is a
+      // small secondary feature below; embedding it repeatedly made generic
+      // recent turns look semantically related to unrelated new tasks.
+      final queryEmbedding = _embed(userText);
+      final queryTokens = _tokenSet(userText);
       final focus = actionProfile.retrievalFocus
           .map((item) => item.toLowerCase())
           .toSet();
@@ -16306,6 +16629,7 @@ final class NazaVectorMemory {
           await Future<void>.delayed(Duration.zero);
         }
         final chunk = chunks[chunkIndex];
+        if (excludedTurnIds.contains(chunk.turnId)) continue;
         if (chunk.embedding.length != NazaAppConfig.memoryEmbeddingDimensions) {
           continue;
         }
@@ -16316,7 +16640,7 @@ final class NazaVectorMemory {
             .clamp(0, 24 * 3650)
             .toDouble();
         final workingMemory = workingTurnIds.contains(chunk.turnId);
-        final recency = workingMemory ? 1.0 : 1.0 / (1.0 + ageHours / 96.0);
+        final recency = 1.0 / (1.0 + ageHours / 96.0);
         final accessStrength = math.min(
           1.0,
           math.log(chunk.accessCount + 1) / math.log(8),
@@ -16329,32 +16653,44 @@ final class NazaVectorMemory {
                         .inHours
                         .clamp(0, 24 * 3650) /
                     240.0);
-        final routeAffinity = chunk.route == route.label ? 0.08 : 0.0;
+        final routeAffinity = chunk.route == route.label ? 0.02 : 0.0;
         final keywordAffinity = _keywordAffinity(
           queryTokens: queryTokens,
           focus: focus,
           chunk: chunk,
         );
         final tagAffinity = _tagAffinity(focus: focus, chunk: chunk);
-        final roleBias = chunk.role == 'user' ? 0.04 : 0.0;
+        // Priors may order relevant candidates, but they must never create
+        // relevance. This hard evidence gate prevents recency/access from
+        // repeatedly selecting the last unrelated assistant response.
+        if (similarity < 0.10 &&
+            keywordAffinity < 0.14 &&
+            tagAffinity < 0.34) {
+          continue;
+        }
+        final roleBias = chunk.role == 'user' ? 0.02 : 0.0;
         final routeMismatchPenalty =
             actionProfile.mode != NazaActionMode.scan &&
                 chunk.route.contains('scanner')
             ? -0.18
             : 0.0;
         final score =
-            similarity * 0.48 +
-            keywordAffinity * 0.19 +
+            similarity * 0.58 +
+            keywordAffinity * 0.27 +
             tagAffinity * 0.07 +
-            recency * 0.10 +
-            accessStrength * 0.04 +
-            accessFreshness * 0.04 +
-            chunk.importance * 0.12 +
+            recency * 0.025 +
+            accessStrength * 0.005 +
+            accessFreshness * 0.005 +
+            chunk.importance * 0.04 +
             routeAffinity +
             roleBias +
             routeMismatchPenalty +
-            (workingMemory ? 0.08 : 0.0);
-        final certainty = score.clamp(0.0, 1.0).toDouble();
+            (workingMemory ? 0.01 : 0.0);
+        final certainty = (similarity * 0.70 +
+                keywordAffinity * 0.25 +
+                tagAffinity * 0.05)
+            .clamp(0.0, 1.0)
+            .toDouble();
         scored.add(
           _ScoredMemoryChunk(
             chunk: chunk,
@@ -16415,17 +16751,21 @@ final class NazaVectorMemory {
     required String assistant,
     required String route,
     required double score,
+    String? turnId,
   }) {
     final operation = _storageTail.then((_) async {
       await prepareSettings();
       final memorySettings = settings.value;
       if (!memorySettings.enabled) return;
       final chunks = await _readChunksNow();
-      final turnId = NazaHistoryRow._id();
+      final memoryTurnId = turnId?.trim().isNotEmpty == true
+          ? turnId!.trim()
+          : NazaHistoryRow._id();
       final createdAt = DateTime.now();
+      final assistantMemory = _assistantMemoryText(assistant);
       final additions = <NazaMemoryChunk>[
         ..._chunksForMessage(
-          turnId: turnId,
+          turnId: memoryTurnId,
           role: 'user',
           text: user,
           route: route,
@@ -16433,9 +16773,9 @@ final class NazaVectorMemory {
           createdAt: createdAt,
         ),
         ..._chunksForMessage(
-          turnId: turnId,
+          turnId: memoryTurnId,
           role: 'assistant',
-          text: assistant,
+          text: assistantMemory,
           route: route,
           routeScore: score,
           createdAt: createdAt,
@@ -16449,7 +16789,10 @@ final class NazaVectorMemory {
           continue;
         }
         final prior = next[duplicateIndex];
-        next[duplicateIndex] = prior.copyWith(
+        // A near-duplicate can be a corrected preference or updated task
+        // state. Keep the newest content/embedding while carrying forward its
+        // usage history; retaining the old chunk made corrections disappear.
+        next[duplicateIndex] = addition.copyWith(
           accessCount: prior.accessCount + 1,
           lastAccessedAt: createdAt,
           importance: math
@@ -16491,12 +16834,12 @@ final class NazaVectorMemory {
   ) {
     final candidateText = _normalize(candidate.text).toLowerCase();
     final candidateTokens = _tokenSet(candidate.text);
-    if (candidateText.length < 28 || candidateTokens.length < 6) return -1;
     for (var i = math.max(0, chunks.length - 320); i < chunks.length; i++) {
       final prior = chunks[i];
       if (prior.role != candidate.role) continue;
       final priorText = _normalize(prior.text).toLowerCase();
       if (priorText == candidateText) return i;
+      if (candidateText.length < 28 || candidateTokens.length < 6) continue;
       final priorTokens = _tokenSet(prior.text);
       if (priorTokens.length < 6) continue;
       final overlap =
@@ -16511,6 +16854,22 @@ final class NazaVectorMemory {
       if (overlap >= 0.90 || semantic >= 0.985) return i;
     }
     return -1;
+  }
+
+  String _assistantMemoryText(String assistant) {
+    final clean = _normalize(assistant);
+    if (clean.isEmpty) return '';
+    final containsDurableArtifact = clean.contains('```') ||
+        _fileSymbolRegExp.hasMatch(clean) ||
+        RegExp(r'\b(class|function|schema|migration|endpoint)\b')
+            .hasMatch(clean.toLowerCase());
+    if (containsDurableArtifact) return clean;
+    final summary = NazaSummaGemmaSummarizer.summarize(
+      clean,
+      role: 'assistant-outcome',
+      maxChars: 620,
+    ).summary;
+    return summary.trim().isEmpty ? _clip(clean, maxChars: 620) : summary;
   }
 
   Future<void> _loadSettings() async {
@@ -16539,6 +16898,7 @@ final class NazaVectorMemory {
         error: error.toString(),
       );
     } finally {
+      _settingsLoaded = true;
       _settingsLoadFuture = null;
     }
   }
@@ -16950,7 +17310,7 @@ final class NazaVectorMemory {
         final item = available[i];
         final text = item.chunk.text.trim();
         if (text.isEmpty) continue;
-        if (item.certainty < 0.34 && selected.isNotEmpty) continue;
+        if (item.certainty < 0.12) continue;
         final cost = _contextCost(item.chunk);
         if (cost > remaining && selected.isNotEmpty) continue;
         final maxSimilarity = selected.isEmpty
@@ -16985,7 +17345,7 @@ final class NazaVectorMemory {
       available.removeAt(bestIndex);
       if (remaining <= 420) break;
     }
-    selected.sort((a, b) => a.chunk.createdAt.compareTo(b.chunk.createdAt));
+    selected.sort((a, b) => b.score.compareTo(a.score));
     return selected;
   }
 
@@ -17024,10 +17384,14 @@ final class NazaVectorMemory {
         ..add('relevance=${item.certainty.toStringAsFixed(2)}')
         ..add(
           'summary=${NazaPromptData.block(summary, maxChars: NazaAppConfig.memorySummaryChars)}',
-        )
-        ..add(
+        );
+      if (_normalize(detail).toLowerCase() !=
+          _normalize(summary).toLowerCase()) {
+        lines.add(
           'detail=${NazaPromptData.block(detail, maxChars: math.max(220, 760 - summary.length))}',
-        )
+        );
+      }
+      lines
         ..add('[/memory_item]');
     }
     lines.add(
@@ -17181,6 +17545,21 @@ final class NazaVectorMemory {
         }
       }
     }
+    final unicodeRunes = normalized.runes
+        .where((rune) => rune > 0x7F)
+        .take(600)
+        .toList(growable: false);
+    for (var i = 0; i < unicodeRunes.length; i++) {
+      final rune = unicodeRunes[i];
+      _addFeature(vector, 'uni:${rune.toRadixString(16)}', 1.0);
+      if (i + 1 < unicodeRunes.length) {
+        _addFeature(
+          vector,
+          'uni-bi:${rune.toRadixString(16)}-${unicodeRunes[i + 1].toRadixString(16)}',
+          0.72,
+        );
+      }
+    }
 
     var norm = 0.0;
     for (final value in vector) {
@@ -17211,15 +17590,30 @@ final class NazaVectorMemory {
     for (var i = 0; i < n; i++) {
       dot += a[i] * b[i];
     }
-    return ((dot + 1.0) / 2.0).clamp(0.0, 1.0).toDouble();
+    // Signed feature hashing yields an ordinary cosine. Shifting it by 0.5
+    // made orthogonal text look half-relevant before any lexical evidence.
+    return dot.clamp(0.0, 1.0).toDouble();
   }
 
   Set<String> _tokenSet(String text) {
-    return _wordRegExp
+    final tokens = _wordRegExp
         .allMatches(text.toLowerCase())
         .map((match) => match.group(0) ?? '')
         .where((token) => token.length > 2)
         .toSet();
+    final unicodeRunes = text.runes
+        .where((rune) => rune > 0x7F)
+        .take(600)
+        .toList(growable: false);
+    for (var i = 0; i < unicodeRunes.length; i++) {
+      tokens.add('u${unicodeRunes[i].toRadixString(16)}');
+      if (i + 1 < unicodeRunes.length) {
+        tokens.add(
+          'u${unicodeRunes[i].toRadixString(16)}-${unicodeRunes[i + 1].toRadixString(16)}',
+        );
+      }
+    }
+    return tokens;
   }
 
   String _normalize(String text) {
@@ -18177,7 +18571,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
   final TextEditingController _inputController = TextEditingController();
   final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
-  final ValueNotifier<int> _messageRevision = ValueNotifier<int>(0);
+  final ValueNotifier<NazaUiMessage?> _activeStreamingMessage =
+      ValueNotifier<NazaUiMessage?>(null);
   late final FoodRepository _foodRepository;
   late final FoodPhotoPicker _foodPhotoPicker;
   final FoodVisionDraftController _foodVisionDraft =
@@ -18249,7 +18644,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
     _inputFocus.dispose();
     _scrollController.removeListener(_handleScrollPosition);
     _scrollController.dispose();
-    _messageRevision.dispose();
+    _activeStreamingMessage.dispose();
     _foodVisionDraft.dispose();
     NazaVault.instance.revision.removeListener(_reloadRecentConversations);
     NazaThemeStore.selectedId.removeListener(_handleThemeChanged);
@@ -18459,6 +18854,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
       score: 1,
       isWorking: true,
     );
+    _activeStreamingMessage.value = workingMessage;
 
     setState(() {
       _sending = true;
@@ -18485,14 +18881,12 @@ class _NazaStableHomeState extends State<NazaStableHome>
     // Recent-history browsing is supplemental. Never hold a visible prompt or
     // the native generation lock behind encrypted history I/O; use the latest
     // context already available in memory and let the background load finish.
-    final threadContext = [
-      NazaThreadContext.fromRows(_threadRows),
-      if (_threadRows.isEmpty)
-        NazaThreadContext.fromRecentThreads(_recentThreads),
-    ].where((item) => item.trim().isNotEmpty).join('\n');
+    // Only the active thread owns short-term conversational continuity.
+    // Cross-thread recall is query-ranked by vector memory; injecting an
+    // arbitrary recent assistant here made new tasks echo the prior chat.
+    final threadContext = NazaThreadContext.fromRows(_threadRows);
 
     NazaResponse response;
-    var lastPartialPaint = DateTime.fromMillisecondsSinceEpoch(0);
     var lastPartialText = '';
 
     void paintPartial(String partialText) {
@@ -18501,29 +18895,18 @@ class _NazaStableHomeState extends State<NazaStableHome>
       final cleaned = partialText.trim();
       if (cleaned.isEmpty || cleaned == lastPartialText) return;
 
-      final now = DateTime.now();
-      final shouldPaint =
-          now.difference(lastPartialPaint) >=
-          const Duration(milliseconds: NazaAppConfig.streamPaintThrottleMs);
-
-      if (!shouldPaint) return;
-
-      lastPartialPaint = now;
       lastPartialText = cleaned;
 
-      final workingIndex = _messages.indexWhere(
-        (m) => m.id == workingMessage.id,
+      // The service already coalesces native tokens. Keep the growing reply
+      // out of the structural message list so a partial only rebuilds and
+      // lays out the one active assistant bubble.
+      _activeStreamingMessage.value = NazaUiMessage.assistant(
+        cleaned,
+        id: workingMessage.id,
+        route: 'streaming',
+        score: 1,
+        isWorking: true,
       );
-      if (workingIndex >= 0) {
-        _messages[workingIndex] = NazaUiMessage.assistant(
-          cleaned,
-          id: workingMessage.id,
-          route: 'streaming',
-          score: 1,
-          isWorking: true,
-        );
-        if (_panel == NazaPanel.chat) _messageRevision.value++;
-      }
 
       _scrollToBottom();
     }
@@ -18540,6 +18923,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
         historyThreadId: threadId,
         historyTurnId: turnId,
         threadContext: threadContext,
+        excludedMemoryTurnIds: _threadRows
+            .map((row) => row.id)
+            .toSet(),
         maxContinuationsOverride:
             selectedMode == NazaChatMode.writer ||
                 selectedMode == NazaChatMode.visual ||
@@ -18559,6 +18945,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
               historyThreadId: request.historyThreadId,
               historyTurnId: request.historyTurnId,
               threadContext: request.threadContext,
+              excludedMemoryTurnIds: request.excludedMemoryTurnIds,
               maxContinuationsOverride: request.maxContinuationsOverride,
               systemInstructionOverride: request.systemInstruction,
             )
@@ -18575,26 +18962,27 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
     if (!mounted) return;
 
+    final replacement = response.cancelled
+        ? NazaUiMessage.assistant(
+            response.text.trim().isEmpty
+                ? 'Generation cancelled.'
+                : response.text,
+            id: workingMessage.id,
+            route: 'cancelled',
+            score: 1,
+          )
+        : NazaUiMessage.assistant(
+            response.text,
+            id: workingMessage.id,
+            route: response.route,
+            score: response.score,
+          );
+    _activeStreamingMessage.value = replacement;
+
     setState(() {
       _sending = false;
       _stopping = false;
       _status = response.cancelled ? 'cancelled' : 'ready';
-
-      final replacement = response.cancelled
-          ? NazaUiMessage.assistant(
-              response.text.trim().isEmpty
-                  ? 'Generation cancelled.'
-                  : response.text,
-              id: workingMessage.id,
-              route: 'cancelled',
-              score: 1,
-            )
-          : NazaUiMessage.assistant(
-              response.text,
-              id: workingMessage.id,
-              route: response.route,
-              score: response.score,
-            );
 
       final workingIndex = _messages.indexWhere(
         (m) => m.id == workingMessage.id,
@@ -18965,42 +19353,40 @@ class _NazaStableHomeState extends State<NazaStableHome>
       return;
     }
 
+    final continuingMessage = NazaUiMessage.assistant(
+      prefix,
+      id: assistantId,
+      route: 'manual-continuation',
+      score: 1,
+      isWorking: true,
+    );
+    _activeStreamingMessage.value = continuingMessage;
     setState(() {
       _sending = true;
       _stopping = false;
       _status = 'continuing from saved seam';
       final index = _messages.indexWhere((item) => item.id == assistantId);
       if (index >= 0) {
-        _messages[index] = NazaUiMessage.assistant(
-          prefix,
-          id: assistantId,
-          route: 'manual-continuation',
-          score: 1,
-          isWorking: true,
-        );
+        _messages[index] = continuingMessage;
       }
     });
     _scrollToBottom(force: true);
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
 
-    var lastPaint = DateTime.fromMillisecondsSinceEpoch(0);
+    var lastPartialText = '';
     void paint(String partial) {
-      if (!mounted || partial.trim().isEmpty) return;
-      final now = DateTime.now();
-      if (now.difference(lastPaint) < const Duration(milliseconds: 260)) return;
-      lastPaint = now;
-      final index = _messages.indexWhere((item) => item.id == assistantId);
-      if (index >= 0) {
-        _messages[index] = NazaUiMessage.assistant(
-          partial,
-          id: assistantId,
-          route: 'manual-continuation',
-          score: 1,
-          isWorking: true,
-        );
-        if (_panel == NazaPanel.chat) _messageRevision.value++;
-      }
+      if (!mounted) return;
+      final cleaned = partial.trim();
+      if (cleaned.isEmpty || cleaned == lastPartialText) return;
+      lastPartialText = cleaned;
+      _activeStreamingMessage.value = NazaUiMessage.assistant(
+        cleaned,
+        id: assistantId,
+        route: 'manual-continuation',
+        score: 1,
+        isWorking: true,
+      );
       _scrollToBottom();
     }
 
@@ -19013,19 +19399,27 @@ class _NazaStableHomeState extends State<NazaStableHome>
     );
     if (!mounted) return;
 
+    final finalText = response.text.trim().isEmpty ? prefix : response.text;
+    final finalMessage = NazaUiMessage.assistant(
+      finalText,
+      id: assistantId,
+      route: response.route,
+      score: response.score,
+    );
+    _activeStreamingMessage.value = finalMessage;
     setState(() {
       _sending = false;
       _stopping = false;
-      _status = response.cancelled ? 'continuation stopped' : 'ready';
-      final finalText = response.text.trim().isEmpty ? prefix : response.text;
+      _status = response.cancelled
+          ? 'continuation stopped'
+          : response.route == 'manual-continuation-restart-required'
+          ? 'continuation needs an app restart'
+          : response.route == 'manual-continuation-busy'
+          ? 'another local response is still active'
+          : 'ready';
       final index = _messages.indexWhere((item) => item.id == assistantId);
       if (index >= 0) {
-        _messages[index] = NazaUiMessage.assistant(
-          finalText,
-          id: assistantId,
-          route: response.route,
-          score: response.score,
-        );
+        _messages[index] = finalMessage;
       }
       final rowIndex = _threadRows.indexWhere((item) => item.id == turnId);
       if (rowIndex >= 0) {
@@ -19047,6 +19441,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _newThread() {
     if (_sending) return;
+    _activeStreamingMessage.value = null;
     setState(() {
       _activeThreadId = NazaHistoryRow._id();
       _threadRows.clear();
@@ -19064,6 +19459,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _openThread(NazaConversationThread thread) {
     if (_sending) return;
+    _activeStreamingMessage.value = null;
     if (_panel == NazaPanel.history) {
       _panelCache.remove(NazaPanel.history);
     }
@@ -19275,33 +19671,47 @@ class _NazaStableHomeState extends State<NazaStableHome>
     final panel = panelOverride ?? _panel;
     switch (panel) {
       case NazaPanel.chat:
-        return ValueListenableBuilder<NazaModelStoreStatus>(
-          valueListenable: NazaSecureModelStore.status,
-          builder: (context, modelStatus, _) {
-            final showModelCard =
-                !modelStatus.installed ||
-                modelStatus.busy ||
-                modelStatus.error != null;
-            return ValueListenableBuilder<int>(
-              valueListenable: _messageRevision,
-              builder: (context, _, _) => ListView.builder(
-                controller: _scrollController,
-                keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                itemCount: _messages.length + (showModelCard ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (showModelCard && index == 0) {
-                    return const _ModelFirstBootCard();
-                  }
-                  final messageIndex = index - (showModelCard ? 1 : 0);
-                  final message = _messages[messageIndex];
-                  return _StableMessageBubble(
-                    key: ValueKey<String>(message.id),
-                    message: message,
-                  );
+        return ListView.builder(
+          key: const ValueKey<String>('chat-message-list'),
+          controller: _scrollController,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          addRepaintBoundaries: false,
+          itemCount: _messages.length + 1,
+          itemBuilder: (context, index) {
+            if (index == 0) {
+              return ValueListenableBuilder<NazaModelStoreStatus>(
+                valueListenable: NazaSecureModelStore.status,
+                builder: (context, modelStatus, _) {
+                  final showModelCard =
+                      !modelStatus.installed ||
+                      modelStatus.busy ||
+                      modelStatus.error != null;
+                  return showModelCard
+                      ? const _ModelFirstBootCard()
+                      : const SizedBox.shrink();
                 },
-              ),
+              );
+            }
+            final message = _messages[index - 1];
+            if (!message.isWorking) {
+              return _StableMessageBubble(
+                key: ValueKey<String>(message.id),
+                message: message,
+              );
+            }
+            return ValueListenableBuilder<NazaUiMessage?>(
+              key: ValueKey<String>('stream-${message.id}'),
+              valueListenable: _activeStreamingMessage,
+              builder: (context, activeMessage, _) {
+                final visibleMessage = activeMessage?.id == message.id
+                    ? activeMessage!
+                    : message;
+                return _StableMessageBubble(
+                  key: ValueKey<String>(visibleMessage.id),
+                  message: visibleMessage,
+                );
+              },
             );
           },
         );
@@ -19508,40 +19918,18 @@ class _NazaBackdropPainter extends CustomPainter {
   bool shouldRepaint(covariant _NazaBackdropPainter oldDelegate) => false;
 }
 
-class _ModelWorkingBeacon extends StatefulWidget {
+class _ModelWorkingBeacon extends StatelessWidget {
   const _ModelWorkingBeacon();
-
-  @override
-  State<_ModelWorkingBeacon> createState() => _ModelWorkingBeaconState();
-}
-
-class _ModelWorkingBeaconState extends State<_ModelWorkingBeacon>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1550),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     return Tooltip(
       message: 'Local model is working',
       child: RepaintBoundary(
-        child: SizedBox(
+        child: const SizedBox(
           width: 38,
           height: 38,
-          child: AnimatedBuilder(
-            animation: _controller,
-            builder: (context, _) => CustomPaint(
-              painter: _ModelWorkingBeaconPainter(_controller.value),
-            ),
-          ),
+          child: CustomPaint(painter: _ModelWorkingBeaconPainter(0.18)),
         ),
       ),
     );
@@ -22931,9 +23319,9 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
                   _MemorySliderRow(
                     label: 'Retrieved chunks',
                     value: settings.maxRetrievedChunks.toDouble(),
-                    min: 4,
-                    max: 24,
-                    divisions: 20,
+                    min: 2,
+                    max: 8,
+                    divisions: 6,
                     suffix: '${settings.maxRetrievedChunks}',
                     onChangeEnd: (value) => unawaited(
                       NazaVectorMemory.instance.updateSettings(

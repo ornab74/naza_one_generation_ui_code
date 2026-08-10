@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/main.dart';
+import 'package:naza_one/onboarding/boot_theme_catalog.dart';
 
 void main() {
   testWidgets('attaches and removes a bounded Gemma vision image', (
@@ -328,6 +329,29 @@ void main() {
       tester.widget<TextField>(reopenedFridgeNote).controller!.text,
       'Bottled water retention check',
     );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Food More workspace inherits the selected app theme', (
+    tester,
+  ) async {
+    final previousTheme = NazaThemeStore.selectedId.value;
+    addTearDown(() => NazaThemeStore.selectedId.value = previousTheme);
+    NazaThemeStore.selectedId.value = 'synthwave';
+
+    await tester.pumpWidget(const NazaOneApp(requireVaultUnlock: false));
+    await tester.pump();
+    await tester.tap(find.text('Food'));
+    await tester.pump();
+    await tester.tap(find.text('More'));
+    await tester.pump();
+
+    final kitchenContext = tester.element(find.text('Naza Kitchen'));
+    final kitchenScheme = Theme.of(kitchenContext).colorScheme;
+    final selectedTheme = NazaBootThemeCatalog.byId('synthwave');
+    expect(kitchenScheme.secondary, selectedTheme.seed);
+    expect(kitchenScheme.brightness, selectedTheme.brightness);
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

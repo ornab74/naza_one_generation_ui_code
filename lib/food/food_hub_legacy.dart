@@ -535,33 +535,33 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
   @override
   Widget build(BuildContext context) {
     final inherited = Theme.of(context);
-    final scheme = ColorScheme.fromSeed(
-      seedColor: _FoodColors.mint,
-      brightness: Brightness.dark,
-      surface: _FoodColors.surface,
-    );
+    // This workspace is mounted under the app's Food > More tab. Keep its
+    // compact kitchen layout, but inherit the selected app color scheme rather
+    // than installing a second, permanently green theme over the subtree.
+    final scheme = inherited.colorScheme;
     final theme = inherited.copyWith(
-      brightness: Brightness.dark,
       colorScheme: scheme,
-      scaffoldBackgroundColor: _FoodColors.background,
-      cardColor: _FoodColors.surface,
-      dividerColor: _FoodColors.border,
+      scaffoldBackgroundColor: inherited.scaffoldBackgroundColor,
+      cardColor: scheme.surfaceContainer,
+      dividerColor: scheme.outlineVariant,
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: _FoodColors.field,
-        labelStyle: const TextStyle(color: _FoodColors.subtext),
-        hintStyle: const TextStyle(color: _FoodColors.muted),
+        fillColor: scheme.surfaceContainerHighest,
+        labelStyle: TextStyle(color: scheme.onSurfaceVariant),
+        hintStyle: TextStyle(
+          color: scheme.onSurfaceVariant.withValues(alpha: 0.72),
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: _FoodColors.border),
+          borderSide: BorderSide(color: scheme.outlineVariant),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: _FoodColors.border),
+          borderSide: BorderSide(color: scheme.outlineVariant),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: _FoodColors.mint, width: 1.6),
+          borderSide: BorderSide(color: scheme.secondary, width: 1.6),
         ),
       ),
     );
@@ -573,7 +573,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
           final wide = constraints.maxWidth >= 900;
           return Scaffold(
             appBar: AppBar(
-              backgroundColor: _FoodColors.appBar,
+              backgroundColor: scheme.surface,
               surfaceTintColor: Colors.transparent,
               elevation: 0,
               titleSpacing: wide ? 24 : 16,
@@ -595,8 +595,8 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
                           _status,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: _FoodColors.subtext,
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
                           ),
@@ -622,7 +622,9 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
               ],
             ),
             body: DecoratedBox(
-              decoration: const BoxDecoration(color: _FoodColors.background),
+              decoration: BoxDecoration(
+                color: inherited.scaffoldBackgroundColor,
+              ),
               child: wide
                   ? Row(
                       children: [
@@ -639,8 +641,8 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
                     selectedIndex: _tab.index,
                     onDestinationSelected: (index) =>
                         _selectTab(_FoodHubTab.values[index]),
-                    backgroundColor: _FoodColors.appBar,
-                    indicatorColor: _FoodColors.mint.withAlpha(42),
+                    backgroundColor: scheme.surface,
+                    indicatorColor: scheme.secondary.withValues(alpha: 0.22),
                     destinations: const [
                       NavigationDestination(
                         icon: Icon(Icons.kitchen_outlined),
@@ -767,9 +769,6 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
 final class _FoodColors {
   const _FoodColors._();
 
-  static const background = Color(0xFF020906);
-  static const appBar = Color(0xFF06130E);
-  static const surface = Color(0xFF0B1D16);
   static const field = Color(0xFF0A1812);
   static const mint = Color(0xFF74F5B3);
   static const mintSoft = Color(0xFFC5FFE2);
@@ -787,16 +786,17 @@ class _HubMark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Container(
       width: 42,
       height: 42,
       decoration: BoxDecoration(
-        color: _FoodColors.mint.withAlpha(26),
+        color: scheme.secondary.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _FoodColors.mint.withAlpha(110)),
+        border: Border.all(color: scheme.secondary.withValues(alpha: 0.44)),
       ),
       alignment: Alignment.center,
-      child: const Icon(Icons.eco_rounded, color: _FoodColors.mintSoft),
+      child: Icon(Icons.eco_rounded, color: scheme.secondary),
     );
   }
 }
@@ -809,11 +809,12 @@ class _HubRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return NavigationRail(
       selectedIndex: tab.index,
       onDestinationSelected: (index) => onSelected(_FoodHubTab.values[index]),
-      backgroundColor: _FoodColors.appBar,
-      indicatorColor: _FoodColors.mint.withAlpha(42),
+      backgroundColor: scheme.surface,
+      indicatorColor: scheme.secondary.withValues(alpha: 0.22),
       labelType: NavigationRailLabelType.all,
       destinations: const [
         NavigationRailDestination(
@@ -854,7 +855,8 @@ class _HubNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = error ? _FoodColors.danger : _FoodColors.mint;
+    final scheme = Theme.of(context).colorScheme;
+    final color = error ? scheme.error : scheme.secondary;
     return Material(
       color: color.withAlpha(22),
       child: Padding(
@@ -869,8 +871,8 @@ class _HubNotice extends StatelessWidget {
             Expanded(
               child: Text(
                 message,
-                style: const TextStyle(
-                  color: _FoodColors.text,
+                style: TextStyle(
+                  color: scheme.onSurface,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -932,6 +934,7 @@ class _PageHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
       child: Row(
@@ -941,12 +944,12 @@ class _PageHeading extends StatelessWidget {
             width: 52,
             height: 52,
             decoration: BoxDecoration(
-              color: _FoodColors.mint.withAlpha(26),
+              color: scheme.secondary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _FoodColors.border),
+              border: Border.all(color: scheme.outlineVariant),
             ),
             alignment: Alignment.center,
-            child: Icon(icon, color: _FoodColors.mintSoft, size: 27),
+            child: Icon(icon, color: scheme.secondary, size: 27),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -955,8 +958,8 @@ class _PageHeading extends StatelessWidget {
               children: [
                 Text(
                   eyebrow.toUpperCase(),
-                  style: const TextStyle(
-                    color: _FoodColors.mint,
+                  style: TextStyle(
+                    color: scheme.secondary,
                     fontSize: 11,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 1.1,
@@ -966,15 +969,15 @@ class _PageHeading extends StatelessWidget {
                 Text(
                   title,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: _FoodColors.text,
+                    color: scheme.onSurface,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
                 const SizedBox(height: 5),
                 Text(
                   body,
-                  style: const TextStyle(
-                    color: _FoodColors.subtext,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
                     height: 1.4,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1001,13 +1004,16 @@ class _Surface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Card(
       elevation: 0,
       margin: const EdgeInsets.only(bottom: 14),
-      color: _FoodColors.surface.withAlpha(238),
+      color: scheme.surfaceContainer,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(24),
-        side: BorderSide(color: accent?.withAlpha(100) ?? _FoodColors.border),
+        side: BorderSide(
+          color: accent?.withAlpha(100) ?? scheme.outlineVariant,
+        ),
       ),
       child: Padding(padding: padding, child: child),
     );
@@ -1029,12 +1035,13 @@ class _SectionHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: _FoodColors.mintSoft, size: 21),
+          Icon(icon, color: scheme.secondary, size: 21),
           const SizedBox(width: 9),
           Expanded(
             child: Column(
@@ -1042,8 +1049,8 @@ class _SectionHeading extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: _FoodColors.text,
+                  style: TextStyle(
+                    color: scheme.onSurface,
                     fontWeight: FontWeight.w900,
                     fontSize: 17,
                   ),
@@ -1052,8 +1059,8 @@ class _SectionHeading extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     subtitle!,
-                    style: const TextStyle(
-                      color: _FoodColors.subtext,
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
                       height: 1.35,
                     ),
                   ),
@@ -1090,12 +1097,13 @@ class _PhotoSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final current = image;
+    final scheme = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: _FoodColors.field,
+        color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _FoodColors.border),
+        border: Border.all(color: scheme.outlineVariant),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -1105,17 +1113,17 @@ class _PhotoSurface extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(22, 26, 22, 18),
               child: Column(
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.add_a_photo_outlined,
-                    color: _FoodColors.mintSoft,
+                    color: scheme.secondary,
                     size: 42,
                   ),
                   const SizedBox(height: 10),
                   Text(
                     emptyTitle,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: _FoodColors.text,
+                    style: TextStyle(
+                      color: scheme.onSurface,
                       fontSize: 17,
                       fontWeight: FontWeight.w900,
                     ),
@@ -1124,8 +1132,8 @@ class _PhotoSurface extends StatelessWidget {
                   Text(
                     emptyBody,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: _FoodColors.subtext,
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
                       height: 1.35,
                     ),
                   ),
@@ -1154,7 +1162,7 @@ class _PhotoSurface extends StatelessWidget {
                   top: 8,
                   right: 8,
                   child: Material(
-                    color: _FoodColors.background.withAlpha(220),
+                    color: scheme.surface.withValues(alpha: 0.88),
                     shape: const CircleBorder(),
                     child: IconButton(
                       onPressed: onRemove,
@@ -1172,15 +1180,15 @@ class _PhotoSurface extends StatelessWidget {
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: _FoodColors.background.withAlpha(220),
+                      color: scheme.surface.withValues(alpha: 0.88),
                       borderRadius: BorderRadius.circular(99),
                     ),
                     child: Text(
                       '${current.name} • ${current.dimensions}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: _FoodColors.text,
+                      style: TextStyle(
+                        color: scheme.onSurface,
                         fontSize: 11,
                         fontWeight: FontWeight.w800,
                       ),
