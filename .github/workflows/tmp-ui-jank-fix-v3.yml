@@ -1,0 +1,76 @@
+name: Temporary UI jank source patch v3
+
+on:
+  push:
+    branches:
+      - fix/memory-defaults-ui-jank
+
+permissions:
+  contents: write
+
+jobs:
+  patch-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/memory-defaults-ui-jank
+          fetch-depth: 0
+
+      - name: Apply Dart source changes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('lib/app.dart')
+          text = path.read_text()
+          replacements = [
+              ('  static const int memoryRetrievalCandidates = 72;\n  static const int memoryAllocationChunks = 6;',
+               '  static const int memoryRetrievalCandidates = 108;\n  static const int memoryAllocationChunks = 7;'),
+              ('    this.diversity = 0.28,', '    this.diversity = 0.48,'),
+              ("    final rawDiversity = (json['diversity'] as num?)?.toDouble() ?? 0.28;",
+               "    final rawDiversity = (json['diversity'] as num?)?.toDouble() ?? 0.48;"),
+              ('  final Map<NazaPanel, Widget> _panelCache = <NazaPanel, Widget>{};\n', ''),
+              ('  void _handleThemeChanged() {\n    if (!mounted) return;\n    _panelCache.clear();\n    setState(() {});\n  }',
+               '  void _handleThemeChanged() {\n    if (!mounted) return;\n    setState(() {});\n  }'),
+              ('    _panelCache\n      ..remove(NazaPanel.roadScanner)\n      ..remove(NazaPanel.foodWater);\n', ''),
+              ('      _panelCache.remove(NazaPanel.history);\n      // This snapshot feeds the next prompt only; History owns its own vault\n',
+               '      // This snapshot feeds the next prompt only; History owns its own vault\n'),
+              ('    if (_panel == NazaPanel.history) {\n      _panelCache.remove(NazaPanel.history);\n    }\n    final turns = thread.turns.toList(growable: false);',
+               '    final turns = thread.turns.toList(growable: false);'),
+              ("    if (_panel == NazaPanel.history) {\n      _panelCache.remove(NazaPanel.history);\n    }\n    _panelCache.remove(\n      row.mode == 'road' ? NazaPanel.roadScanner : NazaPanel.foodWater,\n    );\n    setState(() {",
+               '    setState(() {'),
+              ("    _panelCache.remove(NazaPanel.history);\n    setState(() {\n      _status = 'history cleared';\n    });",
+               "    setState(() {\n      _status = 'history cleared';\n    });"),
+              ('  void _setPanel(NazaPanel panel) {\n    if (_panel == NazaPanel.history && panel != NazaPanel.history) {\n      // History owns vault listeners and performs encrypted reads. Dispose it\n      // when hidden so every generated turn does not rebuild an offstage list.\n      _panelCache.remove(NazaPanel.history);\n    }\n    setState(() {\n      _panel = panel;\n      _status = _labelForPanel(panel);\n    });\n  }',
+               '  void _setPanel(NazaPanel panel) {\n    if (_panel == panel) return;\n    setState(() {\n      _panel = panel;\n      _status = _labelForPanel(panel);\n    });\n  }'),
+              ('  Widget _buildPanelStack() {\n    final activeIndex = _panelIndex(_panel);\n    final children = <Widget>[\n      _tickerPanel(NazaPanel.chat, _panelForStack(NazaPanel.chat)),\n      _tickerPanel(\n        NazaPanel.roadScanner,\n        _panelForStack(NazaPanel.roadScanner),\n      ),\n      _tickerPanel(NazaPanel.foodWater, _panelForStack(NazaPanel.foodWater)),\n      _tickerPanel(NazaPanel.settings, _panelForStack(NazaPanel.settings)),\n      _tickerPanel(NazaPanel.history, _panelForStack(NazaPanel.history)),\n    ];\n    return IndexedStack(index: activeIndex, children: children);\n  }\n\n  Widget _tickerPanel(NazaPanel panel, Widget child) {\n    return TickerMode(enabled: _panel == panel, child: child);\n  }\n\n  Widget _panelForStack(NazaPanel panel) {\n    if (_panel == panel) {\n      final child = _buildMainPanel(panel);\n      _panelCache[panel] = child;\n      return child;\n    }\n    return _panelCache[panel] ?? const SizedBox.shrink();\n  }\n\n  int _panelIndex(NazaPanel panel) {\n    return switch (panel) {\n      NazaPanel.chat => 0,\n      NazaPanel.roadScanner => 1,\n      NazaPanel.foodWater => 2,\n      NazaPanel.settings => 3,\n      NazaPanel.history => 4,\n    };\n  }',
+               '  Widget _buildPanelStack() {\n    // Only the visible workspace participates in build/layout. Hidden heavy\n    // panels are recreated on navigation instead of remaining offstage.\n    return RepaintBoundary(child: _buildMainPanel(_panel));\n  }'),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit('source pattern mismatch')
+              text = text.replace(old, new, 1)
+
+          if 'static const bool memoryAutoConsolidationEnabled = true;' not in text:
+              raise SystemExit('auto-consolidation default changed unexpectedly')
+          if '_MemorySliderRowState' not in text:
+              raise SystemExit('memory slider implementation missing')
+          path.write_text(text)
+
+      - name: Format and commit Dart source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/app.dart || true
+          git diff --check
+          rm -f .github/workflows/__apply_source_patch_tmp.yml
+          rm -f .github/workflows/tmp-ui-jank-fix.yml
+          rm -f .github/workflows/tmp-ui-jank-fix-v3.yml
+          git config user.name "naza-ci"
+          git config user.email "242115042+ornab74@users.noreply.github.com"
+          git add lib/app.dart .github/workflows
+          git commit -m "fix: update memory defaults and reduce UI layout jank"
+          git push origin HEAD:fix/memory-defaults-ui-jank
