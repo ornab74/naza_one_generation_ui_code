@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart';
 
 import 'app.dart' as app;
 import 'onboarding/boot_coordinator.dart';
+import 'performance/naza_runtime_shell.dart';
 import 'performance/naza_shader_warm_up.dart';
 import 'security/secure_database.dart';
 
@@ -33,6 +34,15 @@ Future<void> main() async {
 
   log('START main vault inspection');
   try {
+    // Normal completed installs take the lightweight runtime path. It keeps
+    // the same vault/theme/model state but frame-paces cumulative LLM partials
+    // before they reach Flutter text layout, eliminating the dominant build
+    // jank shown by DevTools while preserving the complete final response.
+    if (await NazaPerformanceRuntime.tryLaunch()) {
+      log('launched frame-paced performance runtime');
+      return;
+    }
+
     final inspection = await app.NazaVault.instance.inspect();
     log(
       'DONE main vault inspection: access=${inspection.access.name}, '
