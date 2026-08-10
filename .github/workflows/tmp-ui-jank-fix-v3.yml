@@ -54,7 +54,7 @@ jobs:
                   raise SystemExit('source pattern mismatch')
               text = text.replace(old, new, 1)
 
-          if 'static const bool memoryAutoConsolidationEnabled = true;' not in text:
+          if 'this.autoConsolidation = true,' not in text:
               raise SystemExit('auto-consolidation default changed unexpectedly')
           if '_MemorySliderRowState' not in text:
               raise SystemExit('memory slider implementation missing')
