@@ -6,15 +6,15 @@ import 'package:naza_one/model/pausable_model_downloader.dart';
 import 'package:naza_one/onboarding/boot_theme_catalog.dart';
 
 void main() {
-  test('first-run source keeps password requirement opt-in', () async {
+  test('first-run source keeps password requirement platform-safe', () async {
     final source = await File(
       'lib/onboarding/boot_coordinator.dart',
     ).readAsString();
 
-    // Product invariant: encryption is mandatory, but the interactive boot
-    // password is opt-in. The unchecked path passes passwordRequired=false to
-    // the encrypted vault and uses the OS secure credential store.
-    expect(source, contains('bool _requirePassword = false;'));
+    // Product invariant: encryption is mandatory. Desktop Linux defaults to
+    // a password because headless sessions may not expose Secret Service;
+    // other platforms can use the OS secure credential store by default.
+    expect(source, contains('bool _requirePassword = Platform.isLinux;'));
     expect(
       source,
       contains('false; // UX default: encrypted, no boot password.'),
