@@ -26,6 +26,9 @@ import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
 import 'security/post_quantum_recovery.dart';
 import 'security/secure_database.dart';
+import 'naza_healthdash_monolith.dart';
+import 'naza_bookforge.dart';
+import 'naza_exploration_hub.dart';
 
 bool _environmentFlag(String name) {
   final value = Platform.environment[name]?.trim().toLowerCase();
@@ -17805,6 +17808,11 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
       return;
     }
     final creating = inspection.access == NazaVaultAccess.setupRequired;
+    if (creating && Platform.isLinux) {
+      // Linux deployments without a desktop keyring must never enter the
+      // passwordless device-key path, even if stale UI state says otherwise.
+      _passwordRequired = true;
+    }
     if (creating && _passwordRequired && _password.text != _confirmation.text) {
       setState(() => _error = 'The two startup passwords do not match.');
       return;
@@ -17828,9 +17836,22 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
       await _markUnlocked();
     } catch (error) {
       if (!mounted) return;
+      final deviceStoreUnavailable =
+          error is NazaVaultException &&
+          error.code == 'secure_storage_unavailable' &&
+          creating;
       setState(() {
         _busy = false;
-        _error = _friendlyError(error);
+        if (deviceStoreUnavailable) {
+          // Headless Linux sessions may not have an unlocked Secret Service.
+          // Fall back to the explicit password flow instead of leaving the
+          // user at a dead-end after choosing passwordless unlock.
+          _passwordRequired = true;
+          _error =
+              'The operating-system keyring is unavailable. Use a startup password instead.';
+        } else {
+          _error = _friendlyError(error);
+        }
       });
     }
   }
@@ -18091,15 +18112,19 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
                                     style: TextStyle(color: NazaPalette.text),
                                   ),
                                   subtitle: Text(
-                                    'Recommended and enabled by default. Turning it off delegates unlock to the operating-system secure key store.',
+                                    Platform.isLinux
+                                        ? 'Linux requires a startup password when no desktop keyring is available.'
+                                        : 'Recommended and enabled by default. Turning it off delegates unlock to the operating-system secure key store.',
                                     style: TextStyle(
                                       color: NazaPalette.subtext,
                                     ),
                                   ),
-                                  onChanged: (value) => setState(() {
-                                    _passwordRequired = value;
-                                    _error = null;
-                                  }),
+                                  onChanged: Platform.isLinux
+                                      ? null
+                                      : (value) => setState(() {
+                                          _passwordRequired = value;
+                                          _error = null;
+                                        }),
                                 ),
                               ),
                               const SizedBox(height: 8),
@@ -18526,7 +18551,7 @@ final class NazaScannerResult {
   }
 }
 
-enum NazaPanel { chat, roadScanner, foodWater, settings, history }
+enum NazaPanel { chat, roadScanner, foodWater, health, book, labs, settings, history }
 
 class _NazaThemeSurface extends StatelessWidget {
   final Widget child;
@@ -19586,6 +19611,80 @@ class _NazaStableHomeState extends State<NazaStableHome>
     });
   }
 
+  Future<String> _runHealthText({
+    required String systemInstruction,
+    required String prompt,
+  }) async {
+    final response = await NazaLocalGemma.instance.send(
+      prompt,
+      historyUserText: 'Private Naza HealthDash workflow',
+      useMemory: false,
+      persistTurn: false,
+      maxContinuationsOverride: 0,
+      routeOverride: 'health-agent',
+      systemInstructionOverride: systemInstruction,
+    );
+    return response.text;
+  }
+
+  Future<String> _runBookText({
+    required String systemInstruction,
+    required String prompt,
+    void Function(String text)? onPartial,
+  }) async {
+    final response = await NazaLocalGemma.instance.send(
+      prompt,
+      historyUserText: 'Private Naza BookForge authoring workflow',
+      useMemory: false,
+      persistTurn: false,
+      maxContinuationsOverride: 2,
+      routeOverride: 'bookforge-agent',
+      systemInstructionOverride: systemInstruction,
+      onPartial: onPartial,
+    );
+    return response.text;
+  }
+
+  Future<NazaPickedHealthImage?> _pickHealthImage() async {
+    final result = await (widget.visionPicker ?? NazaVisionPicker.instance.pick)();
+    final image = result.image;
+    if (result.outcome != NazaVisionPickOutcome.selected || image == null) {
+      return null;
+    }
+    return NazaPickedHealthImage(name: image.name, bytes: image.bytes);
+  }
+
+  Future<String> _runHealthVision({
+    required Uint8List imageBytes,
+    required String systemInstruction,
+    required String prompt,
+  }) async {
+    final response = await NazaLocalGemma.instance.send(
+      prompt,
+      historyUserText: 'Private Naza HealthDash vision workflow',
+      visionImage: NazaVisionImage(
+        bytes: imageBytes,
+        name: 'healthdash-image.jpg',
+        width: 1,
+        height: 1,
+      ),
+      useMemory: false,
+      persistTurn: false,
+      maxContinuationsOverride: 0,
+      routeOverride: 'health-agent-vision',
+      systemInstructionOverride: systemInstruction,
+    );
+    return response.text;
+  }
+
+  void _openHealthChatWithPrompt(String prompt) {
+    _setPanel(NazaPanel.chat);
+    _inputController
+      ..text = prompt
+      ..selection = TextSelection.collapsed(offset: prompt.length);
+    _inputFocus.requestFocus();
+  }
+
   void _scrollToBottom({bool force = false}) {
     if (!force && !_followOutput) return;
     if (force) _followOutput = true;
@@ -19748,6 +19847,27 @@ class _NazaStableHomeState extends State<NazaStableHome>
             onPlanner: _runFoodWaterPlanner,
           ),
         );
+      case NazaPanel.health:
+        return NazaHealthDashMonolith(
+          agent: NazaHealthAgentBridge(
+            runText: _runHealthText,
+            runVision: _runHealthVision,
+            pickImage: _pickHealthImage,
+          ),
+          existing: NazaExistingSurfaceBridge(
+            openChat: () => _setPanel(NazaPanel.chat),
+            openChatWithPrompt: _openHealthChatWithPrompt,
+            openRoadScanner: () => _setPanel(NazaPanel.roadScanner),
+            openFoodVision: () => _setPanel(NazaPanel.foodWater),
+            openHistory: () => _setPanel(NazaPanel.history),
+            openSettings: () => _setPanel(NazaPanel.settings),
+          ),
+          vault: NazaHealthVault(database: NazaSecureDatabase.instance),
+        );
+      case NazaPanel.book:
+        return BookForgeApp(completion: _runBookText);
+      case NazaPanel.labs:
+        return NazaExplorationHub(runPrompt: _runBookText);
       case NazaPanel.settings:
         return _SettingsPanel(
           actionsEnabled: !_sending,
@@ -19771,6 +19891,9 @@ class _NazaStableHomeState extends State<NazaStableHome>
         _panelForStack(NazaPanel.roadScanner),
       ),
       _tickerPanel(NazaPanel.foodWater, _panelForStack(NazaPanel.foodWater)),
+      _tickerPanel(NazaPanel.health, _panelForStack(NazaPanel.health)),
+      _tickerPanel(NazaPanel.book, _panelForStack(NazaPanel.book)),
+      _tickerPanel(NazaPanel.labs, _panelForStack(NazaPanel.labs)),
       _tickerPanel(NazaPanel.settings, _panelForStack(NazaPanel.settings)),
       _tickerPanel(NazaPanel.history, _panelForStack(NazaPanel.history)),
     ];
@@ -19795,8 +19918,11 @@ class _NazaStableHomeState extends State<NazaStableHome>
       NazaPanel.chat => 0,
       NazaPanel.roadScanner => 1,
       NazaPanel.foodWater => 2,
-      NazaPanel.settings => 3,
-      NazaPanel.history => 4,
+      NazaPanel.health => 3,
+      NazaPanel.book => 4,
+      NazaPanel.labs => 5,
+      NazaPanel.settings => 6,
+      NazaPanel.history => 7,
     };
   }
 
@@ -19808,6 +19934,12 @@ class _NazaStableHomeState extends State<NazaStableHome>
         return 'road scanner';
       case NazaPanel.foodWater:
         return 'food / water scanner';
+      case NazaPanel.health:
+        return 'healthdash';
+      case NazaPanel.book:
+        return 'bookforge';
+      case NazaPanel.labs:
+        return 'findit / garden / drive / predict / heart flow';
       case NazaPanel.settings:
         return 'settings';
       case NazaPanel.history:
@@ -20121,6 +20253,12 @@ class _TopBar extends StatelessWidget {
         return 'Road Scanner';
       case NazaPanel.foodWater:
         return 'Food / Water Scanner';
+      case NazaPanel.health:
+        return 'HealthDash';
+      case NazaPanel.book:
+        return 'BookForge';
+      case NazaPanel.labs:
+        return 'FindIt + Garden + Drive + Predict + Heart Flow';
       case NazaPanel.settings:
         return 'Settings';
       case NazaPanel.history:
@@ -20186,6 +20324,18 @@ class _SideRail extends StatelessWidget {
             label: 'Food',
             selected: panel == NazaPanel.foodWater,
             onTap: () => onPanel(NazaPanel.foodWater),
+          ),
+          _RailButton(
+            icon: Icons.health_and_safety_rounded,
+            label: 'Health',
+            selected: panel == NazaPanel.health,
+            onTap: () => onPanel(NazaPanel.health),
+          ),
+          _RailButton(
+            icon: Icons.menu_book_rounded,
+            label: 'Book',
+            selected: panel == NazaPanel.book,
+            onTap: () => onPanel(NazaPanel.book),
           ),
           _RailButton(
             icon: Icons.settings_rounded,
@@ -20317,6 +20467,12 @@ class _BottomTabs extends StatelessWidget {
             label: 'Food',
             selected: panel == NazaPanel.foodWater,
             onTap: () => onPanel(NazaPanel.foodWater),
+          ),
+          _BottomTab(
+            icon: Icons.menu_book_rounded,
+            label: 'Book',
+            selected: panel == NazaPanel.book,
+            onTap: () => onPanel(NazaPanel.book),
           ),
           _BottomTab(
             icon: Icons.settings_rounded,

@@ -88,7 +88,9 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   final PageController _guideController = PageController();
 
   _BootStage _stage = _BootStage.loading;
-  bool _requirePassword = false;
+  // Headless Linux sessions commonly have no unlocked Secret Service. Use
+  // explicit password protection by default so first launch is reliable.
+  bool _requirePassword = Platform.isLinux;
   bool _existingPasswordVault = false;
   bool _busy = false;
   bool _useLocalModel = false;
@@ -210,6 +212,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
 
   Future<void> _createVault() async {
     if (_busy) return;
+    if (Platform.isLinux) _requirePassword = true;
     final password = _password.text;
     if (_requirePassword) {
       if (password.length < 12) {
@@ -835,7 +838,9 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       eyebrow: '1 · Security',
       title: 'Encrypted from the first launch',
       subtitle:
-          'Your vault is always encrypted. For the smoothest experience, Naza One defaults to a protected device unlock key. A startup password is optional.',
+          Platform.isLinux
+              ? 'Your vault is always encrypted. Linux uses a startup password because this session has no unlocked desktop keyring.'
+              : 'Your vault is always encrypted. For the smoothest experience, Naza One defaults to a protected device unlock key. A startup password is optional.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -847,23 +852,28 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
             _themeData.colorScheme.primary,
           ),
           const SizedBox(height: 16),
-          CheckboxListTile(
-            value: _requirePassword,
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: const Text(
-              'Require a password every time Naza One starts',
-              style: TextStyle(fontWeight: FontWeight.w800),
+          Material(
+            type: MaterialType.transparency,
+            child: CheckboxListTile(
+              value: _requirePassword,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text(
+                'Require a password every time Naza One starts',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                Platform.isLinux
+                    ? 'Linux requires a startup password when no desktop keyring is available.'
+                    : 'Opt in for a stronger interactive startup gate. Leave unchecked for secure-storage unlock with no password prompt.',
+              ),
+              onChanged: _busy || Platform.isLinux
+                  ? null
+                  : (value) => setState(() {
+                      _requirePassword = value ?? false;
+                      _error = null;
+                    }),
             ),
-            subtitle: const Text(
-              'Opt in for a stronger interactive startup gate. Leave unchecked for secure-storage unlock with no password prompt.',
-            ),
-            onChanged: _busy
-                ? null
-                : (value) => setState(() {
-                    _requirePassword = value ?? false;
-                    _error = null;
-                  }),
           ),
           AnimatedSize(
             duration: const Duration(milliseconds: 240),
@@ -1048,20 +1058,23 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
           ),
           if (_desktop) ...<Widget>[
             const SizedBox(height: 16),
-            CheckboxListTile(
-              value: _useLocalModel,
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              title: const Text(
-                'Use a local .litertlm model file instead',
-                style: TextStyle(fontWeight: FontWeight.w800),
+            Material(
+              type: MaterialType.transparency,
+              child: CheckboxListTile(
+                value: _useLocalModel,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text(
+                  'Use a local .litertlm model file instead',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                subtitle: const Text(
+                  'Opens the native file picker. The path is saved inside the encrypted vault only after exact size + SHA-256 verification.',
+                ),
+                onChanged: _busy || _modelReady
+                    ? null
+                    : (value) => setState(() => _useLocalModel = value ?? false),
               ),
-              subtitle: const Text(
-                'Opens the native file picker. The path is saved inside the encrypted vault only after exact size + SHA-256 verification.',
-              ),
-              onChanged: _busy || _modelReady
-                  ? null
-                  : (value) => setState(() => _useLocalModel = value ?? false),
             ),
             _messageCard(
               Icons.terminal_rounded,
