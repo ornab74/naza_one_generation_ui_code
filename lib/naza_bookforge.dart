@@ -458,7 +458,9 @@ tags: [${book.tags.map((String tag) => '"${tag.replaceAll('"', '\\"')}"').join('
       'message': 'Publish ${book.title}',
       'content': base64Encode(utf8.encode('$frontMatter${book.content.trim()}\n')),
       'branch': target.branch,
-      if (existingSha case final sha?) 'sha': sha,
+      ...?existingSha == null
+          ? null
+          : <String, String>{'sha': existingSha},
     };
     final http.Response response = await _client.put(
       uri,
@@ -1155,7 +1157,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ? const EmptyPanel(icon: Icons.library_books_outlined, title: 'No books yet', body: 'Import Markdown, text, or DOCX books, or generate a new manuscript.')
                   : ListView.separated(
                       itemCount: _visibleBooks.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
                       itemBuilder: (BuildContext context, int index) {
                         final BookDocument book = _visibleBooks[index];
                         final bool active = _selected?.id == book.id;
@@ -1278,7 +1280,7 @@ class ReadingPane extends StatelessWidget {
                         padding: const EdgeInsets.only(bottom: 18),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(14),
-                          child: Image.memory(Uint8List.fromList(media.bytes), fit: BoxFit.contain, errorBuilder: (_, __, ___) => Text('Unable to render ${media.name}')),
+                          child: Image.memory(Uint8List.fromList(media.bytes), fit: BoxFit.contain, errorBuilder: (_, _, _) => Text('Unable to render ${media.name}')),
                         ),
                       )),
                 ],
@@ -1522,7 +1524,7 @@ class RepositoryPanel extends StatelessWidget {
                   child: ListView.separated(
                     padding: const EdgeInsets.all(10),
                     itemCount: books.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    separatorBuilder: (_, _) => const Divider(height: 1),
                     itemBuilder: (BuildContext context, int index) {
                       final RepositoryBook book = books[index];
                       return ListTile(

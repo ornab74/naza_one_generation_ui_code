@@ -28,7 +28,7 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
   @override Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: <Widget>[
     Row(children: <Widget>[const Icon(Icons.explore_rounded, color: Color(0xFF64D8FF)), const SizedBox(width: 10), const Expanded(child: Text('Naza Intelligence', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800))), DropdownButton<String>(value: _model, items: const [DropdownMenuItem(value: 'Gemma 4 local', child: Text('Gemma 4 local')), DropdownMenuItem(value: 'gpt-5.6-luna', child: Text('gpt-5.6-luna'))], onChanged: (v) { if (v != null) setState(() => _model = v); })]),
     const SizedBox(height: 12),
-    SizedBox(height: 48, child: ListView.separated(scrollDirection: Axis.horizontal, itemCount: _sections.length, separatorBuilder: (_, __) => const SizedBox(width: 8), itemBuilder: (_, i) => ChoiceChip(label: Text(_sections[i]), selected: i == _index, onSelected: (_) { setState(() { _index = i; _result = ''; }); _pages.animateToPage(i, duration: const Duration(milliseconds: 240), curve: Curves.easeOut); }))),
+    SizedBox(height: 48, child: ListView.separated(scrollDirection: Axis.horizontal, itemCount: _sections.length, separatorBuilder: (_, _) => const SizedBox(width: 8), itemBuilder: (_, i) => ChoiceChip(label: Text(_sections[i]), selected: i == _index, onSelected: (_) { setState(() { _index = i; _result = ''; }); _pages.animateToPage(i, duration: const Duration(milliseconds: 240), curve: Curves.easeOut); }))),
     const SizedBox(height: 12),
     Expanded(child: PageView.builder(controller: _pages, itemCount: _sections.length, onPageChanged: (i) => setState(() => _index = i), itemBuilder: (_, i) => _sectionBody(_sections[i]))),
   ]);

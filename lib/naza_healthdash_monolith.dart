@@ -5836,7 +5836,7 @@ class _NazaCommandPaletteSheetState extends State<_NazaCommandPaletteSheet> {
                   ? const Center(child: Text('No matching command.'))
                   : ListView.separated(
                       itemCount: commands.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      separatorBuilder: (_, _) => const Divider(height: 1),
                       itemBuilder: (context, index) {
                         final command = commands[index];
                         return ListTile(
@@ -10517,7 +10517,7 @@ final class _BodyTrendPainter extends CustomPainter {
     final values = <double>[
       ...rows.map((e) => e.kilograms),
       ...averages,
-      ...?targetKg == null ? null : <double>[targetKg],
+      ...?targetKg == null ? null : <double>[targetKg!],
     ];
     var minValue = values.reduce(math.min);
     var maxValue = values.reduce(math.max);
