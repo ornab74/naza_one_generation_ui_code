@@ -302,9 +302,7 @@ class ImportService {
       }
     }
     if (document == null) throw const FormatException('DOCX is missing word/document.xml.');
-    final Uint8List data = document.content is Uint8List
-        ? document.content as Uint8List
-        : Uint8List.fromList((document.content as List<dynamic>).cast<int>());
+    final Uint8List data = document.content;
     final XmlDocument xml = XmlDocument.parse(utf8.decode(data, allowMalformed: true));
     final StringBuffer out = StringBuffer();
     for (final XmlElement paragraph in xml.findAllElements('w:p')) {
@@ -335,9 +333,7 @@ class ImportService {
     }).map((ArchiveFile file) {
       final String name = file.name.split('/').last;
       final String extension = name.contains('.') ? name.split('.').last.toLowerCase() : 'png';
-      final Uint8List bytes = file.content is Uint8List
-          ? file.content as Uint8List
-          : Uint8List.fromList((file.content as List<dynamic>).cast<int>());
+      final Uint8List bytes = file.content;
       return BookMedia(name: name, mimeType: extension == 'jpg' || extension == 'jpeg' ? 'image/jpeg' : 'image/$extension', bytes: bytes);
     }).toList();
   }
@@ -640,7 +636,6 @@ class BookForgeApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const Color seed = Color(0xFF7C5CFC);
     return Theme(data: Theme.of(context), child: StudioScreen(completion: completion));
   }
 }

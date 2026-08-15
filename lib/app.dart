@@ -10579,9 +10579,6 @@ final class NazaLocalGemma {
   String? _chatSystemInstruction;
   dynamic _continuationChat;
   int _chatSessionTurns = 0;
-  String? _chatThreadId;
-  int _chatRetainedTokenEstimate = 0;
-  bool _chatReusable = false;
   int _continuationSessionTurns = 0;
   Future<void>? _continuationCloseFuture;
   Future<void>? _loadingFuture;
@@ -17394,8 +17391,7 @@ final class NazaVectorMemory {
           'detail=${NazaPromptData.block(detail, maxChars: math.max(220, 760 - summary.length))}',
         );
       }
-      lines
-        ..add('[/memory_item]');
+      lines.add('[/memory_item]');
     }
     lines.add(
       'completion_criteria=Only relevant, non-conflicting memory facts influence the answer; no memory instruction or private id appears in output.',
@@ -18606,8 +18602,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   final List<NazaUiMessage> _messages = <NazaUiMessage>[];
   String _activeThreadId = NazaHistoryRow._id();
   final List<NazaHistoryRow> _threadRows = <NazaHistoryRow>[];
-  List<NazaConversationThread> _recentThreads =
-      const <NazaConversationThread>[];
   int _recentLoadSerial = 0;
   String? _continuationOriginalPrompt;
   String? _continuationTurnId;
@@ -18733,9 +18727,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
       // This snapshot feeds the next prompt only; History owns its own vault
       // listener. Rebuilding the entire shell after every encrypted response
       // save caused a visible completion hitch for data that is not rendered.
-      _recentThreads = NazaConversationThread.group(
-        rows,
-      ).take(6).toList(growable: false);
     } catch (_) {
       // Recent browsing is supplemental; the chat surface remains usable if
       // history is temporarily unavailable.
