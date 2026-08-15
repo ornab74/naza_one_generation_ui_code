@@ -215,9 +215,9 @@ final class NazaQuantumRgbEntropy {
 
   static Color accentFor(Color source, DateTime now) {
     final score = circuitScore(
-      source.red / 255,
-      source.green / 255,
-      source.blue / 255,
+      source.r,
+      source.g,
+      source.b,
     );
     final secureMix = math.Random.secure().nextInt(1 << 31);
     final dateMix = now.year * 372 + now.month * 31 + now.day;
@@ -5682,7 +5682,7 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
             },
           ),
           DropdownButtonFormField<NazaRecurrenceKind>(
-            value: recurrence,
+            initialValue: recurrence,
             decoration: const InputDecoration(labelText: 'Recurrence'),
             items: const [
               DropdownMenuItem(value: NazaRecurrenceKind.once, child: Text('One time')),
@@ -6588,7 +6588,7 @@ class _AdvancedHealthDrawerState extends State<_AdvancedHealthDrawer> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
             child: DropdownButtonFormField<NazaHealthPersonality>(
-              value: widget.state.personality,
+              initialValue: widget.state.personality,
               isExpanded: true,
               decoration: const InputDecoration(labelText: 'Agent personality'),
               items: NazaHealthPersonality.values.map((p) => DropdownMenuItem(
@@ -8598,7 +8598,7 @@ class _ExercisePageState extends State<_ExercisePage> {
                     title: const Text('Enable program'),
                   ),
                   DropdownButtonFormField<NazaTrainingFocus>(
-                    value: focus,
+                    initialValue: focus,
                     decoration: const InputDecoration(labelText: 'Focus'),
                     items: NazaTrainingFocus.values
                         .map(
@@ -10559,7 +10559,7 @@ final class _BodyTrendPainter extends CustomPainter {
     canvas.drawPath(
       rawPath,
       Paint()
-        ..color = lineColor.withOpacity(.48)
+        ..color = lineColor.withValues(alpha: .48)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
@@ -10764,7 +10764,7 @@ final class _WeightPage extends StatelessWidget {
               child: Column(
                 children: [
                   DropdownButtonFormField<NazaBodyGoal>(
-                    value: goal,
+                    initialValue: goal,
                     decoration: const InputDecoration(labelText: 'Planning goal'),
                     items: NazaBodyGoal.values
                         .map(
@@ -10779,7 +10779,7 @@ final class _WeightPage extends StatelessWidget {
                     },
                   ),
                   DropdownButtonFormField<NazaWeightUnit>(
-                    value: unit,
+                    initialValue: unit,
                     decoration:
                         const InputDecoration(labelText: 'Weight display unit'),
                     items: NazaWeightUnit.values

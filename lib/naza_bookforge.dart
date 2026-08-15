@@ -1599,7 +1599,7 @@ class SettingsPanel extends StatelessWidget {
                     ),
                     const SizedBox(height: 10),
                     DropdownButtonFormField<BookProvider>(
-                      value: provider,
+                      initialValue: provider,
                       decoration: const InputDecoration(labelText: 'Book generation model', prefixIcon: Icon(Icons.tune_rounded)),
                       items: const <DropdownMenuItem<BookProvider>>[
                         DropdownMenuItem(value: BookProvider.gemma4, child: Text('Gemma 4 (local)')),
