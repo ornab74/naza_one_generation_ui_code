@@ -114,7 +114,7 @@ void main() {
   test('advanced memory settings remain bounded and backward compatible', () {
     final defaults = app.NazaMemorySettings.defaults();
     expect(defaults.enabled, isTrue);
-    expect(defaults.maxRetrievedChunks, inInclusiveRange(4, 24));
+    expect(defaults.maxRetrievedChunks, inInclusiveRange(2, 8));
     expect(defaults.candidateLimit, inInclusiveRange(24, 180));
     expect(defaults.diversity, inInclusiveRange(0.0, 0.72));
 
@@ -125,7 +125,7 @@ void main() {
       'diversity': 4,
       'autoConsolidation': false,
     });
-    expect(restored.maxRetrievedChunks, 24);
+    expect(restored.maxRetrievedChunks, 8);
     expect(restored.candidateLimit, 24);
     expect(restored.diversity, 0.72);
     expect(restored.autoConsolidation, isFalse);
