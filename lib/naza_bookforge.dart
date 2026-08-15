@@ -458,7 +458,7 @@ tags: [${book.tags.map((String tag) => '"${tag.replaceAll('"', '\\"')}"').join('
       'message': 'Publish ${book.title}',
       'content': base64Encode(utf8.encode('$frontMatter${book.content.trim()}\n')),
       'branch': target.branch,
-      if (existingSha != null) 'sha': existingSha,
+      if (existingSha case final sha?) 'sha': sha,
     };
     final http.Response response = await _client.put(
       uri,

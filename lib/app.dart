@@ -18721,7 +18721,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
   Future<void> _loadRecentConversations() async {
     final serial = ++_recentLoadSerial;
     try {
-      final rows = await NazaVault.instance.readHistory();
+      await NazaVault.instance.readHistory();
       if (!mounted || serial != _recentLoadSerial) return;
       _panelCache.remove(NazaPanel.history);
       // This snapshot feeds the next prompt only; History owns its own vault

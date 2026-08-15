@@ -9,7 +9,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart' as crypto;
@@ -10518,7 +10517,7 @@ final class _BodyTrendPainter extends CustomPainter {
     final values = <double>[
       ...rows.map((e) => e.kilograms),
       ...averages,
-      if (targetKg != null) targetKg!,
+      ...?targetKg == null ? null : <double>[targetKg],
     ];
     var minValue = values.reduce(math.min);
     var maxValue = values.reduce(math.max);
@@ -10993,9 +10992,7 @@ final class _WeightPage extends StatelessWidget {
           NazaWeightLog(
             timestamp: DateTime.now(),
             kilograms: unit.toKilograms(value),
-            bodyFatPercent: bodyFat == null
-                ? null
-                : bodyFat.clamp(0, 100).toDouble(),
+            bodyFatPercent: bodyFat?.clamp(0, 100).toDouble(),
             note: note.text.trim(),
           ),
         ].takeLast(720),
