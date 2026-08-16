@@ -264,7 +264,7 @@ final class NazaSecurityIdentityDeriver {
     required NazaPqTrustPolicy trustPolicy,
   }) async {
     model.validate();
-    _validateRecoveryState(recovery);
+    await _validateRecoveryState(recovery);
     _validateTrustPolicy(trustPolicy);
 
     final modelIdentity = await _digestMap(<String, Object?>{
@@ -279,6 +279,7 @@ final class NazaSecurityIdentityDeriver {
       'suite': recovery.suite,
       'status': recovery.status.name,
       'fingerprint': recovery.fingerprint ?? '',
+      'publicKeyJson': recovery.publicKeyJson ?? '',
       'enrolledAt': recovery.enrolledAt?.toUtc().toIso8601String() ?? '',
       'lastVerifiedAt': recovery.lastVerifiedAt?.toUtc().toIso8601String() ?? '',
     });
@@ -291,7 +292,7 @@ final class NazaSecurityIdentityDeriver {
     );
   }
 
-  void _validateRecoveryState(NazaPostQuantumRecoveryState recovery) {
+  Future<void> _validateRecoveryState(NazaPostQuantumRecoveryState recovery) async {
     if (!recovery.policyEnabled) {
       throw const NazaSecurityIdentityException(
         'recovery_policy_disabled',
@@ -311,6 +312,29 @@ final class NazaSecurityIdentityDeriver {
         throw const NazaSecurityIdentityException(
           'recovery_identity_incomplete',
           'Enrolled recovery state is missing its authenticated identity metadata.',
+        );
+      }
+      final publicKeyJson = recovery.publicKeyJson;
+      if (publicKeyJson == null || publicKeyJson.isEmpty) {
+        throw const NazaSecurityIdentityException(
+          'recovery_public_key_missing',
+          'Enrolled recovery state is missing its public key.',
+        );
+      }
+      try {
+        final info = await NazaPostQuantumExport.inspectPublicKey(publicKeyJson);
+        if (info.fingerprint != fingerprint) {
+          throw const NazaSecurityIdentityException(
+            'recovery_fingerprint_mismatch',
+            'Recovery fingerprint does not match the stored public key.',
+          );
+        }
+      } on NazaSecurityIdentityException {
+        rethrow;
+      } on Object catch (error) {
+        throw NazaSecurityIdentityException(
+          'recovery_public_key_invalid',
+          'Stored recovery public key could not be verified: $error',
         );
       }
     }

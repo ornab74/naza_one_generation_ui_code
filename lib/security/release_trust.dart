@@ -132,10 +132,14 @@ final class NazaReleaseTrustVerifier {
     required List<int> trustedMlDsa87PublicKey,
     required List<int> trustedEd25519PublicKey,
     required this.minimumTrustGeneration,
+    this.minimumBuildNumber = 1,
   }) : _trustedMlDsa87PublicKey = Uint8List.fromList(trustedMlDsa87PublicKey),
        _trustedEd25519PublicKey = Uint8List.fromList(trustedEd25519PublicKey) {
     if (minimumTrustGeneration < 1) {
       throw ArgumentError.value(minimumTrustGeneration, 'minimumTrustGeneration');
+    }
+    if (minimumBuildNumber < 1) {
+      throw ArgumentError.value(minimumBuildNumber, 'minimumBuildNumber');
     }
     if (_trustedEd25519PublicKey.length != 32) {
       throw ArgumentError.value(
@@ -157,6 +161,7 @@ final class NazaReleaseTrustVerifier {
   final Uint8List _trustedMlDsa87PublicKey;
   final Uint8List _trustedEd25519PublicKey;
   final int minimumTrustGeneration;
+  final int minimumBuildNumber;
   final Ed25519 _ed25519 = Ed25519();
 
   Future<NazaVerifiedReleaseTrust> verify({
@@ -169,6 +174,12 @@ final class NazaReleaseTrustVerifier {
       throw const NazaReleaseTrustException(
         'release_trust_downgrade',
         'Release trust generation is below the accepted minimum.',
+      );
+    }
+    if (manifest.buildNumber < minimumBuildNumber) {
+      throw const NazaReleaseTrustException(
+        'release_build_rollback',
+        'Release build is below the accepted anti-rollback floor.',
       );
     }
     if (securityPolicyBytes.isEmpty) {

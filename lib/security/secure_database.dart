@@ -187,6 +187,7 @@ final class NazaSecureDatabase {
   int? _activeDataKeyId;
 
   bool get isUnlocked => _database != null && _vaultUnlockKey != null;
+  bool get passwordRequired => _header?['passwordRequired'] != false;
 
   int? get activeDataKeyId => _activeDataKeyId;
 
@@ -760,12 +761,21 @@ final class NazaSecureDatabase {
   }
 
   Future<Map<NazaVaultRecordKey, Object?>> _exportRecordsNow() async {
+    const maxExportRecords = 10000;
+    const maxExportPlaintextBytes = 64 * 1024 * 1024;
     final db = _requireDatabase();
     final rows = db.select(
       'SELECT record_id, key_id, nonce, cipher_text, mac FROM vault_records',
     );
     final result = <NazaVaultRecordKey, Object?>{};
+    var plaintextBytes = 0;
     for (final row in rows) {
+      if (result.length >= maxExportRecords) {
+        throw const NazaVaultException(
+          'export_budget_exceeded',
+          'Vault export exceeds the safe record-count budget.',
+        );
+      }
       final recordId = Uint8List.fromList(row['record_id'] as Uint8List);
       final keyId = _intValue(row['key_id']);
       final dataKey = _dataKeys[keyId];
@@ -789,6 +799,13 @@ final class NazaSecureDatabase {
           ),
         );
         final decoded = jsonDecode(utf8.decode(clear));
+        plaintextBytes += clear.length;
+        if (plaintextBytes > maxExportPlaintextBytes) {
+          throw const NazaVaultException(
+            'export_budget_exceeded',
+            'Vault export exceeds the safe plaintext-memory budget.',
+          );
+        }
         if (decoded is! Map) {
           throw const NazaVaultException(
             'invalid_record',

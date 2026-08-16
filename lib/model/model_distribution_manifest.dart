@@ -166,7 +166,7 @@ final class NazaModelDistributionManifest {
     revision: '7fa1d78473894f7e736a21d920c3aa80f950c0db',
     runtimeCatalogUri: Uri.parse(
       'https://raw.githubusercontent.com/ornab74/'
-      'naza_one_generation_ui_code/main/mirrors.md',
+      'naza_one_generation_ui_code/92e3c182ea1ed8209ac57d600b3cb571ae6e4bfd/mirrors.md',
     ),
     fullSources: <NazaDistributionSource>[
       NazaDistributionSource(

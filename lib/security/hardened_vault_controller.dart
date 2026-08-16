@@ -160,6 +160,36 @@ final class NazaHardenedVaultController {
     return lease;
   }
 
+  /// Issues a fresh lease for passwordless vaults by re-authenticating through
+  /// the OS/device-key unlock boundary. Password verification is intentionally
+  /// not used because it is unavailable by policy in this mode.
+  Future<NazaCapabilityLease> authorizeWithDeviceKey({
+    required NazaPrivilegedAction action,
+    String resource = 'vault',
+  }) async {
+    _requireKernel();
+    if (vault.passwordRequired) {
+      throw const NazaSecurityException(
+        'password_auth_required',
+        'This vault requires fresh password authorization.',
+      );
+    }
+    await vault.lock();
+    _destroySessionSecurity();
+    await vault.unlockWithDeviceKey();
+    await _attachSecurityState(allowMigration: false);
+    final lease = await _requireKernel().issueLease(
+      action: action,
+      resource: resource,
+      maxUses: 1,
+    );
+    await _auditEvent('capability-issued-device-key', <String, Object?>{
+      'action': action.name,
+      'resource': resource,
+    });
+    return lease;
+  }
+
   Future<Map<NazaVaultRecordKey, Object?>> exportRecordsAuthorized(
     NazaCapabilityLease lease,
   ) async {
@@ -189,11 +219,11 @@ final class NazaHardenedVaultController {
       action: NazaPrivilegedAction.importVault,
       resource: 'vault',
     );
-    await vault.importRecords(records, replace: replace);
     await _advanceSecurityEpoch('vault-imported', <String, Object?>{
       'replace': replace,
       'recordCount': records.length,
     });
+    await vault.importRecords(records, replace: replace);
   }
 
   Future<void> rotateDataKeyAuthorized(NazaCapabilityLease lease) async {
@@ -203,8 +233,8 @@ final class NazaHardenedVaultController {
       action: NazaPrivilegedAction.rotateKeys,
       resource: 'vault',
     );
-    await vault.rotateDataKey();
     await _advanceSecurityEpoch('data-key-rotated', const <String, Object?>{});
+    await vault.rotateDataKey();
   }
 
   Future<void> changeUnlockAuthorized(
@@ -218,13 +248,13 @@ final class NazaHardenedVaultController {
       action: NazaPrivilegedAction.changeAuthentication,
       resource: 'vault',
     );
+    await _advanceSecurityEpoch('authentication-changed', <String, Object?>{
+      'passwordRequired': passwordRequired,
+    });
     await vault.changeUnlock(
       newPassword: newPassword,
       passwordRequired: passwordRequired,
     );
-    await _advanceSecurityEpoch('authentication-changed', <String, Object?>{
-      'passwordRequired': passwordRequired,
-    });
   }
 
   Future<void> replaceModelIdentityAuthorized(
@@ -331,7 +361,7 @@ final class NazaHardenedVaultController {
       int epoch;
       var migration = false;
       if (currentRaw != null) {
-        final state = _parseSecurityMetadata(
+      final state = _parseSecurityMetadata(
           currentRaw,
           expectedVaultId: snapshot.vaultId,
         );
@@ -354,6 +384,7 @@ final class NazaHardenedVaultController {
             'The vault header generation is older than the encrypted security state.',
           );
         }
+        _verifyPersistedIdentities(state);
       } else if (legacyRaw != null) {
         if (!allowMigration) {
           throw const NazaSecurityException(
@@ -517,6 +548,11 @@ final class NazaHardenedVaultController {
         'epoch': epoch,
         'headerGeneration': headerGeneration,
         'rollbackProtected': true,
+        'appIdentity': appIdentity,
+        'modelIdentity': modelIdentity,
+        'policyIdentity': policyIdentity,
+        'recoveryGeneration': recoveryGeneration,
+        'trustRootIdentity': trustRootIdentity,
         'updatedAt': DateTime.now().toUtc().toIso8601String(),
       },
     );
@@ -537,6 +573,13 @@ final class NazaHardenedVaultController {
     final epoch = _positiveInt(raw['epoch']);
     final headerGeneration = _positiveInt(raw['headerGeneration']);
     final rollbackProtected = raw['rollbackProtected'] == true;
+    final identities = <String, String>{
+      'appIdentity': raw['appIdentity']?.toString() ?? '',
+      'modelIdentity': raw['modelIdentity']?.toString() ?? '',
+      'policyIdentity': raw['policyIdentity']?.toString() ?? '',
+      'recoveryGeneration': raw['recoveryGeneration']?.toString() ?? '',
+      'trustRootIdentity': raw['trustRootIdentity']?.toString() ?? '',
+    };
     if (format != _securityStateFormat ||
         vaultId != expectedVaultId ||
         epoch == null ||
@@ -546,11 +589,36 @@ final class NazaHardenedVaultController {
         'Encrypted security state failed validation.',
       );
     }
+    if (identities.values.any((value) => value.isEmpty)) {
+      throw const NazaSecurityException(
+        'security_identity_missing',
+        'Persisted hardened security identities are incomplete.',
+      );
+    }
     return _VaultSecurityMetadata(
       epoch: epoch,
       headerGeneration: headerGeneration,
       rollbackProtected: rollbackProtected,
+      identities: identities,
     );
+  }
+
+  void _verifyPersistedIdentities(_VaultSecurityMetadata state) {
+    final expected = <String, String>{
+      'appIdentity': appIdentity,
+      'modelIdentity': modelIdentity,
+      'policyIdentity': policyIdentity,
+      'recoveryGeneration': recoveryGeneration,
+      'trustRootIdentity': trustRootIdentity,
+    };
+    for (final entry in expected.entries) {
+      if (state.identities[entry.key] != entry.value) {
+        throw NazaSecurityException(
+          'security_identity_changed',
+          'Persisted ${entry.key} does not match the currently verified identity.',
+        );
+      }
+    }
   }
 
   _VaultSecurityMetadata _parseLegacySecurityMetadata(
@@ -577,6 +645,7 @@ final class NazaHardenedVaultController {
       epoch: epoch,
       headerGeneration: headerGeneration,
       rollbackProtected: false,
+      identities: const <String, String>{},
     );
   }
 
@@ -705,11 +774,13 @@ final class _VaultSecurityMetadata {
   final int epoch;
   final int headerGeneration;
   final bool rollbackProtected;
+  final Map<String, String> identities;
 
   const _VaultSecurityMetadata({
     required this.epoch,
     required this.headerGeneration,
     required this.rollbackProtected,
+    required this.identities,
   });
 }
 
