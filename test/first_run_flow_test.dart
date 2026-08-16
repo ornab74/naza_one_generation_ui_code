@@ -104,7 +104,7 @@ void main() {
       expect(source, contains('bool _isClosedModelError(Object error)'));
       expect(source, contains('reopening the closed local model'));
       expect(source, contains('reloadClosedModel: true'));
-      expect(source, contains('NazaThreadContext.fromRecentThreads'));
+      expect(source, contains('NazaThreadContext.fromRows'));
       expect(source, contains('class _HistoryThreadCard'));
       expect(source, isNot(contains('class _RecentConversationDrawer')));
       expect(source, contains('bool _followOutput = true;'));
