@@ -242,7 +242,7 @@ jobs:
 
   ios:
     name: iOS unsigned app
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ios' }}
     runs-on: macos-15
     needs: analyze
     steps:

@@ -30,8 +30,9 @@ final class NazaVerifiedModelIdentity {
   final int tokenizerBytes;
   final String _modelPath;
   final String _tokenizerPath;
+  final List<int> _policyBytes;
 
-  const NazaVerifiedModelIdentity._({
+  NazaVerifiedModelIdentity._({
     required this.modelSha256,
     required this.tokenizerSha256,
     required this.runtimeIdentity,
@@ -41,13 +42,15 @@ final class NazaVerifiedModelIdentity {
     required this.tokenizerBytes,
     required String modelPath,
     required String tokenizerPath,
+    required List<int> policyBytes,
   }) :
        // Private source bindings intentionally keep public constructor names
        // while retaining private fields for runtime re-verification.
        // ignore: prefer_initializing_formals
        _modelPath = modelPath,
        // ignore: prefer_initializing_formals
-       _tokenizerPath = tokenizerPath;
+       _tokenizerPath = tokenizerPath,
+       _policyBytes = List<int>.unmodifiable(policyBytes);
 
   void validate() {
     _requireHexDigest(modelSha256, 'modelSha256');
@@ -102,6 +105,19 @@ final class NazaVerifiedModelIdentity {
     }
     final modelDigest = await _sha256File(modelFile);
     final tokenizerDigest = await _sha256File(tokenizerFile);
+    if (_policyBytes.isEmpty) {
+      throw const NazaSecurityIdentityException(
+        'policy_artifact_unbound',
+        'The attested policy has no retained source binding for re-verification.',
+      );
+    }
+    final policyDigest = crypto.sha256.convert(_policyBytes).toString();
+    _requireDigestMatch(
+      actual: policyDigest,
+      expected: policySha256,
+      code: 'policy_digest_mismatch',
+      message: 'The model policy bytes changed after attestation.',
+    );
     _requireDigestMatch(
       actual: modelDigest,
       expected: modelSha256,
@@ -222,6 +238,7 @@ final class NazaModelFileAttestor {
       tokenizerBytes: tokenizerStat.size,
       modelPath: modelFile.absolute.path,
       tokenizerPath: tokenizerFile.absolute.path,
+      policyBytes: policyBytes,
     );
   }
 }
