@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: tools/render_barkpack_preview.cpp
+// ROLE: Owns render barkpack preview behavior within the developer-tooling subsystem.
+// DOMAIN: developer-tooling
+// SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 #include "../native/naza_bark_ffi.h"
 
 #include <filesystem>

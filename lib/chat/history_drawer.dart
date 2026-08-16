@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/chat/history_drawer.dart
+// ROLE: Owns history drawer behavior within the conversation subsystem.
+// DOMAIN: conversation
+// SECURITY-INVARIANT: Preserve turn identity, cancellation semantics, and encrypted-history ownership across async work.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -110,6 +118,7 @@ final class NazaConversationTitleCoordinator {
   final NazaGenerateConversationTitle generateTitle;
   final Set<String> _attempted = <String>{};
   final Map<String, Future<String>> _inFlight = <String, Future<String>>{};
+  final Map<String, String> _completed = <String, String>{};
 
   Future<String> titleFor({
     required String threadId,
@@ -118,6 +127,8 @@ final class NazaConversationTitleCoordinator {
     bool force = false,
   }) {
     final fallback = NazaConversationTitlePolicy.fallback(userText);
+    final completed = _completed[threadId];
+    if (!force && completed != null) return Future.value(completed);
     if (!force && _attempted.contains(threadId)) return Future.value(fallback);
     final active = _inFlight[threadId];
     if (active != null) return active;
@@ -129,11 +140,14 @@ final class NazaConversationTitleCoordinator {
           userText: userText,
           assistantText: assistantText,
         );
-        return NazaConversationTitlePolicy.sanitizeModelTitle(
+        final title = NazaConversationTitlePolicy.sanitizeModelTitle(
           generated,
           userText,
         );
+        _completed[threadId] = title;
+        return title;
       } catch (_) {
+        _attempted.remove(threadId);
         return fallback;
       } finally {
         _inFlight.remove(threadId);
@@ -397,7 +411,26 @@ final class _NazaHistoryDrawerState extends State<NazaHistoryDrawer> {
         } else if (action == 'rename') {
           await _rename(context, entry);
         } else if (action == 'delete') {
-          await widget.onDelete?.call(entry.threadId);
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Delete conversation?'),
+              content: const Text(
+                'This removes the conversation and its presentation metadata from the encrypted vault.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Delete'),
+                ),
+              ],
+            ),
+          );
+          if (confirmed == true) await widget.onDelete?.call(entry.threadId);
         }
       },
       itemBuilder: (_) => <PopupMenuEntry<String>>[

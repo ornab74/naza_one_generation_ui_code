@@ -9,6 +9,40 @@
 
 ![Naza One demo](./demo.png)
 
+## Architecture and LLM maintenance map
+
+The repository uses explicit, reviewable breadcrumbs for future maintainers and language models. It does **not** contain hidden prompts, zero-width tokens, or covert model instructions.
+
+- [LLM context and security breadcrumb schema](docs/llm-context-schema.md)
+- [Documentation policy](docs/documentation-policy.md)
+- [System architecture](docs/system-architecture.md)
+- [Unified feature navigation architecture](docs/feature-navigation-architecture.md)
+- [Security change playbook](docs/security-change-playbook.md)
+- [Complete repository file catalog](docs/file-catalog.md)
+- [Complete repository folder catalog](docs/folder-catalog.md)
+- [All Mermaid architecture maps](docs/mermaid-index.md)
+- [Security model](SECURITY.md)
+
+```mermaid
+flowchart TD
+    Shells[Android · iOS · Linux · macOS] --> App[Application shell]
+    App --> Nav[Unified feature registry]
+    Nav --> Chat[Chat + encrypted history]
+    Nav --> Scan[Road · food · garden vision]
+    Nav --> Health[HealthDash + Walking]
+    Nav --> Intelligence[FindIt · Drive · Predict · Heart Flow]
+    Chat --> Runtime[Local Gemma runtime]
+    Scan --> Runtime
+    Health --> Runtime
+    Intelligence --> Runtime
+    Runtime --> Model[Verified LiteRT-LM artifact]
+    App --> Vault[Authenticated encrypted vault]
+    Vault --> Recovery[Hybrid post-quantum recovery]
+    Tests[Analysis + tests] -. preserve invariants .-> App
+```
+
+Folder maps: [application](lib/mermaid.md) · [chat](lib/chat/mermaid.md) · [food](lib/food/mermaid.md) · [memory](lib/memory/mermaid.md) · [model runtime](lib/model/mermaid.md) · [navigation](lib/navigation/mermaid.md) · [onboarding](lib/onboarding/mermaid.md) · [scanner](lib/scanner/mermaid.md) · [security](lib/security/mermaid.md) · [settings](lib/settings/mermaid.md) · [themes](lib/theme/mermaid.md) · [tests](test/mermaid.md) · [Android](android/mermaid.md) · [iOS](ios/mermaid.md) · [Linux](linux/mermaid.md) · [macOS](macos/mermaid.md) · [native](native/mermaid.md) · [assets](assets/mermaid.md) · [tooling](tool/mermaid.md).
+
 ## Core idea
 
 Naza One keeps the assistant and user-created state as close to the user as practical. Normal inference runs locally. History, memory, scanner state, settings, onboarding state, and selected-model metadata are stored locally with authenticated encryption. Model files are public model data, so they are integrity-protected rather than encrypted.

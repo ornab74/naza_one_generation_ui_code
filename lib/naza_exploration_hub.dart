@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/naza_exploration_hub.dart
+// ROLE: Owns naza exploration hub behavior within the application-core subsystem.
+// DOMAIN: application-core
+// SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -13,7 +21,14 @@ typedef NazaExploreImagePicker = Future<NazaExploreImage?> Function();
 final class NazaExploreImage {
   final String name;
   final Uint8List bytes;
-  const NazaExploreImage({required this.name, required this.bytes});
+  final int width;
+  final int height;
+  const NazaExploreImage({
+    required this.name,
+    required this.bytes,
+    this.width = 1,
+    this.height = 1,
+  });
 }
 
 enum NazaExplorationSection { findIt, garden, drive, predict, heartFlow }
@@ -50,6 +65,8 @@ class NazaExplorationHub extends StatefulWidget {
 }
 
 class _NazaExplorationHubState extends State<NazaExplorationHub> {
+  static const int _maxGardenImages = 4;
+  static const int _maxGardenBytes = 24 * 1024 * 1024;
   late final PageController _pages = PageController(
     initialPage: widget.initialSection.index,
   );
@@ -66,14 +83,15 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       _heartBaseline = TextEditingController();
   late NazaExplorationSection _section = widget.initialSection;
   bool _busy = false, _pickingImage = false;
-  String _result = '', _model = 'Gemma 4 local';
+  int _runGeneration = 0;
+  String _result = '';
   String? _error;
   String _findPrompt = 'Compare nearby options',
       _gardenPrompt = 'Identify plant and health signals';
   String _drivePrompt = 'Plan a safe efficient route',
       _predictPrompt = 'Forecast demand and timing';
   String _heartPrompt = 'Recovery and readiness reflection';
-  NazaExploreImage? _gardenImage;
+  final List<NazaExploreImage> _gardenImages = <NazaExploreImage>[];
 
   @override
   void didUpdateWidget(covariant NazaExplorationHub oldWidget) {
@@ -128,11 +146,20 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
     try {
       final image = await widget.pickGardenImage();
       if (!mounted || image == null) return;
+      final totalBytes = _gardenImages.fold<int>(
+        0,
+        (sum, item) => sum + item.bytes.length,
+      );
       if (image.bytes.isEmpty || image.bytes.length > 8 * 1024 * 1024) {
         setState(() => _error = 'Choose a non-empty image under 8 MB.');
         return;
       }
-      setState(() => _gardenImage = image);
+      if (_gardenImages.length >= _maxGardenImages ||
+          totalBytes + image.bytes.length > _maxGardenBytes) {
+        setState(() => _error = 'Garden supports up to 4 photos and 24 MB total.');
+        return;
+      }
+      setState(() => _gardenImages.add(image));
     } catch (_) {
       if (mounted)
         setState(() => _error = 'The camera image could not be opened.');
@@ -147,7 +174,7 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
     return switch (_section) {
       NazaExplorationSection.findIt when _findLocation.text.trim().isEmpty =>
         'Add a city, neighborhood, address, or area for FindIt.',
-      NazaExplorationSection.garden when _gardenImage == null =>
+      NazaExplorationSection.garden when _gardenImages.isEmpty =>
         'Capture or choose a garden photo first.',
       NazaExplorationSection.drive when _driveLocation.text.trim().isEmpty =>
         'Add your starting location or service area.',
@@ -161,6 +188,8 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
   }
 
   Future<void> _run() async {
+    final int runId = ++_runGeneration;
+    final NazaExplorationSection requestedSection = _section;
     final invalid = _validate();
     if (invalid != null) {
       setState(() => _error = invalid);
@@ -176,12 +205,17 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
         systemInstruction: _systemInstruction,
         prompt: _buildPrompt(),
         imageBytes: _section == NazaExplorationSection.garden
-            ? _gardenImage?.bytes
+            ? (_gardenImages.isEmpty ? null : _gardenImages.first.bytes)
             : null,
       );
-      if (mounted) setState(() => _result = text);
+      if (text.trim().isEmpty) {
+        throw const FormatException('The model returned no usable analysis.');
+      }
+      if (mounted && runId == _runGeneration && _section == requestedSection) {
+        setState(() => _result = text);
+      }
     } catch (_) {
-      if (mounted)
+      if (mounted && runId == _runGeneration)
         setState(() => _error = 'Unable to run the local analysis. Try again.');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -206,7 +240,7 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       NazaExplorationSection.findIt =>
         'Task: $_findPrompt\nLocation: ${_findLocation.text.trim()}\nPreferences: $details',
       NazaExplorationSection.garden =>
-        'Task: $_gardenPrompt\nImage: ${_gardenImage?.name}\nObservations/request: $details',
+        'Task: $_gardenPrompt\nImages (${_gardenImages.length}): ${_gardenImages.map((image) => '${image.name} (${image.width}x${image.height})').join(', ')}\nObservations/request: $details',
       NazaExplorationSection.drive =>
         'Task: $_drivePrompt\nStart/service area: ${_driveLocation.text.trim()}\nDestination: ${_optional(_driveDestination)}\nConstraints: $details',
       NazaExplorationSection.predict =>
@@ -234,21 +268,9 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
             ),
           ),
-          DropdownButton<String>(
-            value: _model,
-            items: const [
-              DropdownMenuItem(
-                value: 'Gemma 4 local',
-                child: Text('Gemma 4 local'),
-              ),
-              DropdownMenuItem(
-                value: 'gpt-5.6-luna',
-                child: Text('gpt-5.6-luna'),
-              ),
-            ],
-            onChanged: (v) {
-              if (v != null) setState(() => _model = v);
-            },
+          const Chip(
+            avatar: Icon(Icons.lock_outline_rounded, size: 16),
+            label: Text('Gemma 4 · local only'),
           ),
         ],
       ),
@@ -350,7 +372,7 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
                           )
                         : const Icon(Icons.auto_awesome),
                     label: Text(
-                      _busy ? 'Running locally…' : 'Run with $_model',
+                      _busy ? 'Running locally…' : 'Run with Gemma 4 local',
                     ),
                   ),
                 ),
@@ -418,34 +440,44 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
             Expanded(
               child: OutlinedButton.icon(
                 key: const ValueKey('garden-camera'),
-                onPressed: _pickingImage ? null : _pickGardenImage,
+                onPressed: _pickingImage || _gardenImages.length >= _maxGardenImages
+                    ? null
+                    : _pickGardenImage,
                 icon: Icon(
-                  _gardenImage == null
+                  _gardenImages.isEmpty
                       ? Icons.add_a_photo_rounded
                       : Icons.photo_camera_back_rounded,
                 ),
                 label: Text(
                   _pickingImage
                       ? 'Opening camera…'
-                      : _gardenImage == null
+                      : _gardenImages.isEmpty
                       ? 'Capture / choose photo'
-                      : 'Replace photo',
+                      : 'Add another photo (${_gardenImages.length}/$_maxGardenImages)',
                 ),
               ),
             ),
-            if (_gardenImage != null)
+            if (_gardenImages.isNotEmpty)
               IconButton(
-                tooltip: 'Remove photo',
-                onPressed: () => setState(() => _gardenImage = null),
-                icon: const Icon(Icons.close_rounded),
+                tooltip: 'Remove all photos',
+                onPressed: () => setState(() => _gardenImages.clear()),
+                icon: const Icon(Icons.delete_sweep_rounded),
               ),
           ],
         ),
-        if (_gardenImage != null)
+        if (_gardenImages.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              '${_gardenImage!.name} · ${(_gardenImage!.bytes.length / 1024).ceil()} KB',
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (var i = 0; i < _gardenImages.length; i++)
+                  InputChip(
+                    label: Text('${i + 1}. ${_gardenImages[i].name}'),
+                    onDeleted: () => setState(() => _gardenImages.removeAt(i)),
+                  ),
+              ],
             ),
           ),
         _gap,

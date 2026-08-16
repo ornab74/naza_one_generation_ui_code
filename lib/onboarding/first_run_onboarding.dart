@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/onboarding/first_run_onboarding.dart
+// ROLE: Owns first run onboarding behavior within the onboarding subsystem.
+// DOMAIN: onboarding
+// SECURITY-INVARIANT: Complete vault establishment and artifact verification before entering private application surfaces.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';

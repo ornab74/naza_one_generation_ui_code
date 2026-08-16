@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/app.dart
+// ROLE: Owns app behavior within the application-core subsystem.
+// DOMAIN: application-core
+// SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' show Abi;
@@ -22,6 +30,7 @@ import 'food/photo_picker.dart';
 import 'food/prompts.dart';
 import 'food/repository.dart';
 import 'navigation/unified_feature_drawer.dart';
+import 'chat/history_metadata_repository.dart';
 import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
@@ -5009,7 +5018,10 @@ final class NazaSecureModelStore {
     void Function(int progress, String phase)? onProgress,
   }) async {
     final ready = _resolved;
-    if (ready != null && await ready.file.exists()) return ready;
+    if (ready != null && await ready.file.exists()) {
+      final verification = await _attestOrVerify(ready.file);
+      if (verification.verified) return ready;
+    }
     _resolved = null;
     _ensureFuture ??= _ensureVerifiedModelAfterRefresh(onProgress: onProgress);
     return _ensureFuture!;
@@ -5029,7 +5041,10 @@ final class NazaSecureModelStore {
         }
       }
       final ready = _resolved;
-      if (ready != null && await ready.file.exists()) return ready;
+      if (ready != null && await ready.file.exists()) {
+        final verification = await _attestOrVerify(ready.file);
+        if (verification.verified) return ready;
+      }
       return _ensureVerifiedModelInner(onProgress: onProgress);
     } finally {
       _ensureFuture = null;
@@ -15058,7 +15073,7 @@ final class NazaHistoryRow {
           : savedThreadId,
       timestamp:
           DateTime.tryParse(json['timestamp']?.toString() ?? '') ??
-          DateTime.now(),
+          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
       user: json['user']?.toString() ?? '',
       assistant: json['assistant']?.toString() ?? '',
       route: json['route']?.toString() ?? 'unknown',
@@ -15339,13 +15354,20 @@ final class NazaVault {
               lastVerifiedAt: DateTime.now().toUtc(),
             ).toJson()
           : NazaPostQuantumRecoveryState.defaults().toJson();
-      await database.create(
-        password: startupPassword,
-        passwordRequired: passwordRequired,
-        initialRecords: records,
-      );
-      await _verifyMigration(records);
-      await _removeRetiredFeatureData();
+      var created = false;
+      try {
+        await database.create(
+          password: startupPassword,
+          passwordRequired: passwordRequired,
+          initialRecords: records,
+        );
+        created = true;
+        await _verifyMigration(records);
+        await _removeRetiredFeatureData();
+      } catch (_) {
+        if (created) await database.discardFailedCreation();
+        rethrow;
+      }
       revision.value++;
     } on NazaPostQuantumException catch (error) {
       throw NazaVaultException('recovery_crypto', error.message, error);
@@ -15506,11 +15528,17 @@ final class NazaVault {
   Future<NazaPostQuantumRecoveryState> _ensurePostQuantumRecoveryState() async {
     final raw = await database.readJson(_pqStateNamespace, _pqStateKey);
     if (raw is Map) {
-      var state = NazaPostQuantumRecoveryState.fromJson(
-        Map<String, dynamic>.from(raw),
-      );
+      late NazaPostQuantumRecoveryState state;
+      try {
+        state = NazaPostQuantumRecoveryState.fromJson(
+          Map<String, dynamic>.from(raw),
+        );
+      } on FormatException {
+        // Keep malformed state untouched for recovery diagnostics.
+        return NazaPostQuantumRecoveryState.defaults();
+      }
       if (state.profile != NazaPostQuantumProfile.maximumHybrid) {
-        state = NazaPostQuantumRecoveryState.defaults();
+        return NazaPostQuantumRecoveryState.defaults();
       } else if (state.publicKeyJson != null) {
         try {
           final info = await NazaPostQuantumExport.inspectPublicKey(
@@ -15519,10 +15547,10 @@ final class NazaVault {
           if (info.profile != state.profile ||
               info.suite != state.suite ||
               info.fingerprint != state.fingerprint) {
-            state = NazaPostQuantumRecoveryState.defaults();
+              return NazaPostQuantumRecoveryState.defaults();
           }
         } on NazaPostQuantumException {
-          state = NazaPostQuantumRecoveryState.defaults();
+          return NazaPostQuantumRecoveryState.defaults();
         }
       }
       if (raw['format'] == NazaPostQuantumRecoveryState.format &&
@@ -15576,13 +15604,20 @@ final class NazaVault {
       } else {
         rows[existingIndex] = row;
       }
-      if (rows.length > 250) {
-        rows.removeRange(0, rows.length - 250);
+      final byThread = <String, List<NazaHistoryRow>>{};
+      for (final item in rows) {
+        byThread.putIfAbsent(item.threadId, () => <NazaHistoryRow>[]).add(item);
+      }
+      final retained = <NazaHistoryRow>[];
+      for (final threadRows in byThread.values) {
+        retained.addAll(threadRows.length <= 250
+            ? threadRows
+            : threadRows.sublist(threadRows.length - 250));
       }
       await database.writeJson(
         _historyNamespace,
         _historyKey,
-        rows.map((row) => row.toJson()).toList(growable: false),
+        retained.map((row) => row.toJson()).toList(growable: false),
       );
       revision.value++;
     });
@@ -15985,6 +16020,12 @@ final class NazaLegacyVaultMigrator {
         stat.modified.toUtc().millisecondsSinceEpoch != raw['modifiedMillis']) {
       return null;
     }
+    final expectedDigest = raw['sha256']?.toString().toLowerCase() ?? '';
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(expectedDigest)) return null;
+    final actualDigest = crypto.sha256
+        .convert(await file.readAsBytes())
+        .toString();
+    if (actualDigest.toLowerCase() != expectedDigest) return null;
     return <String, Object?>{
       for (final entry in raw.entries) entry.key.toString(): entry.value,
       'path': file.absolute.path,
@@ -19584,6 +19625,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
     try {
       await NazaVault.instance.clearHistory();
       await NazaVectorMemory.instance.clear();
+      await NazaHistoryMetadataRepository().clear();
     } catch (error) {
       if (!mounted) return;
       setState(() => _status = 'clear failed: $error');
@@ -19609,7 +19651,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   }
 
   void _openHealthPage(NazaHealthPage page) {
-    _panelCache.remove(NazaPanel.health);
     setState(() {
       _healthPage = page;
       _panel = NazaPanel.health;
@@ -19618,7 +19659,6 @@ class _NazaStableHomeState extends State<NazaStableHome>
   }
 
   void _openExplorationSection(NazaExplorationSection section) {
-    _panelCache.remove(NazaPanel.labs);
     setState(() {
       _exploreSection = section;
       _panel = NazaPanel.labs;
@@ -19694,7 +19734,12 @@ class _NazaStableHomeState extends State<NazaStableHome>
     if (result.outcome != NazaVisionPickOutcome.selected || image == null) {
       return null;
     }
-    return NazaExploreImage(name: image.name, bytes: image.bytes);
+    return NazaExploreImage(
+      name: image.name,
+      bytes: image.bytes,
+      width: image.width,
+      height: image.height,
+    );
   }
 
   Future<NazaPickedHealthImage?> _pickHealthImage() async {
@@ -25237,7 +25282,7 @@ class _SimpleMemoryCard extends StatelessWidget {
   }
 }
 
-class _SettingsPanel extends StatelessWidget {
+class _SettingsPanel extends StatefulWidget {
   final bool actionsEnabled;
   final Future<void> Function() onResetChat;
   final Future<void> Function() onClearHistory;
@@ -25247,6 +25292,17 @@ class _SettingsPanel extends StatelessWidget {
     required this.onResetChat,
     required this.onClearHistory,
   });
+
+  @override
+  State<_SettingsPanel> createState() => _SettingsPanelState();
+}
+
+final class _SettingsPanelState extends State<_SettingsPanel> {
+  int _tab = 0;
+
+  bool get actionsEnabled => widget.actionsEnabled;
+  Future<void> Function() get onResetChat => widget.onResetChat;
+  Future<void> Function() get onClearHistory => widget.onClearHistory;
 
   @override
   Widget build(BuildContext context) {
@@ -25262,7 +25318,29 @@ class _SettingsPanel extends StatelessWidget {
                   unawaited(NazaSettingsModeStore.setAdvanced(value)),
             ),
             const SizedBox(height: 14),
-            ...(advanced ? _advancedChildren() : _simpleChildren()),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _SettingsTabChip(
+                  label: 'Settings',
+                  icon: Icons.tune_rounded,
+                  selected: _tab == 0,
+                  onTap: () => setState(() => _tab = 0),
+                ),
+                _SettingsTabChip(
+                  label: 'Backup & Recovery',
+                  icon: Icons.backup_rounded,
+                  selected: _tab == 1,
+                  onTap: () => setState(() => _tab = 1),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            if (_tab == 0) ...[
+              ...(advanced ? _advancedChildren() : _simpleChildren()),
+            ] else
+              ..._backupChildren(),
           ],
         );
       },
@@ -25378,6 +25456,78 @@ class _SettingsPanel extends StatelessWidget {
         minimumSize: const Size(220, 46),
       ),
     ];
+  }
+
+  List<Widget> _backupChildren() {
+    return [
+      const _SettingsSectionTitle('Encrypted backup center'),
+      const Text(
+        'Create a separately encrypted recovery backup and private key kit. '
+        'Use the system save dialog to choose a mounted flash drive or a '
+        'Google Drive-synced folder. Naza never uploads your vault or cloud '
+        'credentials directly.',
+        style: TextStyle(height: 1.45),
+      ),
+      const SizedBox(height: 14),
+      _VaultSecurityCard(enabled: actionsEnabled),
+      const SizedBox(height: 14),
+      _NazaGlassCard(
+        padding: const EdgeInsets.all(15),
+        radius: 18,
+        active: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Storage guidance',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Keep the encrypted backup and private recovery key kit in separate locations. A USB drive is best for an offline copy. For Google Drive, save into a locally synced Drive folder and confirm the files finish syncing before removing the device.',
+              style: TextStyle(height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            const _InfoRow(
+              label: 'Vault contents',
+              value: 'encrypted records only',
+            ),
+            const _InfoRow(
+              label: 'Private key kit',
+              value: 'separate password-protected file',
+            ),
+            const _InfoRow(
+              label: 'Cloud behavior',
+              value: 'user-controlled save; no automatic upload',
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+}
+
+final class _SettingsTabChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SettingsTabChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ChoiceChip(
+      avatar: Icon(icon, size: 17),
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onTap(),
+    );
   }
 }
 

@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/security/post_quantum_export.dart
+// ROLE: Owns post quantum export behavior within the security subsystem.
+// DOMAIN: security
+// SECURITY-INVARIANT: Fail closed on malformed, unauthenticated, stale, or unavailable security state.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:convert';
 import 'dart:isolate';
 import 'dart:math' as math;
@@ -197,11 +205,23 @@ final class NazaPostQuantumRecoveryState {
   }
 
   factory NazaPostQuantumRecoveryState.fromJson(Map<String, dynamic> json) {
+    if (json['format'] != null && json['format'] != format) {
+      throw const FormatException('Unsupported post-quantum recovery state format.');
+    }
     final profileName = json['profile']?.toString();
-    final profile = NazaPostQuantumProfile.values.firstWhere(
+    // Missing profile is a supported legacy migration. An explicit unknown
+    // profile is not: silently upgrading it to maximum security would hide
+    // corruption or an incompatible future format.
+    if (profileName == null || profileName.trim().isEmpty) {
+      return NazaPostQuantumRecoveryState.defaults();
+    }
+    final profileMatches = NazaPostQuantumProfile.values.where(
       (value) => value.wireName == profileName,
-      orElse: () => NazaPostQuantumProfile.maximumHybrid,
     );
+    if (profileMatches.isEmpty) {
+      throw const FormatException('Unknown post-quantum recovery profile.');
+    }
+    final profile = profileMatches.first;
     final statusName = json['status']?.toString();
     final status = NazaPostQuantumRecoveryStatus.values.firstWhere(
       (value) => value.name == statusName,

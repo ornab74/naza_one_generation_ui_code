@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/security/pq_trust_policy.dart
+// ROLE: Owns pq trust policy behavior within the security subsystem.
+// DOMAIN: security
+// SECURITY-INVARIANT: Fail closed on malformed, unauthenticated, stale, or unavailable security state.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -17,6 +25,7 @@ final class NazaPqTrustPolicy {
   final Set<String> allowedKems;
   final Set<String> allowedPqSignatures;
   final Set<String> allowedClassicalSignatures;
+  final Set<String> allowedClassicalKems;
 
   const NazaPqTrustPolicy({
     required this.generation,
@@ -29,6 +38,7 @@ final class NazaPqTrustPolicy {
     required this.allowedKems,
     required this.allowedPqSignatures,
     required this.allowedClassicalSignatures,
+    this.allowedClassicalKems = const <String>{'X25519'},
   });
 
   factory NazaPqTrustPolicy.maximum() => const NazaPqTrustPolicy(
@@ -42,10 +52,12 @@ final class NazaPqTrustPolicy {
     allowedKems: <String>{'ML-KEM-1024'},
     allowedPqSignatures: <String>{'ML-DSA-87'},
     allowedClassicalSignatures: <String>{'Ed25519'},
+    allowedClassicalKems: <String>{'X25519'},
   );
 
   Map<String, Object?> toCanonicalMap() => <String, Object?>{
     'allowedClassicalSignatures': (allowedClassicalSignatures.toList()..sort()),
+    'allowedClassicalKems': (allowedClassicalKems.toList()..sort()),
     'allowedKems': (allowedKems.toList()..sort()),
     'allowedPqSignatures': (allowedPqSignatures.toList()..sort()),
     'generation': generation,
@@ -79,6 +91,13 @@ final class NazaPqTrustPolicy {
       throw const NazaPqTrustException(
         'hybrid_kem_required',
         'The security policy requires an independent classical KEM component.',
+      );
+    }
+    if (requireHybridKem &&
+        !allowedClassicalKems.contains(manifest.classicalKem)) {
+      throw const NazaPqTrustException(
+        'classical_kem_rejected',
+        'The hybrid manifest does not contain an approved classical KEM.',
       );
     }
     if (requirePqSignature) {

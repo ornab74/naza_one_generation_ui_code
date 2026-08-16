@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/onboarding/onboarding_state.dart
+// ROLE: Owns onboarding state behavior within the onboarding subsystem.
+// DOMAIN: onboarding
+// SECURITY-INVARIANT: Complete vault establishment and artifact verification before entering private application surfaces.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import '../security/secure_database.dart';
 
 /// Versioned first-run state stored inside the encrypted NAZA vault.

@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/food/shelf_scanner.dart
+// ROLE: Owns shelf scanner behavior within the food-vision subsystem.
+// DOMAIN: food-vision
+// SECURITY-INVARIANT: Bound image/data inputs and distinguish visible evidence from model inference.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -13,25 +21,29 @@ typedef ShelfVisionAnalyzer =
 enum ShelfRiskLevel {
   low,
   medium,
-  high;
+  high,
+  reviewRequired;
 
   String get label => switch (this) {
     low => 'Low',
     medium => 'Medium',
     high => 'High',
+    reviewRequired => 'Review required',
   };
 
   int get severity => switch (this) {
     low => 0,
     medium => 1,
     high => 2,
+    reviewRequired => 3,
   };
 
   static ShelfRiskLevel parse(Object? value) =>
       switch (value?.toString().trim().toLowerCase()) {
+        'low' => low,
         'high' => high,
         'medium' => medium,
-        _ => low,
+        _ => reviewRequired,
       };
 }
 
@@ -401,12 +413,19 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
   final Set<String> _compareIds = <String>{};
   bool _busy = false;
   bool _started = false;
+  int _analysisGeneration = 0;
   String _status = 'Ready to scan a grocery shelf';
 
   @override
   void dispose() {
     _note.dispose();
     super.dispose();
+  }
+
+  void _cancelAnalysis() {
+    _analysisGeneration++;
+    widget.onCancel?.call();
+    if (mounted) setState(() => _status = 'Analysis cancelled');
   }
 
   Future<void> _choosePhoto() async {
@@ -526,6 +545,7 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
       return;
     }
     setState(() => _busy = true);
+    final generation = ++_analysisGeneration;
     var working = record;
     try {
       for (var index = 0; index < selected.length; index++) {
@@ -543,6 +563,7 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
           'expiration, nutrition, ingredients, or allergens unless directly '
           'readable in the supplied image.',
         );
+        if (!mounted || generation != _analysisGeneration) return;
         final focused = _closestObservation(analysis.items, target.name);
         final risk = _deriveReviewRisk(
           focused ??
@@ -616,8 +637,9 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
       _busy = true;
       _status = 'Running local two-item comparison';
     });
+    final generation = ++_analysisGeneration;
     try {
-      final analysis = await widget.analyzeVision(
+      await widget.analyzeVision(
         record.image,
         'SHELF COMPARISON MODE. Compare only "${pair[0].name}" and '
         '"${pair[1].name}" using evidence visibly supported by this shelf '
@@ -626,11 +648,12 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
         'contamination, expiration, or hidden attributes. If the image cannot '
         'support a preference, say so.',
       );
+      if (!mounted || generation != _analysisGeneration) return;
       final recommendation = _recommend(pair[0], pair[1]);
       final fallback = _comparisonFallback(pair[0], pair[1], recommendation);
-      final summary = analysis.summary.trim().isEmpty
-          ? fallback
-          : '${analysis.summary.trim()}\n\n$fallback';
+      // The deterministic recommendation is authoritative. Model prose is
+      // intentionally not persisted because it can contradict that decision.
+      final summary = fallback;
       final comparison = ShelfComparison(
         id: _newId('compare'),
         leftItemId: pair[0].id,
@@ -689,7 +712,7 @@ class _ShelfScannerPaneState extends State<ShelfScannerPane> {
                       busy: _busy,
                       status: _status,
                       onStart: () => setState(() => _started = true),
-                      onStop: _busy ? widget.onCancel : null,
+                      onStop: _busy ? _cancelAnalysis : null,
                     ),
                     const SizedBox(height: 14),
                     if (!_started)
@@ -1029,6 +1052,7 @@ final class _RiskChip extends StatelessWidget {
       ShelfRiskLevel.low => scheme.primary,
       ShelfRiskLevel.medium => scheme.secondary,
       ShelfRiskLevel.high => scheme.error,
+      ShelfRiskLevel.reviewRequired => scheme.error,
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
@@ -1208,7 +1232,12 @@ ShelfRiskLevel _deriveReviewRisk(
     'damaged seal',
     'puncture',
   ];
-  if (highSignals.any(evidence.contains)) return ShelfRiskLevel.high;
+  final negated = RegExp(r'\b(no|not|without|none|否认)\s+(?:visible\s+)?', caseSensitive: false);
+  final hasSignal = highSignals.any((signal) {
+    final index = evidence.indexOf(signal);
+    return index >= 0 && !negated.hasMatch(evidence.substring(math.max(0, index - 16), index));
+  });
+  if (hasSignal) return ShelfRiskLevel.high;
   if (analysis.status != FoodAnalysisStatus.complete ||
       item.confidence == FoodConfidence.low ||
       analysis.uncertainties.isNotEmpty ||
@@ -1225,11 +1254,15 @@ String _riskReason(ShelfRiskLevel risk) => switch (risk) {
     'Medium review risk: visible evidence is incomplete or uncertain. Verify the package and label directly.',
   ShelfRiskLevel.low =>
     'Low review risk from visible evidence only. This does not establish freshness, contamination, recall, allergen, or hidden-package status.',
+  ShelfRiskLevel.reviewRequired =>
+    'Review required: the stored/model risk value was unknown or could not be safely classified.',
 };
 
 ShelfItem? _recommend(ShelfItem a, ShelfItem b) {
-  final aRisk = a.risk?.severity ?? 1;
-  final bRisk = b.risk?.severity ?? 1;
+  // Unknown/unreviewed items must never outrank evidence-backed items.
+  if (a.risk == null || b.risk == null) return null;
+  final aRisk = a.risk!.severity;
+  final bRisk = b.risk!.severity;
   if (aRisk != bRisk) return aRisk < bRisk ? a : b;
   final aConfidence = _confidenceScore(a.confidence);
   final bConfidence = _confidenceScore(b.confidence);
@@ -1270,7 +1303,7 @@ FridgeItemObservation? _closestObservation(
       bestScore = score;
     }
   }
-  return best;
+  return bestScore > 0 ? best : null;
 }
 
 int _confidenceScore(FoodConfidence confidence) => switch (confidence) {

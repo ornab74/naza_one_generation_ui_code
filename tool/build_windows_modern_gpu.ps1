@@ -1,3 +1,11 @@
+# LLM-CONTEXT:BEGIN
+# FILE: tool/build_windows_modern_gpu.ps1
+# ROLE: Owns build windows modern gpu behavior within the developer-tooling subsystem.
+# DOMAIN: developer-tooling
+# SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+# CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+# DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+# LLM-CONTEXT:END
 [CmdletBinding()]
 param(
   [switch]$SkipNativeBuild,

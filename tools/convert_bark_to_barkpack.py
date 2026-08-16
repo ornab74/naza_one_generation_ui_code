@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# LLM-CONTEXT:BEGIN
+# FILE: tools/convert_bark_to_barkpack.py
+# ROLE: Owns convert bark to barkpack behavior within the developer-tooling subsystem.
+# DOMAIN: developer-tooling
+# SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+# CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+# DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+# LLM-CONTEXT:END
 """
 Convert local Bark/Suno-style PyTorch or safetensors weights into a Dart-readable
 Naza BarkPack folder:

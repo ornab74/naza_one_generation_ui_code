@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test_archive/pq_trust_policy_test.dart
+// ROLE: Owns pq trust policy test behavior within the verification subsystem.
+// DOMAIN: verification
+// SECURITY-INVARIANT: Tests encode behavioral and security contracts; update assertions only with an intentional contract change.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/security/pq_trust_policy.dart';
 

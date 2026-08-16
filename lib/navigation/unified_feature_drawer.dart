@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/navigation/unified_feature_drawer.dart
+// ROLE: Owns unified feature drawer behavior within the navigation subsystem.
+// DOMAIN: navigation
+// SECURITY-INVARIANT: Resolve navigation only through the closed in-process destination registry; persisted IDs never carry callbacks.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -74,13 +82,13 @@ final class NazaFeaturePinStore {
     }
   }
 
-  Future<void> save(Iterable<String> ids, Set<String> allowed) async {
+  Future<bool> save(Iterable<String> ids, Set<String> allowed) async {
     final clean = NazaFeaturePinPolicy.sanitize(ids, allowed);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_key, clean);
+      return await prefs.setStringList(_key, clean);
     } catch (_) {
-      // Navigation remains fully usable in memory if preferences are blocked.
+      return false;
     }
   }
 }
@@ -147,6 +155,10 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
   }
 
   Future<void> _togglePin(String id) async {
+    if (!_loaded) {
+      _message('Loading your saved wheel settings…');
+      return;
+    }
     if (!_allowed.contains(id)) return;
     if (id == NazaFeaturePinPolicy.requiredId) {
       _message('Chat stays pinned in the center.');
@@ -166,8 +178,16 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
       _message('Pinned to your wheel.');
     }
     final clean = NazaFeaturePinPolicy.sanitize(next, _allowed);
-    setState(() => _pins = clean);
-    await _store.save(clean, _allowed);
+    final previous = List<String>.from(_pins);
+    final saved = await _store.save(clean, _allowed);
+    if (!mounted) return;
+    if (saved) {
+      setState(() => _pins = clean);
+      _message(next.contains(id) ? 'Pinned to your wheel.' : 'Removed from your wheel.');
+    } else {
+      setState(() => _pins = previous);
+      _message('Could not save wheel settings. Your previous pins were kept.');
+    }
   }
 
   void _message(String value) {
@@ -336,6 +356,19 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
   Future<void> _load() async {
     final pins = await _store.load(_allowed);
     if (mounted) setState(() => _pins = pins);
+  }
+
+  @override
+  void didUpdateWidget(covariant NazaUnifiedFeatureRail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.destinations, widget.destinations)) {
+      final clean = NazaFeaturePinPolicy.sanitize(_pins, _allowed);
+      if (clean.length != _pins.length ||
+          clean.asMap().entries.any((entry) => entry.value != _pins[entry.key])) {
+        _pins = clean;
+        unawaited(_store.save(clean, _allowed));
+      }
+    }
   }
 
   NazaFeatureDestination? _byId(String id) {

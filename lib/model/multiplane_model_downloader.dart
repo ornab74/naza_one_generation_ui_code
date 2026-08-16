@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/model/multiplane_model_downloader.dart
+// ROLE: Owns multiplane model downloader behavior within the model-runtime subsystem.
+// DOMAIN: model-runtime
+// SECURITY-INVARIANT: Treat model bytes, mirrors, profiles, and runtime state as untrusted until policy validation succeeds.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -327,8 +335,23 @@ final class NazaMultiplaneModelDownloader {
       );
     }
 
-    if (await target.exists()) await target.delete();
-    await staging.rename(target.path);
+    final backup = File('${target.path}.previous');
+    if (await backup.exists()) await backup.delete();
+    var movedOld = false;
+    try {
+      if (await target.exists()) {
+        await target.rename(backup.path);
+        movedOld = true;
+      }
+      await staging.rename(target.path);
+      if (movedOld && await backup.exists()) await backup.delete();
+    } catch (_) {
+      if (await staging.exists()) await staging.delete();
+      if (movedOld && !await target.exists() && await backup.exists()) {
+        await backup.rename(target.path);
+      }
+      rethrow;
+    }
     if (await journal.exists()) await journal.delete();
     if (await spool.exists()) await spool.delete(recursive: true);
     stopwatch.stop();
@@ -593,7 +616,6 @@ final class NazaMultiplaneModelDownloader {
       ).toJson());
       final temp = File('${journal.path}.tmp');
       await temp.writeAsString(encoded, flush: true);
-      if (await journal.exists()) await journal.delete();
       await temp.rename(journal.path);
     }
 

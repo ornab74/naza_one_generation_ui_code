@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: native/naza_bark_ffi.h
+// ROLE: Owns naza bark ffi behavior within the native-boundary subsystem.
+// DOMAIN: native-boundary
+// SECURITY-INVARIANT: Validate lengths, ownership, lifecycle, and ABI assumptions before crossing FFI boundaries.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 #ifndef NAZA_BARK_FFI_H_
 #define NAZA_BARK_FFI_H_
 

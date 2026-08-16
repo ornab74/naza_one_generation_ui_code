@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# LLM-CONTEXT:BEGIN
+# FILE: tool/patch_main_advanced.py
+# ROLE: Owns patch main advanced behavior within the developer-tooling subsystem.
+# DOMAIN: developer-tooling
+# SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+# CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+# DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+# LLM-CONTEXT:END
 """Guarded, idempotent integration patches for NAZA One's large main.dart.
 
 Every edit asserts the exact legacy shape before writing. CI applies this to a

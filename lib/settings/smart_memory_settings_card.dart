@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/settings/smart_memory_settings_card.dart
+// ROLE: Owns smart memory settings card behavior within the settings subsystem.
+// DOMAIN: settings
+// SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -9,10 +17,7 @@ import '../memory/local_memory_service.dart';
 /// explicit pause/resume and destructive-clear controls plus useful health
 /// information without exposing internal prompt content.
 final class NazaSmartMemorySettingsCard extends StatefulWidget {
-  const NazaSmartMemorySettingsCard({
-    super.key,
-    required this.service,
-  });
+  const NazaSmartMemorySettingsCard({super.key, required this.service});
 
   final NazaLocalMemoryService service;
 
@@ -27,6 +32,7 @@ final class _NazaSmartMemorySettingsCardState
   NazaMemoryServiceSnapshot? _snapshot;
   bool _busy = false;
   String? _status;
+  int _attachGeneration = 0;
 
   @override
   void initState() {
@@ -41,14 +47,17 @@ final class _NazaSmartMemorySettingsCardState
   }
 
   void _attach() {
+    final generation = ++_attachGeneration;
     _subscription?.cancel();
     _subscription = widget.service.updates.listen((value) {
-      if (mounted) setState(() => _snapshot = value);
+      if (mounted && generation == _attachGeneration) {
+        setState(() => _snapshot = value);
+      }
     });
     unawaited(() async {
       try {
         await widget.service.initialize();
-        if (!mounted) return;
+        if (!mounted || generation != _attachGeneration) return;
         setState(() {
           _snapshot = NazaMemoryServiceSnapshot(
             enabled: widget.service.settings.enabled,
@@ -58,13 +67,16 @@ final class _NazaSmartMemorySettingsCardState
           );
         });
       } catch (error) {
-        if (mounted) setState(() => _status = 'Memory unavailable: $error');
+        if (mounted && generation == _attachGeneration) {
+          setState(() => _status = 'Memory unavailable: $error');
+        }
       }
     }());
   }
 
   @override
   void dispose() {
+    _attachGeneration++;
     _subscription?.cancel();
     super.dispose();
   }
@@ -79,9 +91,11 @@ final class _NazaSmartMemorySettingsCardState
     try {
       await widget.service.setEnabled(!enabled);
       if (mounted) {
-        setState(() => _status = !enabled
-            ? 'Smart Memory enabled locally.'
-            : 'Smart Memory paused. Existing memories remain encrypted.');
+        setState(
+          () => _status = !enabled
+              ? 'Smart Memory enabled locally.'
+              : 'Smart Memory paused. Existing memories remain encrypted.',
+        );
       }
     } catch (error) {
       if (mounted) setState(() => _status = 'Memory setting failed: $error');
@@ -172,11 +186,13 @@ final class _NazaSmartMemorySettingsCardState
                     Text(
                       'Smart Memory',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                     Text(
-                      enabled ? 'Embedded hybrid retrieval is active' : 'Paused by you',
+                      enabled
+                          ? 'Embedded hybrid retrieval is active'
+                          : 'Paused by you',
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
                   ],
@@ -198,7 +214,10 @@ final class _NazaSmartMemorySettingsCardState
             spacing: 8,
             runSpacing: 8,
             children: <Widget>[
-              _MetricChip(label: '${snapshot?.count ?? widget.service.memoryCount} memories'),
+              _MetricChip(
+                label:
+                    '${snapshot?.count ?? widget.service.memoryCount} memories',
+              ),
               _MetricChip(label: '${settings.retrievalLimit} recall slots'),
               const _MetricChip(label: '128-D local vectors'),
               const _MetricChip(label: 'Encrypted at rest'),
@@ -238,14 +257,13 @@ final class _MetricChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(999),
-          color: Theme.of(context)
-              .colorScheme
-              .surfaceContainerHigh
-              .withValues(alpha: 0.72),
-        ),
-        child: Text(label, style: Theme.of(context).textTheme.labelMedium),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(999),
+      color: Theme.of(
+        context,
+      ).colorScheme.surfaceContainerHigh.withValues(alpha: 0.72),
+    ),
+    child: Text(label, style: Theme.of(context).textTheme.labelMedium),
+  );
 }

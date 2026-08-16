@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test/naza_app_smoke_test.dart
+// ROLE: Owns naza app smoke test behavior within the verification subsystem.
+// DOMAIN: verification
+// SECURITY-INVARIANT: Tests encode behavioral and security contracts; update assertions only with an intentional contract change.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:typed_data';
 

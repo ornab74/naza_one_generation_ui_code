@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/model/runtime_profile.dart
+// ROLE: Owns runtime profile behavior within the model-runtime subsystem.
+// DOMAIN: model-runtime
+// SECURITY-INVARIANT: Treat model bytes, mirrors, profiles, and runtime state as untrusted until policy validation succeeds.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:io';
 
 /// Runtime/backend telemetry that lets the UI distinguish a real GPU session
@@ -204,7 +212,14 @@ final class NazaRuntimeTelemetry {
     _profile = value;
     for (final listener
         in List<void Function(NazaLiteRtRuntimeProfile)>.from(_listeners)) {
-      listener(value);
+      // Diagnostics observers are untrusted presentation code. One broken
+      // listener must not prevent the runtime state from reaching the rest.
+      try {
+        listener(value);
+      } catch (_) {
+        // State publication remains best-effort and never changes backend
+        // initialization success.
+      }
     }
   }
 

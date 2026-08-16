@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/chat/history_metadata_repository.dart
+// ROLE: Owns history metadata repository behavior within the conversation subsystem.
+// DOMAIN: conversation
+// SECURITY-INVARIANT: Preserve turn identity, cancellation semantics, and encrypted-history ownership across async work.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import '../security/secure_database.dart';
 import 'history_drawer.dart';
 
@@ -17,6 +25,7 @@ final class NazaHistoryMetadataRepository {
 
   final NazaSecureDatabase _database;
   Map<String, NazaThreadMetadata>? _cache;
+  Future<void> _saveQueue = Future<void>.value();
 
   Future<Map<String, NazaThreadMetadata>> load() async {
     final cached = _cache;
@@ -129,8 +138,11 @@ final class NazaHistoryMetadataRepository {
   }
 
   Future<void> clear() async {
-    _cache = <String, NazaThreadMetadata>{};
-    await _database.delete(namespace, indexKey);
+    _saveQueue = _saveQueue.then((_) async {
+      await _database.delete(namespace, indexKey);
+      _cache = <String, NazaThreadMetadata>{};
+    });
+    await _saveQueue;
   }
 
   Future<List<NazaHistoryEntry>> decorate({
@@ -163,16 +175,20 @@ final class NazaHistoryMetadataRepository {
       Map<String, NazaThreadMetadata>.from(await load());
 
   Future<void> _save(Map<String, NazaThreadMetadata> value) async {
-    _cache = Map<String, NazaThreadMetadata>.from(value);
-    await _database.writeJson(
-      namespace,
-      indexKey,
-      <String, Object?>{
-        'format': format,
-        'savedAt': DateTime.now().toUtc().toIso8601String(),
-        'threads': value.values.map((item) => item.toJson()).toList(growable: false),
-      },
-    );
+    final snapshot = Map<String, NazaThreadMetadata>.from(value);
+    _saveQueue = _saveQueue.then((_) async {
+      await _database.writeJson(
+        namespace,
+        indexKey,
+        <String, Object?>{
+          'format': format,
+          'savedAt': DateTime.now().toUtc().toIso8601String(),
+          'threads': snapshot.values.map((item) => item.toJson()).toList(growable: false),
+        },
+      );
+      _cache = snapshot;
+    });
+    return _saveQueue;
   }
 }
 

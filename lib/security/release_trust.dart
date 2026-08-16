@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/security/release_trust.dart
+// ROLE: Owns release trust behavior within the security subsystem.
+// DOMAIN: security
+// SECURITY-INVARIANT: Fail closed on malformed, unauthenticated, stale, or unavailable security state.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';

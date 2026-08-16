@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/memory/embedded_vector_store.dart
+// ROLE: Owns embedded vector store behavior within the local-memory subsystem.
+// DOMAIN: local-memory
+// SECURITY-INVARIANT: Keep user memory local, bounded, explicitly scoped, and unavailable while encrypted storage is locked.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;

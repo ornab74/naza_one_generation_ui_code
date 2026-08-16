@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test_archive/intent_guard_test.dart
+// ROLE: Owns intent guard test behavior within the verification subsystem.
+// DOMAIN: verification
+// SECURITY-INVARIANT: Tests encode behavioral and security contracts; update assertions only with an intentional contract change.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';

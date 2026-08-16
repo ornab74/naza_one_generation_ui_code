@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/security/hardened_vault_controller.dart
+// ROLE: Owns hardened vault controller behavior within the security subsystem.
+// DOMAIN: security
+// SECURITY-INVARIANT: Fail closed on malformed, unauthenticated, stale, or unavailable security state.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -62,6 +70,12 @@ final class NazaHardenedVaultController {
       await _attachSecurityState(allowMigration: true);
       await _auditEvent('vault-created', const <String, Object?>{});
     } catch (_) {
+      // Creation is deliberately recoverable. The encrypted vault is already
+      // a valid user-data boundary at this point; deleting it here would turn
+      // a late audit/attachment failure into data loss. Clear all in-memory
+      // capability material, then leave the vault available for a normal
+      // unlock/retry path instead of reporting a non-existent setup state.
+      _destroySessionSecurity();
       await vault.lock();
       rethrow;
     }

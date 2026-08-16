@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: android/settings.gradle.kts
+// ROLE: Owns settings.gradle behavior within the platform-shell subsystem.
+// DOMAIN: platform-shell
+// SECURITY-INVARIANT: Keep platform permissions and generated integration boundaries minimal and reproducible.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 pluginManagement {
     val flutterSdkPath =
         run {

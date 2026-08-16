@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/chat/advanced_chat_coordinator.dart
+// ROLE: Owns advanced chat coordinator behavior within the conversation subsystem.
+// DOMAIN: conversation
+// SECURITY-INVARIANT: Preserve turn identity, cancellation semantics, and encrypted-history ownership across async work.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 
 import '../memory/local_memory_service.dart';

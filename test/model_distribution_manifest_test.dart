@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test/model_distribution_manifest_test.dart
+// ROLE: Owns model distribution manifest test behavior within the model-runtime subsystem.
+// DOMAIN: model-runtime
+// SECURITY-INVARIANT: Treat model bytes, mirrors, profiles, and runtime state as untrusted until policy validation succeeds.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/model/model_distribution_manifest.dart';
 

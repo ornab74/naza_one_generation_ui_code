@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/model/local_model_preference.dart
+// ROLE: Owns local model preference behavior within the model-runtime subsystem.
+// DOMAIN: model-runtime
+// SECURITY-INVARIANT: Treat model bytes, mirrors, profiles, and runtime state as untrusted until policy validation succeeds.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -168,8 +176,9 @@ final class NazaLocalModelPreference {
         final existing = await verify(target, source: 'managed-cache');
         if (_constantTimeEquals(existing.sha256, selection.sha256)) return target;
       } catch (_) {}
-      await target.delete();
     }
+    final backup = File('${target.path}.previous');
+    if (await backup.exists()) await backup.delete();
     final link = Link(target.path);
     if (await link.exists()) await link.delete();
 
@@ -192,7 +201,21 @@ final class NazaLocalModelPreference {
 
     if (!linked) {
       if (await link.exists()) await link.delete();
-      await source.copy(target.path);
+      final temporary = File('${target.path}.new');
+      if (await temporary.exists()) await temporary.delete();
+      await source.copy(temporary.path);
+      await verify(temporary, source: 'managed-copy');
+      if (await target.exists()) await target.rename(backup.path);
+      try {
+        await temporary.rename(target.path);
+        if (await backup.exists()) await backup.delete();
+      } catch (_) {
+        if (await temporary.exists()) await temporary.delete();
+        if (!await target.exists() && await backup.exists()) {
+          await backup.rename(target.path);
+        }
+        rethrow;
+      }
     }
 
     await verify(target, source: linked ? 'managed-link' : 'managed-copy');

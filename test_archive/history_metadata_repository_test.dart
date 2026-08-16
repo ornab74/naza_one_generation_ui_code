@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test_archive/history_metadata_repository_test.dart
+// ROLE: Owns history metadata repository test behavior within the verification subsystem.
+// DOMAIN: verification
+// SECURITY-INVARIANT: Tests encode behavioral and security contracts; update assertions only with an intentional contract change.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

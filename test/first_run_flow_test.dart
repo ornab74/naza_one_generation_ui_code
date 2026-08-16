@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test/first_run_flow_test.dart
+// ROLE: Owns first run flow test behavior within the verification subsystem.
+// DOMAIN: verification
+// SECURITY-INVARIANT: Tests encode behavioral and security contracts; update assertions only with an intentional contract change.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -149,15 +157,15 @@ void main() {
     },
   );
 
-  test('both retained GitHub workflows are manual-only', () async {
+  test('both retained GitHub workflows gate pushes and pull requests', () async {
     for (final path in <String>[
       '.github/workflows/flutter-release.yml',
       '.github/workflows/windows-store-msix.yml',
     ]) {
       final source = await File(path).readAsString();
       expect(source, contains('workflow_dispatch:'));
-      expect(source, isNot(contains('\n  push:')));
-      expect(source, isNot(contains('\n  pull_request:')));
+      expect(source, contains('\n  push:'));
+      expect(source, contains('\n  pull_request:'));
     }
   });
 

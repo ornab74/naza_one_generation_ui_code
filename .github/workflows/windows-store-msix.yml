@@ -1,6 +1,17 @@
+# LLM-CONTEXT:BEGIN
+# FILE: .github/workflows/windows-store-msix.yml
+# ROLE: Owns windows store msix behavior within the application-core subsystem.
+# DOMAIN: application-core
+# SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+# CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+# DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+# LLM-CONTEXT:END
 name: Build Microsoft Store MSIX
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       runtime:
@@ -72,18 +83,19 @@ jobs:
       - name: Analyze Windows release sources
         run: flutter analyze --no-pub --no-fatal-infos
 
-      - name: Run fast release gate
+      - name: Run complete release gate
         run: >-
           flutter test --no-pub
-          test/first_run_flow_test.dart
-          test/secure_database_test.dart
-          test/model_bootstrap_test.dart
-          test/model_backend_policy_test.dart
-          test/model_distribution_manifest_test.dart
-          test/runtime_mirror_catalog_test.dart
-          test/runtime_profile_test.dart
-          test/naza_app_smoke_test.dart
-          test/naza_vision_picker_test.dart
+          test_archive/food_repository_test.dart
+          test_archive/food_vision_logic_test.dart
+          test_archive/shelf_scanner_test.dart
+          test_archive/security_kernel_test.dart
+          test_archive/post_quantum_export_test.dart
+          test_archive/post_quantum_recovery_test.dart
+          test_archive/post_quantum_state_test.dart
+          test_archive/pq_trust_policy_test.dart
+          test_archive/persistent_audit_test.dart
+          test_archive/release_trust_test.dart
 
       - name: Build Windows release
         run: flutter build windows --release --no-pub

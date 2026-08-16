@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/security/hardened_security_runtime.dart
+// ROLE: Owns hardened security runtime behavior within the security subsystem.
+// DOMAIN: security
+// SECURITY-INVARIANT: Fail closed on malformed, unauthenticated, stale, or unavailable security state.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:typed_data';
 
 import 'hardened_vault_controller.dart';
@@ -116,21 +124,31 @@ final class NazaHardenedSecurityRuntime {
   }
 
   Future<void> lock() async {
-    if (isReady) {
-      await _appendPersistent('runtime-locking', const <String, Object?>{});
+    // Locking is a safety operation: audit durability must never keep the
+    // vault open. Capture the controller, tear down session state, and lock
+    // the encrypted store even when best-effort audit append fails.
+    Object? auditFailure;
+    try {
+      if (isReady) {
+        await _appendPersistent('runtime-locking', const <String, Object?>{});
+      }
+    } catch (error) {
+      auditFailure = error;
+    } finally {
+      _persistentAudit?.destroy();
+      _persistentAudit = null;
+      _activeModel = null;
+      _zero(_sessionBinding);
+      _sessionBinding = null;
+      final hardened = _controller;
+      _controller = null;
+      if (hardened != null) {
+        await hardened.lock();
+      } else if (vault.isUnlocked) {
+        await vault.lock();
+      }
     }
-    _persistentAudit?.destroy();
-    _persistentAudit = null;
-    _activeModel = null;
-    _zero(_sessionBinding);
-    _sessionBinding = null;
-    final hardened = _controller;
-    _controller = null;
-    if (hardened != null) {
-      await hardened.lock();
-    } else if (vault.isUnlocked) {
-      await vault.lock();
-    }
+    if (auditFailure != null) throw auditFailure;
   }
 
   /// Call immediately before the model worker opens/uses the artifact. The

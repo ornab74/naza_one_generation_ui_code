@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: windows/runner/utils.cpp
+// ROLE: Owns utils behavior within the application-core subsystem.
+// DOMAIN: application-core
+// SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 #include "utils.h"
 
 #include <flutter_windows.h>

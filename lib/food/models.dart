@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/food/models.dart
+// ROLE: Owns models behavior within the model-runtime subsystem.
+// DOMAIN: model-runtime
+// SECURITY-INVARIANT: Treat model bytes, mirrors, profiles, and runtime state as untrusted until policy validation succeeds.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -47,8 +55,20 @@ final class FoodVisionImage {
   };
 
   factory FoodVisionImage.fromJson(Map<String, Object?> json) {
+    final encoded = json['bytes']?.toString() ?? '';
+    // Reject before base64Decode allocates the decoded buffer. Base64 expands
+    // data by roughly 4/3, so this bound also prevents oversized persisted
+    // records from becoming a transient memory-allocation primitive.
+    final maxEncoded = ((8 * 1024 * 1024 + 2) ~/ 3) * 4 + 4;
+    if (encoded.isEmpty || encoded.length > maxEncoded) {
+      throw const FormatException('Food image encoding exceeds the safe limit.');
+    }
+    final bytes = base64Decode(encoded);
+    if (bytes.isEmpty || bytes.length > 8 * 1024 * 1024) {
+      throw const FormatException('Food image exceeds the safe limit.');
+    }
     return FoodVisionImage(
-      bytes: base64Decode(json['bytes']?.toString() ?? ''),
+      bytes: bytes,
       name: _bounded(json['name'], 180, fallback: 'food-image.png'),
       width: _int(json['width']).clamp(1, 10000),
       height: _int(json['height']).clamp(1, 10000),

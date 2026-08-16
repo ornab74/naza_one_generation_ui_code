@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/food/bake_simulation.dart
+// ROLE: Owns bake simulation behavior within the food-vision subsystem.
+// DOMAIN: food-vision
+// SECURITY-INVARIANT: Bound image/data inputs and distinguish visible evidence from model inference.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:math' as math;
 
 import 'models.dart';

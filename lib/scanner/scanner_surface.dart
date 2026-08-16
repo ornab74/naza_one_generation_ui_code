@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/scanner/scanner_surface.dart
+// ROLE: Owns scanner surface behavior within the scanner subsystem.
+// DOMAIN: scanner
+// SECURITY-INVARIANT: Never fabricate a safety classification when parsing, generation, or evidence is incomplete.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'package:flutter/material.dart';
 
 /// Shared responsive chrome for Naza scanners.

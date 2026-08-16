@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: macos/Runner/Configs/Warnings.xcconfig
+// ROLE: Owns Warnings behavior within the platform-shell subsystem.
+// DOMAIN: platform-shell
+// SECURITY-INVARIANT: Keep platform permissions and generated integration boundaries minimal and reproducible.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 WARNING_CFLAGS = -Wall -Wconditional-uninitialized -Wnullable-to-nonnull-conversion -Wmissing-method-return-type -Woverlength-strings
 GCC_WARN_UNDECLARED_SELECTOR = YES
 CLANG_UNDEFINED_BEHAVIOR_SANITIZER_NULLABILITY = YES

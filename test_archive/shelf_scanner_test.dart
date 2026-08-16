@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test_archive/shelf_scanner_test.dart
+// ROLE: Owns shelf scanner test behavior within the verification subsystem.
+// DOMAIN: verification
+// SECURITY-INVARIANT: Tests encode behavioral and security contracts; update assertions only with an intentional contract change.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -85,12 +93,15 @@ void main() {
     expect(result.map((entry) => entry.id), <String>['new', 'old']);
   });
 
-  test('risk serialization remains bounded to Low Medium High', () {
+  test('risk serialization preserves unknown values as review required', () {
     for (final risk in ShelfRiskLevel.values) {
       final json = item('a', 'A').copyWith(risk: risk).toJson();
       final restored = ShelfItem.fromJson(json);
       expect(restored.risk, risk);
-      expect(restored.risk!.label, isIn(<String>['Low', 'Medium', 'High']));
+      expect(
+        restored.risk!.label,
+        isIn(<String>['Low', 'Medium', 'High', 'Review required']),
+      );
     }
   });
 }

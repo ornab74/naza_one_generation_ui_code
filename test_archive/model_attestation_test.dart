@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: test_archive/model_attestation_test.dart
+// ROLE: Owns model attestation test behavior within the model-runtime subsystem.
+// DOMAIN: model-runtime
+// SECURITY-INVARIANT: Treat model bytes, mirrors, profiles, and runtime state as untrusted until policy validation succeeds.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';

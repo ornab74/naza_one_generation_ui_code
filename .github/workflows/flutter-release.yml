@@ -1,6 +1,17 @@
+# LLM-CONTEXT:BEGIN
+# FILE: .github/workflows/flutter-release.yml
+# ROLE: Owns flutter release behavior within the application-core subsystem.
+# DOMAIN: application-core
+# SECURITY-INVARIANT: Preserve local-first privacy, bounded resource use, and explicit error handling.
+# CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+# DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+# LLM-CONTEXT:END
 name: Build Naza One
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       platform:
@@ -41,6 +52,21 @@ jobs:
         run: flutter analyze --no-pub --no-fatal-infos
       - name: Run regression tests
         run: flutter test --no-pub
+      - name: Run release-critical archived security and food tests
+        # These suites remain outside test/ to keep ordinary local discovery
+        # fast, but they are part of the release contract and must gate builds.
+        run: >-
+          flutter test --no-pub
+          test_archive/food_repository_test.dart
+          test_archive/food_vision_logic_test.dart
+          test_archive/shelf_scanner_test.dart
+          test_archive/security_kernel_test.dart
+          test_archive/post_quantum_export_test.dart
+          test_archive/post_quantum_recovery_test.dart
+          test_archive/post_quantum_state_test.dart
+          test_archive/pq_trust_policy_test.dart
+          test_archive/persistent_audit_test.dart
+          test_archive/release_trust_test.dart
 
   android:
     name: Android APK/AAB

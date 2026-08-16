@@ -1,3 +1,11 @@
+// LLM-CONTEXT:BEGIN
+// FILE: lib/security/secure_database.dart
+// ROLE: Owns secure database behavior within the security subsystem.
+// DOMAIN: security
+// SECURITY-INVARIANT: Fail closed on malformed, unauthenticated, stale, or unavailable security state.
+// CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
+// DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
+// LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -233,6 +241,26 @@ final class NazaSecureDatabase {
 
   Future<void> lock() {
     return _enqueue(() async => _lockNow());
+  }
+
+  /// Removes only a just-created vault after an explicitly failed recovery
+  /// transaction. Callers must use this solely before exposing the vault to
+  /// the user; ordinary lock/unlock flows never delete vault material.
+  Future<void> discardFailedCreation() {
+    return _enqueue(() async {
+      final header = _header;
+      final vaultId = header?['vaultId']?.toString();
+      await _lockNow();
+      final headerFile = await _headerFile();
+      final databaseFile = await _databaseFile();
+      if (await headerFile.exists()) await headerFile.delete();
+      if (await databaseFile.exists()) await databaseFile.delete();
+      if (vaultId != null && vaultId.isNotEmpty) {
+        try {
+          await _deviceKeyStore.delete(_deviceStorageKey(vaultId));
+        } catch (_) {}
+      }
+    });
   }
 
   Future<Object?> readJson(String namespace, String key) {
@@ -1419,9 +1447,24 @@ CREATE INDEX IF NOT EXISTS vault_records_key_id ON vault_records(key_id);
     if (await part.exists()) await part.delete();
     await part.writeAsString(contents, flush: true);
     await _harden(part);
-    if (Platform.isWindows && await file.exists()) await file.delete();
-    await part.rename(file.path);
-    await _harden(file);
+    final backup = File('${file.path}.previous');
+    if (await backup.exists()) await backup.delete();
+    var movedOld = false;
+    try {
+      if (await file.exists()) {
+        await file.rename(backup.path);
+        movedOld = true;
+      }
+      await part.rename(file.path);
+      if (movedOld && await backup.exists()) await backup.delete();
+      await _harden(file);
+    } catch (_) {
+      if (await part.exists()) await part.delete();
+      if (movedOld && !await file.exists() && await backup.exists()) {
+        await backup.rename(file.path);
+      }
+      rethrow;
+    }
   }
 
   Future<void> _harden(File file) async {
