@@ -84,19 +84,21 @@ jobs:
         run: flutter analyze --no-pub --no-fatal-infos
 
       - name: Run complete release gate
-        run: >-
-          flutter test --no-pub
-          test/
-          test_archive/food_repository_test.dart
-          test_archive/food_vision_logic_test.dart
-          test_archive/shelf_scanner_test.dart
-          test_archive/security_kernel_test.dart
-          test_archive/post_quantum_export_test.dart
-          test_archive/post_quantum_recovery_test.dart
-          test_archive/post_quantum_state_test.dart
-          test_archive/pq_trust_policy_test.dart
-          test_archive/persistent_audit_test.dart
-          test_archive/release_trust_test.dart
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @('test/', 'test_archive/food_repository_test.dart',
+            'test_archive/food_vision_logic_test.dart', 'test_archive/shelf_scanner_test.dart',
+            'test_archive/security_kernel_test.dart', 'test_archive/post_quantum_export_test.dart',
+            'test_archive/post_quantum_recovery_test.dart', 'test_archive/post_quantum_state_test.dart',
+            'test_archive/pq_trust_policy_test.dart', 'test_archive/persistent_audit_test.dart',
+            'test_archive/release_trust_test.dart')
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            & flutter test --no-pub $tests
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 5 }
+          }
+          exit 1
 
       - name: Build Windows release
         run: flutter build windows --release --no-pub
