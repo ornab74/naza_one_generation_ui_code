@@ -765,7 +765,7 @@ final class NazaSecureDatabase {
     const maxExportPlaintextBytes = 64 * 1024 * 1024;
     final db = _requireDatabase();
     final rows = db.select(
-      'SELECT record_id, key_id, nonce, cipher_text, mac FROM vault_records',
+      'SELECT record_id, key_id, nonce, cipher_text, mac FROM vault_records LIMIT 10001',
     );
     final result = <NazaVaultRecordKey, Object?>{};
     var plaintextBytes = 0;

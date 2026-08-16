@@ -183,6 +183,22 @@ final class NazaHardenedSecurityRuntime {
     return lease;
   }
 
+  Future<NazaCapabilityLease> authorizeWithDeviceKey({
+    required NazaPrivilegedAction action,
+    String resource = 'vault',
+  }) async {
+    await assertModelStillTrusted();
+    final lease = await controller.authorizeWithDeviceKey(
+      action: action,
+      resource: resource,
+    );
+    await _appendPersistent('runtime-capability-issued-device-key', <String, Object?>{
+      'action': action.name,
+      'resource': resource,
+    });
+    return lease;
+  }
+
   Future<Map<NazaVaultRecordKey, Object?>> exportRecordsAuthorized(
     NazaCapabilityLease lease,
   ) async {

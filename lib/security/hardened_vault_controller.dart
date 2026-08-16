@@ -176,8 +176,14 @@ final class NazaHardenedVaultController {
     }
     await vault.lock();
     _destroySessionSecurity();
-    await vault.unlockWithDeviceKey();
-    await _attachSecurityState(allowMigration: false);
+    try {
+      await vault.unlockWithDeviceKey();
+      await _attachSecurityState(allowMigration: false);
+    } catch (_) {
+      await vault.lock();
+      _destroySessionSecurity();
+      rethrow;
+    }
     final lease = await _requireKernel().issueLease(
       action: action,
       resource: resource,
@@ -384,7 +390,14 @@ final class NazaHardenedVaultController {
             'The vault header generation is older than the encrypted security state.',
           );
         }
-        _verifyPersistedIdentities(state);
+        if (state.identities.isNotEmpty) {
+          _verifyPersistedIdentities(state);
+        } else {
+          await _writeSecurityMetadata(
+            epoch: state.epoch,
+            headerGeneration: state.headerGeneration,
+          );
+        }
       } else if (legacyRaw != null) {
         if (!allowMigration) {
           throw const NazaSecurityException(
@@ -589,7 +602,8 @@ final class NazaHardenedVaultController {
         'Encrypted security state failed validation.',
       );
     }
-    if (identities.values.any((value) => value.isEmpty)) {
+    if (identities.values.any((value) => value.isEmpty) &&
+        identities.values.any((value) => value.isNotEmpty)) {
       throw const NazaSecurityException(
         'security_identity_missing',
         'Persisted hardened security identities are incomplete.',
