@@ -424,6 +424,12 @@ final class NazaHardenedVaultController {
 
       if (!migration) {
         await guard.verify(epoch);
+        if (_parseSecurityMetadata(currentRaw!, expectedVaultId: snapshot.vaultId).migrationPending) {
+          await _writeSecurityMetadata(
+            epoch: epoch,
+            headerGeneration: snapshot.headerGeneration,
+          );
+        }
       } else {
         // Migration is allowed only when no authenticated v2 floor exists. If
         // one exists but the encrypted v2 state disappeared, treat that as a
@@ -449,6 +455,13 @@ final class NazaHardenedVaultController {
         _audit = NazaForwardSecureAudit(initialKey: auditSeed);
         _rollbackGuard = guard;
         _securityEpoch = epoch;
+        if (migration) {
+          await _writeSecurityMetadata(
+            epoch: epoch,
+            headerGeneration: snapshot.headerGeneration,
+            migrationPending: true,
+          );
+        }
         await guard.commit(epoch);
         if (migration) {
           await _writeSecurityMetadata(
@@ -545,6 +558,7 @@ final class NazaHardenedVaultController {
   Future<void> _writeSecurityMetadata({
     required int epoch,
     required int headerGeneration,
+    bool migrationPending = false,
   }) {
     if (epoch < 1 || headerGeneration < 1) {
       throw const NazaSecurityException(
@@ -561,6 +575,7 @@ final class NazaHardenedVaultController {
         'epoch': epoch,
         'headerGeneration': headerGeneration,
         'rollbackProtected': true,
+        'migrationPending': migrationPending,
         'appIdentity': appIdentity,
         'modelIdentity': modelIdentity,
         'policyIdentity': policyIdentity,
@@ -586,6 +601,7 @@ final class NazaHardenedVaultController {
     final epoch = _positiveInt(raw['epoch']);
     final headerGeneration = _positiveInt(raw['headerGeneration']);
     final rollbackProtected = raw['rollbackProtected'] == true;
+    final migrationPending = raw['migrationPending'] == true;
     final identities = <String, String>{
       'appIdentity': raw['appIdentity']?.toString() ?? '',
       'modelIdentity': raw['modelIdentity']?.toString() ?? '',
@@ -613,6 +629,7 @@ final class NazaHardenedVaultController {
       epoch: epoch,
       headerGeneration: headerGeneration,
       rollbackProtected: rollbackProtected,
+      migrationPending: migrationPending,
       identities: identities,
     );
   }
@@ -789,12 +806,14 @@ final class _VaultSecurityMetadata {
   final int headerGeneration;
   final bool rollbackProtected;
   final Map<String, String> identities;
+  final bool migrationPending;
 
   const _VaultSecurityMetadata({
     required this.epoch,
     required this.headerGeneration,
     required this.rollbackProtected,
     required this.identities,
+    this.migrationPending = false,
   });
 }
 

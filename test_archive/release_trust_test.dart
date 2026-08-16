@@ -55,6 +55,7 @@ void main() {
         edKeyPair: edKeyPair,
       );
       final verifier = NazaReleaseTrustVerifier(
+        minimumBuildNumber: 1,
         trustedMlDsa87PublicKey: pqPublic,
         trustedEd25519PublicKey: edPublic.bytes,
         minimumTrustGeneration: 7,
@@ -89,6 +90,7 @@ void main() {
         edKeyPair: edKeyPair,
       );
       final verifier = NazaReleaseTrustVerifier(
+        minimumBuildNumber: 1,
         trustedMlDsa87PublicKey: pqPublic,
         trustedEd25519PublicKey: edPublic.bytes,
         minimumTrustGeneration: 7,
@@ -144,6 +146,7 @@ void main() {
         ed25519Signature: base64Encode(List<int>.filled(64, 0x42)),
       );
       final verifier = NazaReleaseTrustVerifier(
+        minimumBuildNumber: 1,
         trustedMlDsa87PublicKey: pqPublic,
         trustedEd25519PublicKey: edPublic.bytes,
         minimumTrustGeneration: 7,

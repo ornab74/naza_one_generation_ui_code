@@ -132,7 +132,7 @@ final class NazaReleaseTrustVerifier {
     required List<int> trustedMlDsa87PublicKey,
     required List<int> trustedEd25519PublicKey,
     required this.minimumTrustGeneration,
-    this.minimumBuildNumber = 1,
+    required this.minimumBuildNumber,
   }) : _trustedMlDsa87PublicKey = Uint8List.fromList(trustedMlDsa87PublicKey),
        _trustedEd25519PublicKey = Uint8List.fromList(trustedEd25519PublicKey) {
     if (minimumTrustGeneration < 1) {

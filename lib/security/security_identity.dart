@@ -31,6 +31,7 @@ final class NazaVerifiedModelIdentity {
   final String _modelPath;
   final String _tokenizerPath;
   final List<int> _policyBytes;
+  final String? _policyPath;
 
   NazaVerifiedModelIdentity._({
     required this.modelSha256,
@@ -43,6 +44,7 @@ final class NazaVerifiedModelIdentity {
     required String modelPath,
     required String tokenizerPath,
     required List<int> policyBytes,
+    String? policyPath,
   }) :
        // Private source bindings intentionally keep public constructor names
        // while retaining private fields for runtime re-verification.
@@ -50,7 +52,8 @@ final class NazaVerifiedModelIdentity {
        _modelPath = modelPath,
        // ignore: prefer_initializing_formals
        _tokenizerPath = tokenizerPath,
-       _policyBytes = List<int>.unmodifiable(policyBytes);
+       _policyBytes = List<int>.unmodifiable(policyBytes),
+       _policyPath = policyPath;
 
   void validate() {
     _requireHexDigest(modelSha256, 'modelSha256');
@@ -105,13 +108,22 @@ final class NazaVerifiedModelIdentity {
     }
     final modelDigest = await _sha256File(modelFile);
     final tokenizerDigest = await _sha256File(tokenizerFile);
-    if (_policyBytes.isEmpty) {
+    if (_policyBytes.isEmpty && _policyPath == null) {
       throw const NazaSecurityIdentityException(
         'policy_artifact_unbound',
         'The attested policy has no retained source binding for re-verification.',
       );
     }
-    final policyDigest = crypto.sha256.convert(_policyBytes).toString();
+    final policyBytes = _policyPath == null
+        ? _policyBytes
+        : await File(_policyPath).readAsBytes();
+    if (policyBytes.isEmpty) {
+      throw const NazaSecurityIdentityException(
+        'policy_artifact_empty',
+        'The bound policy source is empty.',
+      );
+    }
+    final policyDigest = crypto.sha256.convert(policyBytes).toString();
     _requireDigestMatch(
       actual: policyDigest,
       expected: policySha256,
@@ -158,6 +170,7 @@ final class NazaModelFileAttestor {
     required String expectedPolicySha256,
     required String runtimeIdentity,
     required String backendIdentity,
+    File? policyFile,
     int? expectedModelBytes,
     int? expectedTokenizerBytes,
   }) async {
@@ -239,6 +252,7 @@ final class NazaModelFileAttestor {
       modelPath: modelFile.absolute.path,
       tokenizerPath: tokenizerFile.absolute.path,
       policyBytes: policyBytes,
+      policyPath: policyFile?.absolute.path,
     );
   }
 }
