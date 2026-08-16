@@ -21,6 +21,7 @@ import 'food/models.dart';
 import 'food/photo_picker.dart';
 import 'food/prompts.dart';
 import 'food/repository.dart';
+import 'navigation/unified_feature_drawer.dart';
 import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
@@ -914,9 +915,8 @@ final class NazaResourcePressure {
 
   static const unknown = NazaResourcePressure(cpu: 0.35, memory: 0.45);
 
-  double get combined => (cpu * 0.42 + memory * 0.58)
-      .clamp(0.0, 1.0)
-      .toDouble();
+  double get combined =>
+      (cpu * 0.42 + memory * 0.58).clamp(0.0, 1.0).toDouble();
 
   static Future<NazaResourcePressure> sample() async {
     if (!Platform.isLinux) return unknown;
@@ -925,7 +925,9 @@ final class NazaResourcePressure {
         File('/proc/loadavg').readAsString(),
         File('/proc/meminfo').readAsString(),
       ]);
-      final load = double.tryParse(results[0].trim().split(RegExp(r'\s+')).first);
+      final load = double.tryParse(
+        results[0].trim().split(RegExp(r'\s+')).first,
+      );
       final values = <String, double>{};
       for (final line in results[1].split('\n')) {
         final match = RegExp(r'^([^:]+):\s+(\d+)').firstMatch(line);
@@ -1028,9 +1030,7 @@ final class NazaAdaptiveSamplingPolicy {
     final unique = <String>{...words}.length + unicodeContent;
     final contentRatio = (contentWords + unicodeContent) / total;
     final diversity = unique / total;
-    return (contentRatio * 0.62 + diversity * 0.38)
-        .clamp(0.0, 1.0)
-        .toDouble();
+    return (contentRatio * 0.62 + diversity * 0.38).clamp(0.0, 1.0).toDouble();
   }
 
   static NazaSamplingProfile forTurn({
@@ -1051,12 +1051,11 @@ final class NazaAdaptiveSamplingPolicy {
     final temperature = (base + densityAdjustment - pressureAdjustment)
         .clamp(0.28, 0.78)
         .toDouble();
-    final normalized = ((temperature - 0.28) / 0.50)
-        .clamp(0.0, 1.0)
-        .toDouble();
-    final topK = (8 + normalized * 24 - pressure.combined * 4)
-        .round()
-        .clamp(8, 32);
+    final normalized = ((temperature - 0.28) / 0.50).clamp(0.0, 1.0).toDouble();
+    final topK = (8 + normalized * 24 - pressure.combined * 4).round().clamp(
+      8,
+      32,
+    );
     final topP = (0.88 + normalized * 0.07 - pressure.combined * 0.015)
         .clamp(0.86, 0.95)
         .toDouble();
@@ -10609,8 +10608,7 @@ final class NazaLocalGemma {
   Future<dynamic>? _nativeChatOpenFuture;
   String? _nativeChatOpenSystemInstruction;
   String? _nativeChatOpenSamplingSignature;
-  NazaSamplingProfile _requestedSamplingProfile =
-      NazaSamplingProfile.balanced;
+  NazaSamplingProfile _requestedSamplingProfile = NazaSamplingProfile.balanced;
   bool _chatRequiresRecovery = false;
   bool _nativeGenerationDrainFailed = false;
   bool _readinessContinuesInBackground = false;
@@ -11177,9 +11175,7 @@ final class NazaLocalGemma {
             actionProfile: actionProfile,
             excludedTurnIds: excludedMemoryTurnIds,
           )
-        : Future<NazaMemoryAllocation>.value(
-            NazaMemoryAllocation.disabled(),
-          );
+        : Future<NazaMemoryAllocation>.value(NazaMemoryAllocation.disabled());
     final savedContinuationsFuture = maxContinuationsOverride == null
         ? _savedMaxContinuations()
         : null;
@@ -11187,7 +11183,9 @@ final class NazaLocalGemma {
     final pressure = await pressureFuture;
     _requestedSamplingProfile = NazaAdaptiveSamplingPolicy.forTurn(
       prompt: trimmed,
-      mode: scannerMode ? NazaChatMode.coder : NazaChatModeRouter.route(trimmed),
+      mode: scannerMode
+          ? NazaChatMode.coder
+          : NazaChatModeRouter.route(trimmed),
       pressure: pressure,
     );
     final maxContinuations = maxContinuationsOverride == null
@@ -16663,9 +16661,7 @@ final class NazaVectorMemory {
         // Priors may order relevant candidates, but they must never create
         // relevance. This hard evidence gate prevents recency/access from
         // repeatedly selecting the last unrelated assistant response.
-        if (similarity < 0.10 &&
-            keywordAffinity < 0.14 &&
-            tagAffinity < 0.34) {
+        if (similarity < 0.10 && keywordAffinity < 0.14 && tagAffinity < 0.34) {
           continue;
         }
         final roleBias = chunk.role == 'user' ? 0.02 : 0.0;
@@ -16686,11 +16682,10 @@ final class NazaVectorMemory {
             roleBias +
             routeMismatchPenalty +
             (workingMemory ? 0.01 : 0.0);
-        final certainty = (similarity * 0.70 +
-                keywordAffinity * 0.25 +
-                tagAffinity * 0.05)
-            .clamp(0.0, 1.0)
-            .toDouble();
+        final certainty =
+            (similarity * 0.70 + keywordAffinity * 0.25 + tagAffinity * 0.05)
+                .clamp(0.0, 1.0)
+                .toDouble();
         scored.add(
           _ScoredMemoryChunk(
             chunk: chunk,
@@ -16859,10 +16854,12 @@ final class NazaVectorMemory {
   String _assistantMemoryText(String assistant) {
     final clean = _normalize(assistant);
     if (clean.isEmpty) return '';
-    final containsDurableArtifact = clean.contains('```') ||
+    final containsDurableArtifact =
+        clean.contains('```') ||
         _fileSymbolRegExp.hasMatch(clean) ||
-        RegExp(r'\b(class|function|schema|migration|endpoint)\b')
-            .hasMatch(clean.toLowerCase());
+        RegExp(
+          r'\b(class|function|schema|migration|endpoint)\b',
+        ).hasMatch(clean.toLowerCase());
     if (containsDurableArtifact) return clean;
     final summary = NazaSummaGemmaSummarizer.summarize(
       clean,
@@ -18547,7 +18544,16 @@ final class NazaScannerResult {
   }
 }
 
-enum NazaPanel { chat, roadScanner, foodWater, health, book, labs, settings, history }
+enum NazaPanel {
+  chat,
+  roadScanner,
+  foodWater,
+  health,
+  book,
+  labs,
+  settings,
+  history,
+}
 
 class _NazaThemeSurface extends StatelessWidget {
   final Widget child;
@@ -18616,6 +18622,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
   NazaScannerResult? _foodPlannerResult;
   Timer? _draftSaveTimer;
   late NazaPanel _panel;
+  NazaHealthPage _healthPage = NazaHealthPage.today;
+  NazaExplorationSection _exploreSection = NazaExplorationSection.findIt;
   bool _sending = false;
   bool _stopping = false;
   bool _pickingImage = false;
@@ -18939,9 +18947,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
         historyThreadId: threadId,
         historyTurnId: turnId,
         threadContext: threadContext,
-        excludedMemoryTurnIds: _threadRows
-            .map((row) => row.id)
-            .toSet(),
+        excludedMemoryTurnIds: _threadRows.map((row) => row.id).toSet(),
         maxContinuationsOverride:
             selectedMode == NazaChatMode.writer ||
                 selectedMode == NazaChatMode.visual ||
@@ -19602,6 +19608,24 @@ class _NazaStableHomeState extends State<NazaStableHome>
     });
   }
 
+  void _openHealthPage(NazaHealthPage page) {
+    _panelCache.remove(NazaPanel.health);
+    setState(() {
+      _healthPage = page;
+      _panel = NazaPanel.health;
+      _status = _labelForPanel(NazaPanel.health);
+    });
+  }
+
+  void _openExplorationSection(NazaExplorationSection section) {
+    _panelCache.remove(NazaPanel.labs);
+    setState(() {
+      _exploreSection = section;
+      _panel = NazaPanel.labs;
+      _status = section.label.toLowerCase();
+    });
+  }
+
   Future<String> _runHealthText({
     required String systemInstruction,
     required String prompt,
@@ -19636,8 +19660,46 @@ class _NazaStableHomeState extends State<NazaStableHome>
     return response.text;
   }
 
+  Future<String> _runExplorePrompt({
+    required String systemInstruction,
+    required String prompt,
+    Uint8List? imageBytes,
+  }) async {
+    final response = await NazaLocalGemma.instance.send(
+      prompt,
+      historyUserText: 'Private Naza Intelligence workflow',
+      visionImage: imageBytes == null
+          ? null
+          : NazaVisionImage(
+              bytes: imageBytes,
+              name: 'garden-observation.jpg',
+              width: 1,
+              height: 1,
+            ),
+      useMemory: false,
+      persistTurn: false,
+      maxContinuationsOverride: 1,
+      routeOverride: imageBytes == null
+          ? 'exploration-agent'
+          : 'garden-vision-agent',
+      systemInstructionOverride: systemInstruction,
+    );
+    return response.text;
+  }
+
+  Future<NazaExploreImage?> _pickGardenImage() async {
+    final result =
+        await (widget.visionPicker ?? NazaVisionPicker.instance.pick)();
+    final image = result.image;
+    if (result.outcome != NazaVisionPickOutcome.selected || image == null) {
+      return null;
+    }
+    return NazaExploreImage(name: image.name, bytes: image.bytes);
+  }
+
   Future<NazaPickedHealthImage?> _pickHealthImage() async {
-    final result = await (widget.visionPicker ?? NazaVisionPicker.instance.pick)();
+    final result =
+        await (widget.visionPicker ?? NazaVisionPicker.instance.pick)();
     final image = result.image;
     if (result.outcome != NazaVisionPickOutcome.selected || image == null) {
       return null;
@@ -19708,7 +19770,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
             SafeArea(
               child: Row(
                 children: [
-                  if (wide) _SideRail(panel: _panel, onPanel: _setPanel),
+                  if (wide) _buildDesktopFeatureRail(),
                   Expanded(
                     child: Column(
                       children: [
@@ -19743,8 +19805,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
                             onStop: _stopActiveGeneration,
                             onContinue: _continueWhereLeftOff,
                           ),
-                        if (!wide)
-                          _BottomTabs(panel: _panel, onPanel: _setPanel),
+                        if (!wide) _buildFeatureDrawer(),
                       ],
                     ),
                   ),
@@ -19755,6 +19816,298 @@ class _NazaStableHomeState extends State<NazaStableHome>
         ),
       ),
     );
+  }
+
+  Widget _buildFeatureDrawer() {
+    final destinations = _featureDestinations();
+    return NazaUnifiedFeatureDrawer(
+      destinations: destinations,
+      selectedId: _selectedFeatureId,
+      surface: NazaPalette.shell,
+      panel: NazaPalette.panel,
+      border: NazaPalette.border,
+      text: NazaPalette.text,
+      subtext: NazaPalette.subtext,
+    );
+  }
+
+  Widget _buildDesktopFeatureRail() => NazaUnifiedFeatureRail(
+    destinations: _featureDestinations(),
+    selectedId: _selectedFeatureId,
+    surface: NazaPalette.shell,
+    panel: NazaPalette.panel,
+    border: NazaPalette.border,
+    text: NazaPalette.text,
+    subtext: NazaPalette.subtext,
+  );
+
+  List<NazaFeatureDestination> _featureDestinations() {
+    const healthAccent = Color(0xFF75E6B1);
+    final destinations = <NazaFeatureDestination>[
+      NazaFeatureDestination(
+        id: 'chat',
+        label: 'Chatbot',
+        description: 'Your private, local assistant.',
+        category: 'Core',
+        icon: Icons.auto_awesome_rounded,
+        accent: Color(0xFFB69CFF),
+        onOpen: () => _setPanel(NazaPanel.chat),
+      ),
+      NazaFeatureDestination(
+        id: 'road-scanner',
+        label: 'Road',
+        description: 'Inspect road conditions and visible hazards.',
+        category: 'Scan',
+        icon: Icons.route_rounded,
+        accent: Color(0xFF65DDF3),
+        onOpen: () => _setPanel(NazaPanel.roadScanner),
+      ),
+      NazaFeatureDestination(
+        id: 'food-scanner',
+        label: 'Food',
+        description: 'Scan food, water, shelves, and your kitchen.',
+        category: 'Scan',
+        icon: Icons.restaurant_rounded,
+        accent: Color(0xFFFFA56B),
+        onOpen: () => _setPanel(NazaPanel.foodWater),
+      ),
+      NazaFeatureDestination(
+        id: 'health',
+        label: 'Health',
+        description: 'Open your private health command center.',
+        category: 'Health',
+        icon: Icons.monitor_heart_rounded,
+        accent: healthAccent,
+        onOpen: () => _openHealthPage(NazaHealthPage.today),
+      ),
+      NazaFeatureDestination(
+        id: 'walking',
+        label: 'Walking',
+        description: 'Track walking and metabolic response.',
+        category: 'Health',
+        icon: Icons.directions_walk_rounded,
+        accent: Color(0xFF8CE7D3),
+        onOpen: () => _openHealthPage(NazaHealthPage.walking),
+      ),
+      ..._healthDrawerDestinations(healthAccent),
+      NazaFeatureDestination(
+        id: 'bookforge',
+        label: 'BookForge',
+        description: 'Draft and refine long-form writing.',
+        category: 'Create',
+        icon: Icons.menu_book_rounded,
+        accent: Color(0xFFFFD27D),
+        onOpen: () => _setPanel(NazaPanel.book),
+      ),
+      ..._explorationDestinations(),
+      NazaFeatureDestination(
+        id: 'history',
+        label: 'History',
+        description: 'Browse private local conversations.',
+        category: 'System',
+        icon: Icons.history_rounded,
+        accent: Color(0xFFC2D1CC),
+        onOpen: () => _setPanel(NazaPanel.history),
+      ),
+      NazaFeatureDestination(
+        id: 'settings',
+        label: 'Settings',
+        description: 'Control models, memory, privacy, and appearance.',
+        category: 'System',
+        icon: Icons.settings_rounded,
+        accent: Color(0xFFB6C4FF),
+        onOpen: () => _setPanel(NazaPanel.settings),
+      ),
+    ];
+    return destinations;
+  }
+
+  List<NazaFeatureDestination> _explorationDestinations() {
+    const specs =
+        <(String, String, String, IconData, Color, NazaExplorationSection)>[
+          (
+            'findit',
+            'FindIt',
+            'Location-grounded place and service discovery.',
+            Icons.travel_explore_rounded,
+            Color(0xFF65DDF3),
+            NazaExplorationSection.findIt,
+          ),
+          (
+            'garden',
+            'Garden',
+            'Camera-assisted plant and garden intelligence.',
+            Icons.eco_rounded,
+            Color(0xFF72E59A),
+            NazaExplorationSection.garden,
+          ),
+          (
+            'drive',
+            'Drive',
+            'Route, stop, and delivery-area planning.',
+            Icons.directions_car_rounded,
+            Color(0xFF87C7FF),
+            NazaExplorationSection.drive,
+          ),
+          (
+            'predict',
+            'Predict',
+            'Location-aware scenario forecasting.',
+            Icons.query_stats_rounded,
+            Color(0xFFFFCB73),
+            NazaExplorationSection.predict,
+          ),
+          (
+            'heart-flow',
+            'Heart Flow',
+            'Personalized recovery and readiness reflection.',
+            Icons.favorite_rounded,
+            Color(0xFFFF7F9F),
+            NazaExplorationSection.heartFlow,
+          ),
+        ];
+    return specs
+        .map(
+          (spec) => NazaFeatureDestination(
+            id: spec.$1,
+            label: spec.$2,
+            description: spec.$3,
+            category: 'Intelligence',
+            icon: spec.$4,
+            accent: spec.$5,
+            onOpen: () => _openExplorationSection(spec.$6),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  List<NazaFeatureDestination> _healthDrawerDestinations(Color accent) {
+    const specs = <(String, String, String, IconData, NazaHealthPage)>[
+      (
+        'health-schedule',
+        'Schedule',
+        'Daily and weekly care schedule.',
+        Icons.calendar_month_rounded,
+        NazaHealthPage.schedule,
+      ),
+      (
+        'health-medications',
+        'Medications',
+        'Medication planner, logs, and safety.',
+        Icons.medication_rounded,
+        NazaHealthPage.medications,
+      ),
+      (
+        'health-dental',
+        'Dental',
+        'Dental routines and recovery.',
+        Icons.health_and_safety_rounded,
+        NazaHealthPage.dental,
+      ),
+      (
+        'health-exercise',
+        'Exercise',
+        'Movement goals and adaptive sessions.',
+        Icons.directions_run_rounded,
+        NazaHealthPage.exercise,
+      ),
+      (
+        'health-recovery',
+        'Recovery',
+        'Check-ins, streaks, and coping plans.',
+        Icons.spa_rounded,
+        NazaHealthPage.recovery,
+      ),
+      (
+        'health-meals',
+        'Meals',
+        'Private text and photo nutrition log.',
+        Icons.lunch_dining_rounded,
+        NazaHealthPage.meals,
+      ),
+      (
+        'health-meal-plan',
+        'Meal Plan',
+        'Seven-day pantry-aware planning.',
+        Icons.calendar_view_week_rounded,
+        NazaHealthPage.mealPlan,
+      ),
+      (
+        'health-weight',
+        'Body Goals',
+        'Weight trends and body goals.',
+        Icons.monitor_weight_rounded,
+        NazaHealthPage.weight,
+      ),
+      (
+        'health-groceries',
+        'Groceries',
+        'Plan-derived grocery list and ledger.',
+        Icons.shopping_cart_rounded,
+        NazaHealthPage.groceries,
+      ),
+      (
+        'health-intelligence',
+        'Insights',
+        'Daily and weekly health intelligence.',
+        Icons.insights_rounded,
+        NazaHealthPage.intelligence,
+      ),
+    ];
+    return specs
+        .map(
+          (spec) => NazaFeatureDestination(
+            id: spec.$1,
+            label: spec.$2,
+            description: spec.$3,
+            category: 'Health',
+            icon: spec.$4,
+            accent: accent,
+            onOpen: () => _openHealthPage(spec.$5),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  String get _selectedFeatureId {
+    if (_panel == NazaPanel.health) {
+      return switch (_healthPage) {
+        NazaHealthPage.today => 'health',
+        NazaHealthPage.walking => 'walking',
+        NazaHealthPage.schedule => 'health-schedule',
+        NazaHealthPage.medications => 'health-medications',
+        NazaHealthPage.dental => 'health-dental',
+        NazaHealthPage.exercise => 'health-exercise',
+        NazaHealthPage.recovery => 'health-recovery',
+        NazaHealthPage.meals => 'health-meals',
+        NazaHealthPage.mealPlan => 'health-meal-plan',
+        NazaHealthPage.weight => 'health-weight',
+        NazaHealthPage.groceries => 'health-groceries',
+        NazaHealthPage.intelligence => 'health-intelligence',
+        NazaHealthPage.workflow ||
+        NazaHealthPage.command ||
+        NazaHealthPage.foodShare => 'health',
+      };
+    }
+    if (_panel == NazaPanel.labs) {
+      return switch (_exploreSection) {
+        NazaExplorationSection.findIt => 'findit',
+        NazaExplorationSection.garden => 'garden',
+        NazaExplorationSection.drive => 'drive',
+        NazaExplorationSection.predict => 'predict',
+        NazaExplorationSection.heartFlow => 'heart-flow',
+      };
+    }
+    return switch (_panel) {
+      NazaPanel.chat => 'chat',
+      NazaPanel.roadScanner => 'road-scanner',
+      NazaPanel.foodWater => 'food-scanner',
+      NazaPanel.book => 'bookforge',
+      NazaPanel.labs => 'findit',
+      NazaPanel.history => 'history',
+      NazaPanel.settings => 'settings',
+      NazaPanel.health => 'health',
+    };
   }
 
   Widget _buildMainPanel([NazaPanel? panelOverride]) {
@@ -19840,6 +20193,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
         );
       case NazaPanel.health:
         return NazaHealthDashMonolith(
+          initialPage: _healthPage,
           agent: NazaHealthAgentBridge(
             runText: _runHealthText,
             runVision: _runHealthVision,
@@ -19858,7 +20212,11 @@ class _NazaStableHomeState extends State<NazaStableHome>
       case NazaPanel.book:
         return BookForgeApp(completion: _runBookText);
       case NazaPanel.labs:
-        return NazaExplorationHub(runPrompt: _runBookText);
+        return NazaExplorationHub(
+          runPrompt: _runExplorePrompt,
+          pickGardenImage: _pickGardenImage,
+          initialSection: _exploreSection,
+        );
       case NazaPanel.settings:
         return _SettingsPanel(
           actionsEnabled: !_sending,
@@ -20281,6 +20639,9 @@ class _TopStatusText extends StatelessWidget {
   }
 }
 
+// Retained temporarily for desktop migration rollback; the live shell uses
+// NazaUnifiedFeatureRail and never instantiates this legacy fixed rail.
+// ignore: unused_element
 class _SideRail extends StatelessWidget {
   final NazaPanel panel;
   final ValueChanged<NazaPanel> onPanel;
@@ -20417,129 +20778,6 @@ class _RailButton extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _BottomTabs extends StatelessWidget {
-  final NazaPanel panel;
-  final ValueChanged<NazaPanel> onPanel;
-
-  const _BottomTabs({required this.panel, required this.onPanel});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 62,
-      decoration: BoxDecoration(
-        color: NazaPalette.shell,
-        border: Border(top: BorderSide(color: NazaPalette.border)),
-      ),
-      child: Row(
-        children: [
-          _BottomTab(
-            icon: Icons.chat_rounded,
-            label: 'Chat',
-            selected: panel == NazaPanel.chat,
-            onTap: () => onPanel(NazaPanel.chat),
-          ),
-          _BottomTab(
-            icon: Icons.route_rounded,
-            label: 'Road',
-            selected: panel == NazaPanel.roadScanner,
-            onTap: () => onPanel(NazaPanel.roadScanner),
-          ),
-          _BottomTab(
-            icon: Icons.water_drop_rounded,
-            label: 'Food',
-            selected: panel == NazaPanel.foodWater,
-            onTap: () => onPanel(NazaPanel.foodWater),
-          ),
-          _BottomTab(
-            icon: Icons.menu_book_rounded,
-            label: 'Book',
-            selected: panel == NazaPanel.book,
-            onTap: () => onPanel(NazaPanel.book),
-          ),
-          _BottomTab(
-            icon: Icons.settings_rounded,
-            label: 'Settings',
-            selected: panel == NazaPanel.settings,
-            onTap: () => onPanel(NazaPanel.settings),
-          ),
-          _BottomTab(
-            icon: Icons.history_rounded,
-            label: 'History',
-            selected: panel == NazaPanel.history,
-            onTap: () => onPanel(NazaPanel.history),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _BottomTab extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _BottomTab({
-    required this.icon,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-          margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 7),
-          decoration: BoxDecoration(
-            color: selected ? NazaPalette.selection : Colors.transparent,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: selected ? NazaPalette.borderStrong : Colors.transparent,
-            ),
-          ),
-          child: AnimatedScale(
-            scale: selected ? 1.06 : 1.0,
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    icon,
-                    color: selected
-                        ? NazaPalette.mintSoft
-                        : NazaPalette.subtext,
-                    size: selected ? 22 : 20,
-                  ),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      color: selected ? NazaPalette.text : NazaPalette.subtext,
-                      fontSize: 10,
-                      fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
             ),
           ),
         ),

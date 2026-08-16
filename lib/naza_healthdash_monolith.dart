@@ -6043,11 +6043,13 @@ final class NazaHealthDashMonolith extends StatefulWidget {
   final NazaHealthAgentBridge agent;
   final NazaExistingSurfaceBridge existing;
   final NazaHealthVault? vault;
+  final NazaHealthPage initialPage;
   const NazaHealthDashMonolith({
     super.key,
     required this.agent,
     required this.existing,
     this.vault,
+    this.initialPage = NazaHealthPage.today,
   });
   @override
   State<NazaHealthDashMonolith> createState() => _NazaHealthDashMonolithState();
@@ -6056,7 +6058,7 @@ final class NazaHealthDashMonolith extends StatefulWidget {
 class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
   late final NazaHealthVault vault = widget.vault ?? NazaHealthVault();
   NazaHealthState state = const NazaHealthState();
-  NazaHealthPage page = NazaHealthPage.today;
+  late NazaHealthPage page = widget.initialPage;
   bool loading = true;
   bool flowRunning = false;
   String? bootError;
@@ -6066,6 +6068,15 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
   void initState() {
     super.initState();
     unawaited(_boot());
+  }
+
+  @override
+  void didUpdateWidget(covariant NazaHealthDashMonolith oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialPage != widget.initialPage &&
+        page != widget.initialPage) {
+      setState(() => page = widget.initialPage);
+    }
   }
 
   Future<void> _boot() async {
@@ -6368,13 +6379,6 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
     return Theme(
       data: Theme.of(context).copyWith(colorScheme: scheme),
       child: Scaffold(
-        drawer: _AdvancedHealthDrawer(
-          state: state,
-          selected: page,
-          existing: widget.existing,
-          onSelect: (p) => setState(() => page = p),
-          onPersonality: (p) => unawaited(_persist(state.copyWith(personality: p))),
-        ),
         appBar: AppBar(
           title: Text(_pageLabel(page)),
           actions: [
