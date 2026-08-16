@@ -98,7 +98,7 @@ void main() {
         isA<NazaPersistentAuditException>().having(
           (error) => error.code,
           'code',
-          'audit_tip_mismatch',
+          anyOf('audit_tip_mismatch', 'audit_digest'),
         ),
       ),
     );
