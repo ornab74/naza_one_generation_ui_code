@@ -70,7 +70,7 @@ jobs:
 
   android:
     name: Android APK/AAB
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android' }}
     runs-on: ubuntu-24.04
     needs: analyze
     steps:
@@ -103,7 +103,7 @@ jobs:
 
   linux:
     name: Linux x64
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
     runs-on: ubuntu-24.04
     needs: analyze
     steps:
@@ -133,7 +133,7 @@ jobs:
 
   windows:
     name: Windows x64
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}
     runs-on: windows-2022
     needs: analyze
     steps:
@@ -213,7 +213,7 @@ jobs:
 
   macos:
     name: macOS
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}
     runs-on: macos-15
     needs: analyze
     steps:

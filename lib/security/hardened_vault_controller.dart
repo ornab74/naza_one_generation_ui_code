@@ -390,10 +390,9 @@ final class NazaHardenedVaultController {
             'Protected rollback state exists but encrypted v2 security state is missing.',
           );
         }
-        await _writeSecurityMetadata(
-          epoch: epoch,
-          headerGeneration: snapshot.headerGeneration,
-        );
+        // The encrypted metadata is written only after the protected rollback
+        // floor is committed below. This prevents a half-established v2
+        // security state when the external floor write fails.
       }
 
       final nextKernel = await _createEpochKernel(snapshot.vaultId, epoch);
@@ -407,6 +406,12 @@ final class NazaHardenedVaultController {
         _rollbackGuard = guard;
         _securityEpoch = epoch;
         await guard.commit(epoch);
+        if (migration) {
+          await _writeSecurityMetadata(
+            epoch: epoch,
+            headerGeneration: snapshot.headerGeneration,
+          );
+        }
         if (migration && legacyRaw != null) {
           await vault.delete(_securityStateNamespace, _legacySecurityStateKey);
         }

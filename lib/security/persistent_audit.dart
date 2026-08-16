@@ -274,6 +274,22 @@ final class NazaPersistentForwardAudit {
           'Persistent audit hash chain is broken.',
         );
       }
+      final body = <String, Object?>{
+        'format': _auditFormat,
+        'sequence': entry.sequence,
+        'securityEpoch': entry.securityEpoch,
+        'event': entry.event,
+        'data': _canonicalize(entry.data),
+        'previous': entry.previous,
+        'mac': entry.mac,
+      };
+      final expectedDigest = await _digestFor(body);
+      if (!_constantTimeTextEquals(expectedDigest, entry.digest)) {
+        throw const NazaPersistentAuditException(
+          'audit_digest',
+          'Persistent audit entry content digest is invalid.',
+        );
+      }
       expectedPrevious = entry.digest;
     }
     if (expectedPrevious != _tip) {

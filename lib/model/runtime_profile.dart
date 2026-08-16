@@ -245,13 +245,14 @@ final class NazaRuntimeTelemetry {
       );
 
   static NazaLiteRtRuntimeProfile _initialProfile() {
-    final windows = Platform.isWindows;
     return NazaLiteRtRuntimeProfile(
       platform: Platform.operatingSystem,
       dartBridge: modernDartBridge,
-      nativeRuntime: windows ? windowsNativeRuntime : 'published-modern',
-      windowsGpuNoCache: windows,
-      windowsSerializedWeightUpload: windows,
+      // Do not report packaging/runtime facts as observed telemetry. These
+      // become true only when the native adapter explicitly marks them.
+      nativeRuntime: 'unverified',
+      windowsGpuNoCache: false,
+      windowsSerializedWeightUpload: false,
       requestedBackend: NazaInferenceBackend.unknown,
       actualBackend: NazaInferenceBackend.unknown,
       attemptState: NazaBackendAttemptState.idle,

@@ -86,6 +86,7 @@ jobs:
       - name: Run complete release gate
         run: >-
           flutter test --no-pub
+          test/
           test_archive/food_repository_test.dart
           test_archive/food_vision_logic_test.dart
           test_archive/shelf_scanner_test.dart

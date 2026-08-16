@@ -243,7 +243,7 @@ final class NazaPausableModelDownloader {
       fastestProvider: _fastestProvider(),
     ));
 
-    await _verifyParts(staging);
+    await _verifyParts(staging, journal, spool);
     final digest = await _sha256Range(staging, 0, totalBytes);
     if (digest.toLowerCase() != manifest.expectedSha256.toLowerCase()) {
       await _discard(staging, journal, spool);
@@ -252,8 +252,21 @@ final class NazaPausableModelDownloader {
       );
     }
 
-    if (await target.exists()) await target.delete();
-    await staging.rename(target.path);
+    final previous = File('${target.path}.previous');
+    if (await previous.exists()) await previous.delete();
+    var backedUp = false;
+    try {
+      if (await target.exists()) {
+        await target.rename(previous.path);
+        backedUp = true;
+      }
+      await staging.rename(target.path);
+      if (backedUp && await previous.exists()) await previous.delete();
+    } catch (_) {
+      if (await target.exists()) await target.delete();
+      if (backedUp && await previous.exists()) await previous.rename(target.path);
+      rethrow;
+    }
     if (await journal.exists()) await journal.delete();
     if (await spool.exists()) await spool.delete(recursive: true);
     stopwatch.stop();
@@ -621,12 +634,16 @@ final class NazaPausableModelDownloader {
     }
   }
 
-  Future<void> _verifyParts(File staging) async {
+  Future<void> _verifyParts(File staging, File journal, Directory spool) async {
     var offset = 0;
     for (final part in manifest.parts) {
       await control.checkpoint();
       final digest = await _sha256Range(staging, offset, part.expectedBytes);
       if (digest.toLowerCase() != part.expectedSha256.toLowerCase()) {
+        // A corrupt completed assembly must not remain resumable. Otherwise
+        // the journal can claim all chunks are present and repeat the same
+        // failure forever on every subsequent launch.
+        await _discard(staging, journal, spool);
         throw NazaModelDistributionException(
           'Part ${part.index} SHA-256 mismatch. Expected ${part.expectedSha256}, got $digest.',
         );
