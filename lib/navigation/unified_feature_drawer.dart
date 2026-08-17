@@ -13,6 +13,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+bool _sameDestinationIds(
+  List<NazaFeatureDestination> a,
+  List<NazaFeatureDestination> b,
+) {
+  if (a.length != b.length) return false;
+  for (var index = 0; index < a.length; index++) {
+    if (a[index].id != b[index].id) return false;
+  }
+  return true;
+}
+
 /// A closed, in-process navigation target. Persisted data contains IDs only;
 /// callbacks and labels always come from this trusted registry.
 final class NazaFeatureDestination {
@@ -124,6 +135,7 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
   final NazaFeaturePinStore _store = const NazaFeaturePinStore();
   List<String> _pins = NazaFeaturePinPolicy.defaults;
   bool _loaded = false;
+  bool _saving = false;
 
   Set<String> get _allowed => widget.destinations.map((e) => e.id).toSet();
 
@@ -136,7 +148,7 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
   @override
   void didUpdateWidget(covariant NazaUnifiedFeatureDrawer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.destinations, widget.destinations)) {
+    if (!_sameDestinationIds(oldWidget.destinations, widget.destinations)) {
       final clean = NazaFeaturePinPolicy.sanitize(_pins, _allowed);
       if (!_sameIds(clean, _pins)) {
         _pins = clean;
@@ -155,10 +167,13 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
   }
 
   Future<void> _togglePin(String id) async {
-    if (!_loaded) {
-      _message('Loading your saved wheel settings…');
+    if (!_loaded || _saving) {
+      if (!_loaded) {
+        _message('Loading your saved wheel settings…');
+      }
       return;
     }
+    _saving = true;
     if (!_allowed.contains(id)) return;
     if (id == NazaFeaturePinPolicy.requiredId) {
       _message('Chat stays pinned in the center.');
@@ -180,10 +195,15 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
     final clean = NazaFeaturePinPolicy.sanitize(next, _allowed);
     final previous = List<String>.from(_pins);
     final saved = await _store.save(clean, _allowed);
+    _saving = false;
     if (!mounted) return;
     if (saved) {
       setState(() => _pins = clean);
-      _message(next.contains(id) ? 'Pinned to your wheel.' : 'Removed from your wheel.');
+      _message(
+        next.contains(id)
+            ? 'Pinned to your wheel.'
+            : 'Removed from your wheel.',
+      );
     } else {
       setState(() => _pins = previous);
       _message('Could not save wheel settings. Your previous pins were kept.');
@@ -345,6 +365,8 @@ final class NazaUnifiedFeatureRail extends StatefulWidget {
 class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
   final _store = const NazaFeaturePinStore();
   List<String> _pins = NazaFeaturePinPolicy.defaults;
+  bool _loaded = false;
+  bool _saving = false;
   Set<String> get _allowed => widget.destinations.map((e) => e.id).toSet();
 
   @override
@@ -355,16 +377,23 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
 
   Future<void> _load() async {
     final pins = await _store.load(_allowed);
-    if (mounted) setState(() => _pins = pins);
+    if (mounted) {
+      setState(() {
+        _pins = pins;
+        _loaded = true;
+      });
+    }
   }
 
   @override
   void didUpdateWidget(covariant NazaUnifiedFeatureRail oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.destinations, widget.destinations)) {
+    if (!_sameDestinationIds(oldWidget.destinations, widget.destinations)) {
       final clean = NazaFeaturePinPolicy.sanitize(_pins, _allowed);
       if (clean.length != _pins.length ||
-          clean.asMap().entries.any((entry) => entry.value != _pins[entry.key])) {
+          clean.asMap().entries.any(
+            (entry) => entry.value != _pins[entry.key],
+          )) {
         _pins = clean;
         unawaited(_store.save(clean, _allowed));
       }
@@ -379,8 +408,11 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
   }
 
   Future<void> _toggle(String id) async {
+    if (!_loaded || _saving) return;
     if (!_allowed.contains(id) || id == NazaFeaturePinPolicy.requiredId) return;
+    _saving = true;
     final next = List<String>.from(_pins);
+    final previous = List<String>.from(_pins);
     if (!next.remove(id)) {
       if (next.length >= NazaFeaturePinPolicy.maxPins) {
         if (mounted)
@@ -394,8 +426,10 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
       next.add(id);
     }
     final clean = NazaFeaturePinPolicy.sanitize(next, _allowed);
-    setState(() => _pins = clean);
-    await _store.save(clean, _allowed);
+    if (mounted) setState(() => _pins = clean);
+    final saved = await _store.save(clean, _allowed);
+    _saving = false;
+    if (mounted && !saved) setState(() => _pins = previous);
   }
 
   void _open(NazaFeatureDestination item) {
@@ -829,15 +863,18 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
   String _category = 'All';
   String _query = '';
 
-  List<NazaFeatureDestination> get _visible => widget.destinations.where((e) {
-    final categoryMatch = _category == 'All' || e.category == _category;
-    final query = _query.trim().toLowerCase();
-    final queryMatch = query.isEmpty ||
-        e.label.toLowerCase().contains(query) ||
-        e.category.toLowerCase().contains(query) ||
-        e.description.toLowerCase().contains(query);
-    return categoryMatch && queryMatch;
-  }).toList(growable: false);
+  List<NazaFeatureDestination> get _visible => widget.destinations
+      .where((e) {
+        final categoryMatch = _category == 'All' || e.category == _category;
+        final query = _query.trim().toLowerCase();
+        final queryMatch =
+            query.isEmpty ||
+            e.label.toLowerCase().contains(query) ||
+            e.category.toLowerCase().contains(query) ||
+            e.description.toLowerCase().contains(query);
+        return categoryMatch && queryMatch;
+      })
+      .toList(growable: false);
 
   @override
   void initState() {

@@ -352,10 +352,12 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Food'));
     await tester.pump();
-    await tester.tap(find.text('More'));
+    await tester.tap(find.byTooltip('View and configure all features'));
     await tester.pump();
+    await tester.tap(find.text('Food More'));
+    await tester.pump(const Duration(milliseconds: 300));
 
-    final kitchenContext = tester.element(find.text('Naza Kitchen'));
+    final kitchenContext = tester.element(find.byType(Scaffold).last);
     final kitchenScheme = Theme.of(kitchenContext).colorScheme;
     final selectedTheme = NazaBootThemeCatalog.byId('synthwave');
     expect(kitchenScheme.secondary, selectedTheme.seed);

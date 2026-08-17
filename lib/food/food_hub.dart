@@ -113,8 +113,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 960;
+      builder: (context, _) {
         // Keep already visited tabs alive, but do not build hidden workspaces
         // on the first frame. The legacy More workspace is intentionally
         // large and used to cause a visible build hitch on Fridge startup.
@@ -126,73 +125,11 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
           ],
         );
 
-        return Scaffold(
-          body: wide
-              ? Row(
-                  children: <Widget>[
-                    NavigationRail(
-                      selectedIndex: _tab.index,
-                      onDestinationSelected: (index) =>
-                          setState(() => _tab = _WorkspaceTab.values[index]),
-                      labelType: NavigationRailLabelType.all,
-                      destinations: const <NavigationRailDestination>[
-                        NavigationRailDestination(
-                          icon: Icon(Icons.menu_book_outlined),
-                          selectedIcon: Icon(Icons.menu_book_rounded),
-                          label: Text('Recipes'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.kitchen_outlined),
-                          selectedIcon: Icon(Icons.kitchen_rounded),
-                          label: Text('Fridge'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.shelves),
-                          selectedIcon: Icon(Icons.inventory_2_rounded),
-                          label: Text('Shelf'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.dashboard_customize_outlined),
-                          selectedIcon: Icon(Icons.dashboard_customize_rounded),
-                          label: Text('More'),
-                        ),
-                      ],
-                    ),
-                    const VerticalDivider(width: 1),
-                    Expanded(child: body),
-                  ],
-                )
-              : body,
-          bottomNavigationBar: wide
-              ? null
-              : NavigationBar(
-                  selectedIndex: _tab.index,
-                  onDestinationSelected: (index) =>
-                      setState(() => _tab = _WorkspaceTab.values[index]),
-                  destinations: const <NavigationDestination>[
-                    NavigationDestination(
-                      icon: Icon(Icons.menu_book_outlined),
-                      selectedIcon: Icon(Icons.menu_book_rounded),
-                      label: 'Recipes',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.kitchen_outlined),
-                      selectedIcon: Icon(Icons.kitchen_rounded),
-                      label: 'Fridge',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.shelves),
-                      selectedIcon: Icon(Icons.inventory_2_rounded),
-                      label: 'Shelf',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.dashboard_customize_outlined),
-                      selectedIcon: Icon(Icons.dashboard_customize_rounded),
-                      label: 'More',
-                    ),
-                  ],
-                ),
-        );
+        // App-level navigation is owned by NazaUnifiedFeatureDrawer/Rail.
+        // Food workspaces remain content modes and are opened from the global
+        // wheel (Recipes, Fridge, Shelf, and Food More), preventing a second
+        // competing rail or bottom navigation bar from consuming the shell.
+        return Scaffold(body: body);
       },
     );
   }
