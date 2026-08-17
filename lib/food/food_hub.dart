@@ -31,6 +31,7 @@ class FoodVisionHub extends StatefulWidget {
   final VoidCallback onCancel;
   final Widget? foodSafetyChild;
   final legacy.FoodVisionDraftController? draftController;
+  final String initialWorkspace;
 
   const FoodVisionHub({
     super.key,
@@ -42,20 +43,32 @@ class FoodVisionHub extends StatefulWidget {
     required this.onCancel,
     this.foodSafetyChild,
     this.draftController,
+    this.initialWorkspace = 'fridge',
   });
 
   @override
   State<FoodVisionHub> createState() => _FoodVisionHubState();
 }
 
-enum _WorkspaceTab { fridge, shelf, more }
+enum _WorkspaceTab { fridge, shelf, recipes, more }
 
 enum _PhotoChoice { camera, gallery, files }
 
 class _FoodVisionHubState extends State<FoodVisionHub> {
   final ShelfRepository _shelfRepository = EncryptedShelfRepository();
   final Map<_WorkspaceTab, Widget> _tabCache = <_WorkspaceTab, Widget>{};
-  _WorkspaceTab _tab = _WorkspaceTab.fridge;
+  late _WorkspaceTab _tab;
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = switch (widget.initialWorkspace) {
+      'recipes' => _WorkspaceTab.recipes,
+      'shelf' => _WorkspaceTab.shelf,
+      'more' => _WorkspaceTab.more,
+      _ => _WorkspaceTab.fridge,
+    };
+  }
 
   Widget _tabFor(_WorkspaceTab tab) {
     return _tabCache.putIfAbsent(tab, () {
@@ -71,6 +84,17 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
           photoPicker: widget.photoPicker,
           analyzeVision: widget.analyzeFridgeImage,
           onCancel: widget.onCancel,
+        ),
+        _WorkspaceTab.recipes => legacy.FoodVisionHub(
+          repository: widget.repository,
+          photoPicker: widget.photoPicker,
+          analyzeFridgeImage: widget.analyzeFridgeImage,
+          analyzeBakeImage: widget.analyzeBakeImage,
+          regenerateRecipes: widget.regenerateRecipes,
+          onCancel: widget.onCancel,
+          foodSafetyChild: widget.foodSafetyChild,
+          draftController: widget.draftController,
+          openRecipes: true,
         ),
         _WorkspaceTab.more => legacy.FoodVisionHub(
           repository: widget.repository,
@@ -113,6 +137,11 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
                       labelType: NavigationRailLabelType.all,
                       destinations: const <NavigationRailDestination>[
                         NavigationRailDestination(
+                          icon: Icon(Icons.menu_book_outlined),
+                          selectedIcon: Icon(Icons.menu_book_rounded),
+                          label: Text('Recipes'),
+                        ),
+                        NavigationRailDestination(
                           icon: Icon(Icons.kitchen_outlined),
                           selectedIcon: Icon(Icons.kitchen_rounded),
                           label: Text('Fridge'),
@@ -141,6 +170,11 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
                   onDestinationSelected: (index) =>
                       setState(() => _tab = _WorkspaceTab.values[index]),
                   destinations: const <NavigationDestination>[
+                    NavigationDestination(
+                      icon: Icon(Icons.menu_book_outlined),
+                      selectedIcon: Icon(Icons.menu_book_rounded),
+                      label: 'Recipes',
+                    ),
                     NavigationDestination(
                       icon: Icon(Icons.kitchen_outlined),
                       selectedIcon: Icon(Icons.kitchen_rounded),

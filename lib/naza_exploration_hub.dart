@@ -7,6 +7,7 @@
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -29,6 +30,46 @@ final class NazaExploreImage {
     this.width = 1,
     this.height = 1,
   });
+}
+
+final class _GardenLogEntry {
+  final DateTime date;
+  final String plant;
+  final double height;
+  final double width;
+  final int health;
+  final String kind;
+  const _GardenLogEntry({required this.date, required this.plant, required this.height, required this.width, required this.health, required this.kind});
+}
+
+final class _GardenChartPainter extends CustomPainter {
+  final List<_GardenLogEntry> entries;
+  const _GardenChartPainter(this.entries);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (entries.isEmpty) return;
+    final maxHeight = entries.map((e) => e.height).reduce(math.max);
+    final maxWidth = entries.map((e) => e.width).reduce(math.max);
+    final paint = Paint()..strokeWidth = 3..style = PaintingStyle.stroke;
+    void line(double Function(_GardenLogEntry) value, Color color, double max) {
+      paint.color = color;
+      final path = Path();
+      for (var i = 0; i < entries.length; i++) {
+        final x = entries.length == 1 ? size.width / 2 : i * size.width / (entries.length - 1);
+        final y = size.height - (value(entries[i]) / max.clamp(1, double.infinity)) * (size.height - 20);
+        if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+        canvas.drawCircle(Offset(x, y), 4, Paint()..color = color);
+      }
+      canvas.drawPath(path, paint);
+    }
+    line((e) => e.height, const Color(0xFF42A5F5), maxHeight);
+    line((e) => e.width, const Color(0xFF66BB6A), maxWidth);
+    line((e) => e.health.toDouble(), const Color(0xFFFFB74D), 10);
+  }
+
+  @override
+  bool shouldRepaint(covariant _GardenChartPainter oldDelegate) => oldDelegate.entries != entries;
 }
 
 enum NazaExplorationSection { findIt, garden, drive, predict, heartFlow }
@@ -92,6 +133,13 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       _predictPrompt = 'Forecast demand and timing';
   String _heartPrompt = 'Recovery and readiness reflection';
   final List<NazaExploreImage> _gardenImages = <NazaExploreImage>[];
+  final _gardenPlant = TextEditingController();
+  final _gardenHeight = TextEditingController();
+  final _gardenWidth = TextEditingController();
+  final _gardenHealth = TextEditingController(text: '7');
+  String _gardenKind = 'Plant';
+  String? _selectedGardenOrganism;
+  final List<_GardenLogEntry> _gardenLog = <_GardenLogEntry>[];
 
   @override
   void didUpdateWidget(covariant NazaExplorationHub oldWidget) {
@@ -115,6 +163,10 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       _heartName,
       _heartAge,
       _heartBaseline,
+      _gardenPlant,
+      _gardenHeight,
+      _gardenWidth,
+      _gardenHealth,
     ]) {
       c.dispose();
     }
@@ -240,7 +292,7 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       NazaExplorationSection.findIt =>
         'Task: $_findPrompt\nLocation: ${_findLocation.text.trim()}\nPreferences: $details',
       NazaExplorationSection.garden =>
-        'Task: $_gardenPrompt\nImages (${_gardenImages.length}): ${_gardenImages.map((image) => '${image.name} (${image.width}x${image.height})').join(', ')}\nObservations/request: $details',
+        'Task: $_gardenPrompt\nSubject type: $_gardenKind\nImages (${_gardenImages.length}): ${_gardenImages.map((image) => '${image.name} (${image.width}x${image.height})').join(', ')}\nLogged observations: ${_gardenLog.map((e) => '${e.kind}:${e.plant}, height=${e.height}cm, width=${e.width}cm, health=${e.health}/10').join('; ')}\nObservations/request: $details',
       NazaExplorationSection.drive =>
         'Task: $_drivePrompt\nStart/service area: ${_driveLocation.text.trim()}\nDestination: ${_optional(_driveDestination)}\nConstraints: $details',
       NazaExplorationSection.predict =>
@@ -422,7 +474,40 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
           'Compare camping or outdoor areas',
           'Build a verification checklist',
         ], (v) => _findPrompt = v),
-        _gap,
+                _gap,
+        if (s == NazaExplorationSection.garden) ...[
+          _dropdown('Garden subject', _gardenKind, const ['Plant', 'Mushroom', 'Soil / habitat'], (v) => _gardenKind = v),
+          _gap,
+          if (_gardenLog.isNotEmpty)
+            _dropdown('Previously logged subject', _selectedGardenOrganism ?? 'New observation', [
+              'New observation',
+              ..._gardenLog.map((e) => e.plant).toSet(),
+            ], (v) {
+              _selectedGardenOrganism = v == 'New observation' ? null : v;
+              if (_selectedGardenOrganism != null) _gardenPlant.text = _selectedGardenOrganism!;
+            }),
+          if (_gardenLog.isNotEmpty) _gap,
+          Row(children: [
+            Expanded(child: _field(_gardenPlant, 'Plant name', 'Tomato, basil, unknown…', Icons.local_florist)),
+            const SizedBox(width: 8),
+            Expanded(child: _field(_gardenHeight, 'Height (cm)', 'Estimated or measured', Icons.height)),
+            const SizedBox(width: 8),
+            Expanded(child: _field(_gardenWidth, 'Width (cm)', 'Estimated canopy width', Icons.straighten)),
+          ]),
+          _gap,
+          _field(_gardenHealth, 'Health rating (0–10)', 'Your observation; not a diagnosis', Icons.health_and_safety_outlined),
+          _gap,
+          OutlinedButton.icon(
+            onPressed: _gardenLogEntry,
+            icon: const Icon(Icons.add_chart_rounded),
+            label: const Text('Save garden observation'),
+          ),
+          if (_gardenLog.isNotEmpty) ...[
+            _gap,
+            SizedBox(height: 180, child: CustomPaint(painter: _GardenChartPainter(_gardenLog))),
+          ],
+          _gap,
+        ],
         details,
       ],
       NazaExplorationSection.garden => [
@@ -610,6 +695,27 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       if (v != null) setState(() => change(v));
     },
   );
+
+  void _gardenLogEntry() {
+    final height = double.tryParse(_gardenHeight.text.trim());
+    final width = double.tryParse(_gardenWidth.text.trim());
+    final health = int.tryParse(_gardenHealth.text.trim());
+    if (height == null || width == null || health == null || height <= 0 || width <= 0 || health < 0 || health > 10) {
+      setState(() => _error = 'Enter positive height and width estimates to save a garden observation.');
+      return;
+    }
+    setState(() {
+      _gardenLog.add(_GardenLogEntry(
+        date: DateTime.now(),
+        plant: _gardenPlant.text.trim().isEmpty ? 'Unnamed plant' : _gardenPlant.text.trim(),
+        height: height,
+        width: width,
+        health: health,
+        kind: _gardenKind,
+      ));
+      _error = null;
+    });
+  }
   String _detailLabel(NazaExplorationSection s) => switch (s) {
     NazaExplorationSection.findIt => 'What should FindIt locate or compare?',
     NazaExplorationSection.garden => 'Garden details and your request',

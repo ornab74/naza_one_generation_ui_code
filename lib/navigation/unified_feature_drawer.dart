@@ -827,10 +827,17 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
   late final PageController _controller;
   double _page = 0;
   String _category = 'All';
+  String _query = '';
 
-  List<NazaFeatureDestination> get _visible => _category == 'All'
-      ? widget.destinations
-      : widget.destinations.where((e) => e.category == _category).toList();
+  List<NazaFeatureDestination> get _visible => widget.destinations.where((e) {
+    final categoryMatch = _category == 'All' || e.category == _category;
+    final query = _query.trim().toLowerCase();
+    final queryMatch = query.isEmpty ||
+        e.label.toLowerCase().contains(query) ||
+        e.category.toLowerCase().contains(query) ||
+        e.description.toLowerCase().contains(query);
+    return categoryMatch && queryMatch;
+  }).toList(growable: false);
 
   @override
   void initState() {
@@ -916,6 +923,32 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
+            child: TextField(
+              onChanged: (value) => setState(() {
+                _query = value;
+                _page = 0;
+                if (_controller.hasClients) _controller.jumpToPage(0);
+              }),
+              style: TextStyle(color: widget.text),
+              decoration: InputDecoration(
+                hintText: 'Search all ${widget.destinations.length} features',
+                hintStyle: TextStyle(color: widget.subtext),
+                prefixIcon: Icon(Icons.search_rounded, color: widget.subtext),
+                filled: true,
+                fillColor: widget.panel,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide: BorderSide(color: widget.border),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide: BorderSide(color: widget.border),
+                ),
+              ),
+            ),
+          ),
           SizedBox(
             height: 40,
             child: ListView.separated(
@@ -930,6 +963,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
                   selected: category == _category,
                   onSelected: (_) => setState(() {
                     _category = category;
+                    _query = '';
                     _page = 0;
                     if (_controller.hasClients) _controller.jumpToPage(0);
                   }),

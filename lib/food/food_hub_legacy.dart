@@ -65,6 +65,7 @@ class FoodVisionHub extends StatefulWidget {
   final VoidCallback onCancel;
   final Widget? foodSafetyChild;
   final FoodVisionDraftController? draftController;
+  final bool openRecipes;
 
   const FoodVisionHub({
     super.key,
@@ -76,6 +77,7 @@ class FoodVisionHub extends StatefulWidget {
     required this.onCancel,
     this.foodSafetyChild,
     this.draftController,
+    this.openRecipes = false,
   });
 
   @override
@@ -115,7 +117,8 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
   TextEditingController get _targetTemperature => _draft.targetTemperature;
   TextEditingController get _bakeNotes => _draft.bakeNotes;
 
-  _FoodHubTab _tab = _FoodHubTab.fridge;
+  late _FoodHubTab _tab;
+
   _HubTask? _task;
   FoodVisionImage? _fridgeImage;
   FoodVisionImage? _bakeImage;
@@ -130,6 +133,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
   @override
   void initState() {
     super.initState();
+    _tab = widget.openRecipes ? _FoodHubTab.recipes : _FoodHubTab.fridge;
     _ownsDraft = widget.draftController == null;
     _draft = widget.draftController ?? FoodVisionDraftController();
     widget.repository.revision.addListener(_handleRepositoryRevision);

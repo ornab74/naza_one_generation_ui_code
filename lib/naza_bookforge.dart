@@ -8,11 +8,11 @@
 // LLM-CONTEXT:END
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xml/xml.dart';
@@ -1157,6 +1157,7 @@ class _StudioScreenState extends State<StudioScreen> {
   List<RepositoryBook> _remoteBooks = <RepositoryBook>[];
   BookDocument? _selected;
   Timer? _saveTimer;
+  Timer? _editorUiTimer;
   Future<void> _saveQueue = Future<void>.value();
   int _saveRevision = 0;
   int _page = 0;
@@ -1189,6 +1190,7 @@ class _StudioScreenState extends State<StudioScreen> {
   @override
   void dispose() {
     _saveTimer?.cancel();
+    _editorUiTimer?.cancel();
     _streamPaintTimer?.cancel();
     _generationCancellation?.cancel();
     for (final TextEditingController controller in <TextEditingController>[
@@ -1255,10 +1257,14 @@ class _StudioScreenState extends State<StudioScreen> {
   }
 
   void _select(BookDocument book) {
+    if (_selected?.id == book.id) return;
+    // Selection can race with the editor's debounce callback. Detach the
+    // listener while replacing the document so the incoming book is never
+    // treated as an edit to the outgoing book.
     _editor.removeListener(_editorChanged);
     _editor.text = book.content;
     _editor.addListener(_editorChanged);
-    setState(() => _selected = book);
+    if (mounted) setState(() => _selected = book);
   }
 
   void _editorChanged() {
@@ -1268,15 +1274,20 @@ class _StudioScreenState extends State<StudioScreen> {
       (BookDocument book) => book.id == current.id,
     );
     if (index < 0) return;
+    if (index < 0) return;
     final BookDocument updated = current.copyWith(
       content: _editor.text,
       status: BookStatus.draft,
       updatedAt: DateTime.now(),
     );
-    setState(() {
-      _books[index] = updated;
-      _selected = updated;
-      _saving = true;
+    _books[index] = updated;
+    _selected = updated;
+    // Do not rebuild the complete library/Markdown tree for every keystroke.
+    // The editor owns its text rendering; header/status refresh is throttled.
+    if (!_saving && mounted) setState(() => _saving = true);
+    _editorUiTimer?.cancel();
+    _editorUiTimer = Timer(const Duration(milliseconds: 120), () {
+      if (mounted) setState(() {});
     });
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 600), () {
@@ -1803,6 +1814,8 @@ class _StudioScreenState extends State<StudioScreen> {
 
   Widget _library() {
     if (_loading) return const Center(child: CircularProgressIndicator());
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final List<BookDocument> visibleBooks = _visibleBooks;
     return Row(
       children: <Widget>[
         SizedBox(
@@ -1814,12 +1827,13 @@ class _StudioScreenState extends State<StudioScreen> {
               children: <Widget>[
                 Row(
                   children: <Widget>[
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         'BookForge',
                         style: TextStyle(
                           fontSize: 26,
                           fontWeight: FontWeight.w900,
+                          color: scheme.onSurface,
                         ),
                       ),
                     ),
@@ -1836,8 +1850,8 @@ class _StudioScreenState extends State<StudioScreen> {
                   ],
                 ),
                 Text(
-                  '${_visibleBooks.length} books',
-                  style: const TextStyle(color: Color(0xFF8993A6)),
+                  '${visibleBooks.length} books',
+                  style: TextStyle(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -1849,7 +1863,7 @@ class _StudioScreenState extends State<StudioScreen> {
                 ),
                 const SizedBox(height: 14),
                 Expanded(
-                  child: _visibleBooks.isEmpty
+                  child: visibleBooks.isEmpty
                       ? const EmptyPanel(
                           icon: Icons.library_books_outlined,
                           title: 'No books yet',
@@ -1857,15 +1871,15 @@ class _StudioScreenState extends State<StudioScreen> {
                               'Import Markdown, text, or DOCX books, or generate a new manuscript.',
                         )
                       : ListView.separated(
-                          itemCount: _visibleBooks.length,
+                          itemCount: visibleBooks.length,
                           separatorBuilder: (_, _) => const SizedBox(height: 8),
                           itemBuilder: (BuildContext context, int index) {
-                            final BookDocument book = _visibleBooks[index];
+                            final BookDocument book = visibleBooks[index];
                             final bool active = _selected?.id == book.id;
                             return Material(
                               color: active
-                                  ? const Color(0xFF28213F)
-                                  : const Color(0xFF12171F),
+                                  ? scheme.primaryContainer
+                                  : scheme.surfaceContainerHighest,
                               borderRadius: BorderRadius.circular(14),
                               child: InkWell(
                                 borderRadius: BorderRadius.circular(14),
@@ -1881,13 +1895,13 @@ class _StudioScreenState extends State<StudioScreen> {
                                         decoration: BoxDecoration(
                                           gradient: LinearGradient(
                                             colors: active
-                                                ? const <Color>[
-                                                    Color(0xFF7C5CFC),
-                                                    Color(0xFF4D7DFF),
+                                                ? <Color>[
+                                                    scheme.primary,
+                                                    scheme.secondary,
                                                   ]
-                                                : const <Color>[
-                                                    Color(0xFF2A3140),
-                                                    Color(0xFF1A202B),
+                                                : <Color>[
+                                                    scheme.surfaceContainerHigh,
+                                                    scheme.surfaceContainerHighest,
                                                   ],
                                           ),
                                           borderRadius: BorderRadius.circular(
@@ -2076,14 +2090,60 @@ class ReadingPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool compact = MediaQuery.sizeOf(context).width < 760;
-    return SelectionArea(
-      child: ListView(
+    final List<String> lines = book.content.split('\n');
+    const int linesPerChunk = 80;
+    final int textChunks = (lines.length + linesPerChunk - 1) ~/ linesPerChunk;
+    final int itemCount = textChunks + (book.media.isEmpty ? 0 : 1);
+    return RepaintBoundary(
+      child: ListView.builder(
         padding: EdgeInsets.fromLTRB(
           compact ? 16 : 48,
           24,
           compact ? 16 : 48,
           80,
         ),
+        itemCount: itemCount,
+        itemBuilder: (BuildContext context, int index) {
+        if (index < textChunks) {
+          final int start = index * linesPerChunk;
+          final int end = math.min(start + linesPerChunk, lines.length);
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: SelectableText(
+              lines.sublist(start, end).join('\n'),
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                height: 1.55,
+              ),
+            ),
+          );
+        }
+        return Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Figures and diagrams', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 14),
+              ...book.media.map(
+                (BookMedia media) => Padding(
+                  padding: const EdgeInsets.only(bottom: 18),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Image.memory(
+                      Uint8List.fromList(media.bytes),
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => Text('Unable to render ${media.name}'),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+        },
+      ),
+    );
+    /*
         children: <Widget>[
           Center(
             child: ConstrainedBox(
@@ -2091,21 +2151,16 @@ class ReadingPane extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  MarkdownBody(
-                    data: book.content,
-                    selectable: true,
-                    styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                        .copyWith(
-                          h1: const TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.w900,
-                          ),
-                          h2: const TextStyle(
-                            fontSize: 25,
-                            fontWeight: FontWeight.w800,
-                          ),
-                          code: const TextStyle(fontFamily: 'monospace'),
-                        ),
+                  // Keep preview scrolling responsive. MarkdownBody parses
+                  // the complete manuscript synchronously; for large books
+                  // that blocks the UI thread during every selection. The
+                  // editor remains the authoritative Markdown surface, while
+                  // preview uses a cheap selectable text layout.
+                  SelectableText(
+                    book.content,
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      height: 1.55,
+                    ),
                   ),
                   if (book.media.isNotEmpty) ...<Widget>[
                     const SizedBox(height: 28),
@@ -2138,7 +2193,7 @@ class ReadingPane extends StatelessWidget {
           ),
         ],
       ),
-    );
+    );*/
   }
 }
 

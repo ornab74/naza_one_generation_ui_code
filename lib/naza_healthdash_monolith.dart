@@ -7681,10 +7681,18 @@ class _MedicationPageState extends State<_MedicationPage> {
 
   Widget _safetyTab() {
     final signature = NazaMedicationSafetyEngine.regimenSignature(active);
-    final latestAll = state.medicationReviews
-        .where((r) => r.scope == 'regimen')
-        .cast<NazaMedicationReview?>()
-        .lastWhere((r) => r?.regimenSignature == signature, orElse: () => null);
+    // `lastWhere(orElse: () => null)` cannot safely be expressed by casting a
+    // non-nullable iterable to nullable values: dart:core's CastIterable still
+    // casts the fallback through the source type at runtime. Find the latest
+    // matching review explicitly so an empty/locked review history renders a
+    // normal empty state instead of crashing the entire medication page.
+    NazaMedicationReview? latestAll;
+    for (final review in state.medicationReviews.reversed) {
+      if (review.scope == 'regimen' && review.regimenSignature == signature) {
+        latestAll = review;
+        break;
+      }
+    }
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [

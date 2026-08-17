@@ -570,3 +570,228 @@ Further reading:
 ## Design principle
 
 **Encrypt user state. Verify the model. Keep memory local. Treat model output as data, not authority. Make fallbacks visible. Keep the default experience simple without pretending security properties that are not actually present.**
+
+---
+
+# Feature library
+
+## Chess Agent — advanced Flutter-native port
+
+Chess is a Flutter-native Dart surface available from the unified feature
+wheel/sidebar. The implementation follows the referenced
+`ornab74/multiverse-generator` contracts without embedding Godot:
+
+- Complete local movement reducer for blocked paths, check, checkmate,
+  stalemate, castling, en-passant, and selectable promotion.
+- King-capture rejection and self-check filtering; an agent cannot bypass the
+  local legal-move boundary.
+- Legal destination highlighting, coordinate move identity, bounded move
+  history, and snapshot-based undo/redo that restores rights and special-move
+  state together.
+- Nexus-style prompt contract with `nexus.chess-llm/1` metadata, four modes
+  (`opponent`, `tutor`, `chat`, and `style`), bounded 28,000-character input,
+  untrusted-data delimiters, legal UCI candidate catalogs, and explicit
+  advisory-only output semantics.
+- Seven source-aligned skill bands from Explorer through Maximum, sampling
+  controls, and the source project's extended playing-style library.
+- A deterministic 32-dimensional reducer-derived position vector, stable
+  position hash, and CPU three-qubit RGB simulation with amplitudes,
+  measurement probabilities, entropy before/after, and entropy gain. These
+  values are ranking telemetry only—not physical quantum randomness and never
+  a source of move authority.
+- Prompt preview metadata, bounded local-memory toggle, responsive Naza theme,
+  and the same navigation surface used by mobile and desktop.
+- In the app shell, Gemma is the default Black opponent: after a legal player
+  move, Naza sends a bounded opponent prompt to the local runtime, retries one
+  malformed response, extracts exactly one allowlisted UCI move, and commits it
+  only through the local reducer. Model-unavailable or illegal responses stay
+  visible as a recoverable status instead of creating a move.
+
+The referenced repository also contains a Godot scene presenter, a separate
+authenticated Gemma sidecar, encrypted history/saved-game adapters, and a
+larger reducer receipt protocol. This Flutter slice uses Naza's existing local
+Gemma runtime directly; persistent saved-game backend integration remains a
+separate secure-storage boundary.
+
+## Games portfolio
+
+Games is a dedicated feature-wheel/sidebar destination for playable experiences.
+It currently includes:
+
+- **Chess Agent:** Flutter-native deterministic board play with local move history.
+- **REV//RECALL:** a Flutter-native sequence-memory game inspired by the referenced RevRecall project, with visual sequence playback, round progression, input validation, failure state, and restart controls.
+
+The portfolio is designed for encrypted local game memory: scores, streaks,
+achievements, resumable runs, and per-game statistics can be added without
+accounts or remote leaderboards. The current first slice keeps active run state
+in memory while the persistence schema is finalized. Planned additions include
+daily challenges, agent-vs-player analysis, accessibility modes, replay review,
+cross-game achievements, and a local “continue playing” shelf.
+
+This section is the practical map of the product as it exists today. The app is organized around one shared feature rail/wheel and responsive surfaces: mobile uses bottom navigation and drawers, while desktop uses a navigation rail/sidebar. Feature identifiers are allowlisted and configuration stores IDs and settings rather than executable callbacks.
+
+## Chat and assistant modes
+
+The main Chat surface provides local streaming responses from the verified Gemma runtime. It supports:
+
+- General assistant conversations.
+- Writer mode for drafting and rewriting.
+- Coder mode for technical explanations and code work.
+- Visual mode for image-aware prompts.
+- Chef mode for cooking and meal planning.
+- Mira personality: calm, organized, reflective coaching language.
+- Rook personality: direct, structured execution support.
+- Orbit personality: exploratory planning and synthesis.
+- Streaming partial responses with cancellation and bounded continuation.
+- Conversation threads, search, rename, pin, metadata, and history drawer management.
+- Image attachments with bounded dimensions and bytes.
+- Copyable assistant messages and readable rendering of structured JSON responses.
+
+Structured output is treated as an internal model protocol. The chat bubble converts valid JSON assistant output into readable headings, labels, and bullets instead of exposing raw transport JSON to the user.
+
+## Unified feature wheel and desktop sidebar
+
+The navigation system is shared across mobile and desktop. It supports:
+
+- A central Chat entry.
+- Default pins for Chatbot, Road Scanner, and Food Scanner.
+- Additional user-configurable pins for Garden, Plant ID, Mushroom ID, Garden Log, FindIt, Drive, Predict, Heart Flow, HealthDash, Walking, BookForge, Chess, Games, Memory, Recipes, Shelf, Food More, Models, Personalities, Memory Settings, Backup & Recovery, History, and settings.
+- Food feature entries open their exact workspace directly; Garden entries open the Garden intelligence surface with its image identification and logging tools.
+- Long-press/tap pin management on mobile.
+- Navigation rail/sidebar configuration on wide layouts.
+- Stable allowlisted feature IDs rather than serialized routes or callbacks.
+- Pin persistence with rollback if encrypted persistence fails.
+- Responsive drawer behavior that keeps mobile and desktop surfaces on the same registry.
+
+## Vision and scanners
+
+### Road Scanner
+
+Road Scanner accepts a camera or gallery image, performs bounded local vision analysis, and presents visible road/safety observations. It is designed to distinguish visible evidence from inference and does not claim hidden mechanical, legal, or biological facts.
+
+### Garden
+
+Garden provides camera capture and image selection for plant/garden workflows. It supports multiple bounded images, local normalization, request details, garden-specific prompt choices, and structured guidance. Image count, per-image bytes, total bytes, and dimensions are bounded before processing.
+
+Garden also includes a lightweight growth journal: users can record a plant name, estimated/measured height and canopy width, save dated observations, and view a two-series growth chart. Image-derived dimensions are estimates and should be confirmed with a ruler or other reference; the journal intentionally labels them as observations rather than biological certainty. Planned extensions include:
+
+- watering, feeding, light, and transplant event markers;
+- photo-to-photo timeline comparison with consistent framing guidance;
+- pot/bed zones and QR labels for larger gardens;
+- weather and growing-degree context supplied by the user;
+- reminders for the next observation and anomaly flags for review.
+
+### Food Scanner
+
+Food has a responsive workspace containing:
+
+- Fridge capture from camera, gallery, or files.
+- Local image normalization with dimension and byte limits.
+- Structured visible-item extraction.
+- Use-soon cues, uncertainty reporting, ingredient suggestions, and confidence levels.
+- Encrypted fridge and bake history.
+- Shelf scanner with focused item review, comparison, risk evidence, and recommendation safeguards.
+- Bake workflow with visual/process observations and bounded simulation estimates.
+- Explicit safety language: appearance is not proof of freshness, contamination status, doneness, recall status, allergens, or pathogen absence.
+
+### Recipes
+
+Recipes now has its own dedicated Food navigation tab. Users can generate a fresh recipe set from the latest saved fridge inventory without first navigating through the general “More” surface. Each validated recipe can show:
+
+- Title and estimated time.
+- Visible ingredients used.
+- Missing ingredients.
+- Ordered steps.
+- Verification notes and uncertainty.
+
+Invalid or incomplete model recipes are rejected by structured parsing instead of being silently converted into instructions.
+
+## Intelligence tools
+
+The feature wheel exposes the following specialized workflows:
+
+- **FindIt:** location-aware search and discovery with explicit location input.
+- **Drive:** location-aware driving/planning workflow.
+- **Predict:** prediction workflow with required location/context inputs.
+- **Heart Flow:** name/username input for personalized prediction context.
+- **HealthDash:** schedules, medication tracking, body trends, walking, medication reviews, and health-oriented dashboards.
+- **Walking:** activity and walking-oriented health surface.
+
+These workflows use explicit input forms instead of silently relying on missing location, identity, or context. Health and medication outputs are treated as review guidance, not diagnosis or emergency authority.
+
+## BookForge
+
+BookForge is the local writing studio for manuscript creation and publishing. It provides:
+
+- Local Markdown, plain-text, and DOCX import.
+- Bounded archive expansion and media extraction.
+- New-book creation and metadata editing.
+- Library search and book switching.
+- Editor mode with debounced encrypted per-document autosave.
+- Preview mode with lazy chunked rendering so large manuscripts remain scrollable.
+- Embedded media support with bounded import limits.
+- Local Gemma generation with cancellation, progress, stale-result protection, and continuation limits.
+- OpenAI-compatible provider configuration with endpoint/origin restrictions.
+- GitHub repository scanning and download support with size and integrity checks.
+- YAML-safe Markdown publishing metadata.
+- Encrypted storage only, including one-time cleanup of legacy preference copies.
+
+BookForge intentionally keeps the editor as the authoritative Markdown surface. Large previews are rendered in lazy text chunks to avoid blocking the Flutter UI thread while switching books or scrolling.
+
+## Local memory and history
+
+- Encrypted conversation history and metadata.
+- Embedded local vector memory with deterministic retrieval and lexical fallback.
+- Bounded record counts, pinned-memory controls, salience, recency, confidence, thread affinity, and diversity-aware retrieval.
+- Clear-history flow that clears transcripts, vectors, and conversation metadata.
+- Retryable conversation-title generation.
+- Serialized metadata writes to prevent stale concurrent saves.
+
+## Models and provider runtime
+
+- Verified Gemma + LiteRT-LM local runtime.
+- Pinned model revision, expected size, part hashes, and final SHA-256.
+- Pause/resume multi-source model downloads with chunk journals.
+- Atomic model promotion preserving the last working model on replacement failure.
+- Local model-file picker with exact size/hash verification.
+- Runtime telemetry that distinguishes initialized GPU, CPU fallback, failure, and unknown/unverified states.
+- Secure provider adapter foundation for future remote providers; API keys are stored in encrypted storage, not preferences.
+- Custom endpoints are restricted and must not receive secrets unless the provider/origin policy permits them.
+
+## Vault, backup, and recovery
+
+- Authenticated encrypted SQLite vault for user state.
+- Passwordless OS-secure-key unlock or startup-password unlock.
+- Device-key privileged authorization path for passwordless vaults.
+- Settings backup/recovery surface for encrypted user data.
+- Flash-drive/file backup workflow and cloud-drive integration points.
+- Hybrid post-quantum recovery enrollment and separated key-kit/backup artifacts.
+- Default-on post-quantum recovery policy with fail-closed downgrade checks.
+- Hardened runtime identities for app, model, policy, recovery, and trust roots.
+- Protected rollback floor and idempotent migration markers for hardened-state upgrades.
+- Bounded export budgets to prevent unbounded plaintext materialization.
+
+The system does not claim that OS secure storage provides a fresh human presence challenge. Device-key authorization proves possession of the OS-protected app key; biometric/PIN user-presence integration remains a separate platform capability.
+
+## Settings and customization
+
+Settings includes:
+
+- Theme gallery and persistent theme selection.
+- Model/runtime diagnostics.
+- Smart Memory controls.
+- Backup and recovery tab.
+- Provider/API configuration.
+- Feature-wheel pin configuration.
+- History and local-data clearing.
+- Advanced security and recovery status.
+
+## Build, release, and test protections
+
+- Push and pull-request CI for analysis, normal tests, platform builds, and Store packaging.
+- Full normal test suite in the Store release gate.
+- Archived release-critical food, security, PQ, audit, and trust tests.
+- Immutable GitHub Action commit pins.
+- Pinned WiX package version for Windows MSI builds.
+- Retry handling for transient native SQLite asset downloads.
+- Flutter analyzer and focused security/regression suites run after changes.
