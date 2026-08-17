@@ -26,6 +26,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'analytics/trend_charts.dart';
+
 import 'security/secure_database.dart';
 
 const Object _healthUnset = Object();
@@ -412,7 +414,6 @@ prior_rule: ${config.rule}
       promptBlock: block,
     );
   }
-
 }
 
 // -----------------------------------------------------------------------------
@@ -657,9 +658,11 @@ final class NazaScheduleEngine {
     DateTime to,
   ) {
     final out = <NazaScheduleOccurrence>[];
-    for (var day = startOfDay(from);
-        !day.isAfter(startOfDay(to));
-        day = DateTime(day.year, day.month, day.day + 1)) {
+    for (
+      var day = startOfDay(from);
+      !day.isAfter(startOfDay(to));
+      day = DateTime(day.year, day.month, day.day + 1)
+    ) {
       out.addAll(forDay(items, day));
     }
     return out;
@@ -1651,9 +1654,12 @@ final class NazaPillBottleDraft {
     final json = decodeNazaHealthJson(raw);
     double number(String key) {
       final value = json[key];
-      final parsed = value is num ? value.toDouble() : double.tryParse('$value');
+      final parsed = value is num
+          ? value.toDouble()
+          : double.tryParse('$value');
       return parsed != null && parsed.isFinite ? parsed : 0;
     }
+
     return NazaPillBottleDraft(
       imageName: imageName,
       name: json['name']?.toString() ?? '',
@@ -1664,9 +1670,7 @@ final class NazaPillBottleDraft {
       directions: json['directions']?.toString() ?? '',
       notes: json['notes']?.toString() ?? '',
       confidence: json['confidence']?.toString() ?? 'low',
-      riskScore: number('risk_score')
-          .clamp(0, 100)
-          .toDouble(),
+      riskScore: number('risk_score').clamp(0, 100).toDouble(),
       riskLevel: json['risk_level']?.toString() ?? 'Unknown',
       riskSummary: json['risk_summary']?.toString() ?? '',
       rawModelText: raw,
@@ -3902,8 +3906,10 @@ final class NazaPantryReconciliation {
 final class NazaPantryEngine {
   const NazaPantryEngine._();
 
-  static String normalizedName(String value) =>
-      value.toLowerCase().replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ').trim();
+  static String normalizedName(String value) => value
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+      .trim();
 
   static NazaPantryReconciliation mergeSnapshot(
     List<NazaPantryItem> current,
@@ -3940,8 +3946,9 @@ final class NazaPantryEngine {
       }
     }
     final expiry = snapshot.capturedAt.subtract(const Duration(days: 30));
-    final retained = next.where((item) =>
-        !item.userConfirmed || item.importedAt.isAfter(expiry)).toList();
+    final retained = next
+        .where((item) => !item.userConfirmed || item.importedAt.isAfter(expiry))
+        .toList();
     return NazaPantryReconciliation(
       merged: retained.takeLast(180),
       added: added,
@@ -9258,6 +9265,42 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
               ],
             ),
           ),
+        ),
+        const SizedBox(height: 12),
+        NazaAnalyticsCard(
+          title: 'Activity and response trends',
+          subtitle:
+              'User-entered observations over time; correlation is descriptive and not medical advice.',
+          series: [
+            NazaTrendSeries(
+              name: 'Steps',
+              color: const Color(0xFF63D7FF),
+              points: sessions.map(
+                (item) => NazaTrendPoint(
+                  time: item.endedAt,
+                  value: item.steps.toDouble(),
+                ),
+              ),
+            ),
+            NazaTrendSeries(
+              name: 'Sleep hours',
+              color: const Color(0xFFBCA6FF),
+              points: widget.state.metabolicCheckins.map(
+                (item) =>
+                    NazaTrendPoint(time: item.day, value: item.sleepHours),
+              ),
+            ),
+            NazaTrendSeries(
+              name: 'Estimated kcal',
+              color: const Color(0xFFFFD166),
+              points: widget.state.metabolicCheckins.map(
+                (item) => NazaTrendPoint(
+                  time: item.day,
+                  value: item.estimatedCalories,
+                ),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 12),
         Card(

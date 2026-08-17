@@ -15,6 +15,7 @@ import 'models.dart';
 import 'photo_picker.dart';
 import 'repository.dart';
 import 'shelf_scanner.dart';
+import '../analytics/trend_charts.dart';
 
 export 'food_hub_legacy.dart' hide FoodVisionHub;
 
@@ -129,10 +130,104 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
         // Food workspaces remain content modes and are opened from the global
         // wheel (Recipes, Fridge, Shelf, and Food More), preventing a second
         // competing rail or bottom navigation bar from consuming the shell.
-        return Scaffold(body: body);
+        return Scaffold(
+          body: Column(
+            children: [
+              Expanded(child: body),
+              _FoodAnalyticsStrip(repository: widget.repository),
+            ],
+          ),
+        );
       },
     );
   }
+}
+
+final class _FoodAnalyticsStrip extends StatefulWidget {
+  final FoodRepository repository;
+  const _FoodAnalyticsStrip({required this.repository});
+  @override
+  State<_FoodAnalyticsStrip> createState() => _FoodAnalyticsStripState();
+}
+
+class _FoodAnalyticsStripState extends State<_FoodAnalyticsStrip> {
+  late Future<({List<FridgeLog> fridge, List<BakeLog> bake})> _future;
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+    widget.repository.revision.addListener(_refresh);
+  }
+
+  @override
+  void didUpdateWidget(covariant _FoodAnalyticsStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.repository != widget.repository) {
+      oldWidget.repository.revision.removeListener(_refresh);
+      widget.repository.revision.addListener(_refresh);
+      _refresh();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.repository.revision.removeListener(_refresh);
+    super.dispose();
+  }
+
+  void _refresh() {
+    if (mounted) setState(() => _future = _load());
+  }
+
+  Future<({List<FridgeLog> fridge, List<BakeLog> bake})> _load() async => (
+    fridge: await widget.repository.listFridgeLogs(limit: 30),
+    bake: await widget.repository.listBakeLogs(limit: 30),
+  );
+  @override
+  Widget build(
+    BuildContext context,
+  ) => FutureBuilder<({List<FridgeLog> fridge, List<BakeLog> bake})>(
+    future: _future,
+    builder: (context, snapshot) {
+      final data = snapshot.data;
+      if (data == null) return const SizedBox(height: 4);
+      final fridge = data.fridge.reversed.toList(growable: false);
+      final bake = data.bake.reversed.toList(growable: false);
+      return SizedBox(
+        height: 236,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+          child: NazaAnalyticsCard(
+            title: 'Kitchen trends',
+            subtitle:
+                '${data.fridge.length} fridge captures · ${data.bake.length} bake observations · trends are descriptive, not safety guarantees',
+            series: [
+              NazaTrendSeries(
+                name: 'Visible food items',
+                color: Colors.orangeAccent,
+                points: fridge.map(
+                  (log) => NazaTrendPoint(
+                    time: log.capturedAt,
+                    value: log.analysis.items.length.toDouble(),
+                  ),
+                ),
+              ),
+              NazaTrendSeries(
+                name: 'Bake estimate %',
+                color: Colors.lightBlueAccent,
+                points: bake.map(
+                  (log) => NazaTrendPoint(
+                    time: log.capturedAt,
+                    value: log.simulation.estimatedPercent,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
 }
 
 class _CleanFridgePane extends StatefulWidget {

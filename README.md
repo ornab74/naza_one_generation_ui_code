@@ -21,6 +21,7 @@ The repository uses explicit, reviewable breadcrumbs for future maintainers and 
 - [Complete repository file catalog](docs/file-catalog.md)
 - [Complete repository folder catalog](docs/folder-catalog.md)
 - [All Mermaid architecture maps](docs/mermaid-index.md)
+- [Naza One system handbook](docs/naza-one-handbook.md)
 - [Security model](SECURITY.md)
 
 ```mermaid

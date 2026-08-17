@@ -6,10 +6,13 @@
 // CHANGE-GUARD: Preserve public contracts, bounded inputs, lifecycle cleanup, and fail-closed behavior; run analysis and relevant tests after edits.
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
+import 'dart:convert';
 import 'dart:typed_data';
-import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/material.dart';
+
+import 'analytics/trend_charts.dart';
 
 typedef NazaExplorePrompt =
     Future<String> Function({
@@ -39,37 +42,166 @@ final class _GardenLogEntry {
   final double width;
   final int health;
   final String kind;
-  const _GardenLogEntry({required this.date, required this.plant, required this.height, required this.width, required this.health, required this.kind});
+  const _GardenLogEntry({
+    required this.date,
+    required this.plant,
+    required this.height,
+    required this.width,
+    required this.health,
+    required this.kind,
+  });
 }
 
-final class _GardenChartPainter extends CustomPainter {
-  final List<_GardenLogEntry> entries;
-  const _GardenChartPainter(this.entries);
+/// A bounded, transparent approximation of the six HeartFlow dimensions.
+///
+/// This is intentionally classical: it borrows the language of the supplied
+/// HeartFlow concept (coupled dimensions and constructive/destructive
+/// interaction), but it is not a quantum measurement, a financial score, or a
+/// clinical instrument. Keeping the calculation local and explainable gives
+/// the user a reproducible baseline before the language model adds context.
+final class NazaHeartFlowSimulation {
+  final double stewardship;
+  final double compassion;
+  final double creativity;
+  final double greedDissipation;
+  final double courage;
+  final double harmony;
+  final double coherence;
+  final double score;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (entries.isEmpty) return;
-    final maxHeight = entries.map((e) => e.height).reduce(math.max);
-    final maxWidth = entries.map((e) => e.width).reduce(math.max);
-    final paint = Paint()..strokeWidth = 3..style = PaintingStyle.stroke;
-    void line(double Function(_GardenLogEntry) value, Color color, double max) {
-      paint.color = color;
-      final path = Path();
-      for (var i = 0; i < entries.length; i++) {
-        final x = entries.length == 1 ? size.width / 2 : i * size.width / (entries.length - 1);
-        final y = size.height - (value(entries[i]) / max.clamp(1, double.infinity)) * (size.height - 20);
-        if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
-        canvas.drawCircle(Offset(x, y), 4, Paint()..color = color);
-      }
-      canvas.drawPath(path, paint);
+  const NazaHeartFlowSimulation({
+    required this.stewardship,
+    required this.compassion,
+    required this.creativity,
+    required this.greedDissipation,
+    required this.courage,
+    required this.harmony,
+    required this.coherence,
+    required this.score,
+  });
+
+  factory NazaHeartFlowSimulation.run({
+    required String reflection,
+    String? ageOrRange,
+    String? restingBaseline,
+  }) {
+    final text = reflection.toLowerCase();
+    double signal(List<String> terms, double base) {
+      final hits = terms.where(text.contains).length;
+      return _clamp(base + hits * 0.07);
     }
-    line((e) => e.height, const Color(0xFF42A5F5), maxHeight);
-    line((e) => e.width, const Color(0xFF66BB6A), maxWidth);
-    line((e) => e.health.toDouble(), const Color(0xFFFFB74D), 10);
+
+    final stewardship = signal([
+      'repair',
+      'garden',
+      'nature',
+      'reuse',
+      'waste',
+      'community',
+    ], 0.50);
+    final compassion = signal([
+      'help',
+      'care',
+      'listen',
+      'mentor',
+      'support',
+      'food',
+      'volunteer',
+    ], 0.50);
+    final creativity = signal([
+      'learn',
+      'make',
+      'write',
+      'build',
+      'code',
+      'art',
+      'idea',
+      'research',
+    ], 0.50);
+    final greedDissipation = signal([
+      'share',
+      'fair',
+      'generous',
+      'donate',
+      'equitable',
+      'enough',
+    ], 0.50);
+    final courage = signal([
+      'truth',
+      'speak',
+      'boundary',
+      'brave',
+      'risk',
+      'protect',
+      'justice',
+    ], 0.50);
+    final harmony = signal([
+      'rest',
+      'sleep',
+      'calm',
+      'restore',
+      'connect',
+      'balance',
+      'breath',
+    ], 0.50);
+
+    // Optional numeric context is treated as a weak signal only. It never
+    // becomes a health judgment and malformed values are safely ignored.
+    final baseline = double.tryParse(
+      (restingBaseline ?? '').replaceAll(RegExp(r'[^0-9.]'), ''),
+    );
+    final baselineAdjustment = baseline == null
+        ? 0.0
+        : baseline >= 45 && baseline <= 100
+        ? 0.03
+        : -0.02;
+    final adjustedHarmony = _clamp(harmony + baselineAdjustment);
+
+    final dimensions = [
+      stewardship,
+      compassion,
+      creativity,
+      greedDissipation,
+      courage,
+      adjustedHarmony,
+    ];
+    final average = dimensions.reduce((a, b) => a + b) / dimensions.length;
+    final spread =
+        dimensions
+            .map((value) => (value - average).abs())
+            .reduce((a, b) => a + b) /
+        dimensions.length;
+    final coupling = _clamp(1.0 - spread * 0.45);
+    final ageSignal = (ageOrRange ?? '').trim().isEmpty ? 0.0 : 0.01;
+
+    return NazaHeartFlowSimulation(
+      stewardship: stewardship,
+      compassion: compassion,
+      creativity: creativity,
+      greedDissipation: greedDissipation,
+      courage: courage,
+      harmony: adjustedHarmony,
+      coherence: coupling,
+      score: _clamp(average * coupling + ageSignal),
+    );
   }
 
-  @override
-  bool shouldRepaint(covariant _GardenChartPainter oldDelegate) => oldDelegate.entries != entries;
+  static double _clamp(double value) => value.clamp(0.0, 1.0).toDouble();
+
+  String toPromptBlock() =>
+      '''
+LOCAL HEARTFLOW SIMULATION (classical approximation; not diagnosis or fact)
+Stewardship Resonance: ${stewardship.toStringAsFixed(2)}
+Compassion Throughput: ${compassion.toStringAsFixed(2)}
+Creativity Flux: ${creativity.toStringAsFixed(2)}
+Greed Dissipation: ${greedDissipation.toStringAsFixed(2)}
+Courage Activation: ${courage.toStringAsFixed(2)}
+Harmony Coherence: ${harmony.toStringAsFixed(2)}
+Cross-dimension coherence: ${coherence.toStringAsFixed(2)}
+HeartFlow index: ${score.toStringAsFixed(2)}
+Interpret these as reflective signals with uncertainty. Do not rank, diagnose,
+predict a person's worth, or infer missing identity or health information.
+''';
 }
 
 enum NazaExplorationSection { findIt, garden, drive, predict, heartFlow }
@@ -121,12 +253,18 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
   final _predictLocation = TextEditingController(),
       _heartName = TextEditingController(),
       _heartAge = TextEditingController(),
-      _heartBaseline = TextEditingController();
+      _heartBaseline = TextEditingController(),
+      _heartIdentityEmail = TextEditingController(),
+      _heartIdentityHandleA = TextEditingController(),
+      _heartIdentityHandleB = TextEditingController();
   late NazaExplorationSection _section = widget.initialSection;
   bool _busy = false, _pickingImage = false;
   int _runGeneration = 0;
   String _result = '';
   String? _error;
+  String? _heartSuggestions;
+  NazaHeartFlowSimulation? _heartSimulation;
+  bool _suggestionsBusy = false;
   String _findPrompt = 'Compare nearby options',
       _gardenPrompt = 'Identify plant and health signals';
   String _drivePrompt = 'Plan a safe efficient route',
@@ -163,6 +301,9 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       _heartName,
       _heartAge,
       _heartBaseline,
+      _heartIdentityEmail,
+      _heartIdentityHandleA,
+      _heartIdentityHandleB,
       _gardenPlant,
       _gardenHeight,
       _gardenWidth,
@@ -178,6 +319,7 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       _section = section;
       _result = '';
       _error = null;
+      _heartSuggestions = null;
     });
     if (!_pages.hasClients) return;
     animate
@@ -208,7 +350,9 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       }
       if (_gardenImages.length >= _maxGardenImages ||
           totalBytes + image.bytes.length > _maxGardenBytes) {
-        setState(() => _error = 'Garden supports up to 4 photos and 24 MB total.');
+        setState(
+          () => _error = 'Garden supports up to 4 photos and 24 MB total.',
+        );
         return;
       }
       setState(() => _gardenImages.add(image));
@@ -251,6 +395,14 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       _busy = true;
       _result = '';
       _error = null;
+      if (_section == NazaExplorationSection.heartFlow) {
+        _heartSimulation = NazaHeartFlowSimulation.run(
+          reflection: _details[_section]!.text.trim(),
+          ageOrRange: _heartAge.text,
+          restingBaseline: _heartBaseline.text,
+        );
+        _heartSuggestions = null;
+      }
     });
     try {
       final text = await widget.runPrompt(
@@ -298,13 +450,83 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
       NazaExplorationSection.predict =>
         'Task: $_predictPrompt\nMarket/location: ${_predictLocation.text.trim()}\nScenario/timeframe/signals: $details',
       NazaExplorationSection.heartFlow =>
-        'Task: $_heartPrompt\nPrivate profile: ${_heartName.text.trim()}\nAge/range: ${_optional(_heartAge)}\nResting baseline: ${_optional(_heartBaseline)}\nActivity/sleep/stress/symptoms/goals: $details',
+        'Task: $_heartPrompt\nPrivate profile: ${_heartName.text.trim()}\n'
+            'Age/range: ${_optional(_heartAge)}\n'
+            'Resting baseline: ${_optional(_heartBaseline)}\n'
+            'UserIdentity fields supplied: ${_identityPresence()}\n'
+            'UserIdentity local reference: ${_identityReference()}\n'
+            'Activity/sleep/stress/symptoms/goals: $details\n'
+            '${_heartSimulation?.toPromptBlock() ?? ''}',
     };
     return 'Workspace: ${_section.label}\n$context\n\nReturn: supplied context, analysis, assumptions, uncertainty/confidence, safety limits, and next actions. Do not invent live facts or missing measurements.';
   }
 
   String _optional(TextEditingController c) =>
       c.text.trim().isEmpty ? 'not supplied' : c.text.trim();
+
+  String _identityPresence() {
+    final fields = [
+      _heartIdentityEmail,
+      _heartIdentityHandleA,
+      _heartIdentityHandleB,
+    ];
+    final count = fields.where((field) => field.text.trim().isNotEmpty).length;
+    return '$count of 3';
+  }
+
+  /// The model receives only a short local reference, never raw identity
+  /// values. The values are not persisted by this workflow.
+  String _identityReference() {
+    final raw =
+        [_heartIdentityEmail, _heartIdentityHandleA, _heartIdentityHandleB]
+            .map((field) => field.text.trim())
+            .where((value) => value.isNotEmpty)
+            .join('|');
+    if (raw.isEmpty) return 'not supplied';
+    final digest = crypto.sha256.convert(utf8.encode(raw)).toString();
+    return digest.substring(0, 16);
+  }
+
+  Future<void> _generateHeartSuggestions() async {
+    if (_suggestionsBusy ||
+        _heartSimulation == null ||
+        _result.trim().isEmpty) {
+      return;
+    }
+    setState(() {
+      _suggestionsBusy = true;
+      _error = null;
+    });
+    try {
+      final response = await widget.runPrompt(
+        systemInstruction:
+            'You are Naza Heart Flow follow-up guidance. Use the simulation as a reflective, non-clinical signal. Propose practical, voluntary actions that improve human and ecological wellbeing. Do not gamify, rank, shame, diagnose, infer identity, or promise that an action changes a score. Prefer small measurable experiments, consent, accessibility, rest, mutual aid, stewardship, and community benefit. Include safety boundaries and ways to review whether an action helped.',
+        prompt:
+            '''Create a second-stage humanity-oriented action brief.
+
+${_heartSimulation!.toPromptBlock()}
+
+First-stage reflection:
+$_result
+
+Return 3–5 concrete actions across personal wellbeing, care for others,
+creative contribution, fairness/resource sharing, courage/advocacy, and
+ecological stewardship where appropriate. Explain the likely benefit,
+consent/accessibility considerations, a low-effort version, and a review
+signal for each. These are suggestions, not obligations or medical advice.''',
+      );
+      if (!mounted) return;
+      setState(() => _heartSuggestions = response.trim());
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _error = 'The follow-up action brief could not be generated.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _suggestionsBusy = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) => Column(
@@ -436,9 +658,44 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
           Card(
             child: Padding(
               padding: const EdgeInsets.all(20),
-              child: SelectableText(
-                _result,
-                style: const TextStyle(height: 1.5),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SelectableText(_result, style: const TextStyle(height: 1.5)),
+                  if (section == NazaExplorationSection.heartFlow) ...[
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: _suggestionsBusy
+                          ? null
+                          : _generateHeartSuggestions,
+                      icon: _suggestionsBusy
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.diversity_1_rounded),
+                      label: Text(
+                        _suggestionsBusy
+                            ? 'Preparing action brief…'
+                            : 'Suggest practical ways to help humanity',
+                      ),
+                    ),
+                    if (_heartSuggestions != null) ...[
+                      const SizedBox(height: 14),
+                      const Divider(),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Second-stage action brief',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 8),
+                      SelectableText(
+                        _heartSuggestions!,
+                        style: const TextStyle(height: 1.5),
+                      ),
+                    ],
+                  ],
+                ],
               ),
             ),
           ),
@@ -474,28 +731,63 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
           'Compare camping or outdoor areas',
           'Build a verification checklist',
         ], (v) => _findPrompt = v),
-                _gap,
+        _gap,
         if (s == NazaExplorationSection.garden) ...[
-          _dropdown('Garden subject', _gardenKind, const ['Plant', 'Mushroom', 'Soil / habitat'], (v) => _gardenKind = v),
+          _dropdown('Garden subject', _gardenKind, const [
+            'Plant',
+            'Mushroom',
+            'Soil / habitat',
+          ], (v) => _gardenKind = v),
           _gap,
           if (_gardenLog.isNotEmpty)
-            _dropdown('Previously logged subject', _selectedGardenOrganism ?? 'New observation', [
-              'New observation',
-              ..._gardenLog.map((e) => e.plant).toSet(),
-            ], (v) {
-              _selectedGardenOrganism = v == 'New observation' ? null : v;
-              if (_selectedGardenOrganism != null) _gardenPlant.text = _selectedGardenOrganism!;
-            }),
+            _dropdown(
+              'Previously logged subject',
+              _selectedGardenOrganism ?? 'New observation',
+              ['New observation', ..._gardenLog.map((e) => e.plant).toSet()],
+              (v) {
+                _selectedGardenOrganism = v == 'New observation' ? null : v;
+                if (_selectedGardenOrganism != null)
+                  _gardenPlant.text = _selectedGardenOrganism!;
+              },
+            ),
           if (_gardenLog.isNotEmpty) _gap,
-          Row(children: [
-            Expanded(child: _field(_gardenPlant, 'Plant name', 'Tomato, basil, unknown…', Icons.local_florist)),
-            const SizedBox(width: 8),
-            Expanded(child: _field(_gardenHeight, 'Height (cm)', 'Estimated or measured', Icons.height)),
-            const SizedBox(width: 8),
-            Expanded(child: _field(_gardenWidth, 'Width (cm)', 'Estimated canopy width', Icons.straighten)),
-          ]),
+          Row(
+            children: [
+              Expanded(
+                child: _field(
+                  _gardenPlant,
+                  'Plant name',
+                  'Tomato, basil, unknown…',
+                  Icons.local_florist,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _field(
+                  _gardenHeight,
+                  'Height (cm)',
+                  'Estimated or measured',
+                  Icons.height,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _field(
+                  _gardenWidth,
+                  'Width (cm)',
+                  'Estimated canopy width',
+                  Icons.straighten,
+                ),
+              ),
+            ],
+          ),
           _gap,
-          _field(_gardenHealth, 'Health rating (0–10)', 'Your observation; not a diagnosis', Icons.health_and_safety_outlined),
+          _field(
+            _gardenHealth,
+            'Health rating (0–10)',
+            'Your observation; not a diagnosis',
+            Icons.health_and_safety_outlined,
+          ),
           _gap,
           OutlinedButton.icon(
             onPressed: _gardenLogEntry,
@@ -504,7 +796,39 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
           ),
           if (_gardenLog.isNotEmpty) ...[
             _gap,
-            SizedBox(height: 180, child: CustomPaint(painter: _GardenChartPainter(_gardenLog))),
+            NazaAnalyticsCard(
+              title: 'Garden growth dashboard',
+              subtitle:
+                  '${_gardenLog.length} dated observations · compare growth and self-rated health; estimates are not measurements',
+              series: [
+                NazaTrendSeries(
+                  name: 'Height (cm)',
+                  color: const Color(0xFF42A5F5),
+                  points: _gardenLog.map(
+                    (entry) =>
+                        NazaTrendPoint(time: entry.date, value: entry.height),
+                  ),
+                ),
+                NazaTrendSeries(
+                  name: 'Width (cm)',
+                  color: const Color(0xFF66BB6A),
+                  points: _gardenLog.map(
+                    (entry) =>
+                        NazaTrendPoint(time: entry.date, value: entry.width),
+                  ),
+                ),
+                NazaTrendSeries(
+                  name: 'Health (0–10)',
+                  color: const Color(0xFFFFB74D),
+                  points: _gardenLog.map(
+                    (entry) => NazaTrendPoint(
+                      time: entry.date,
+                      value: entry.health.toDouble(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ],
           _gap,
         ],
@@ -525,7 +849,8 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
             Expanded(
               child: OutlinedButton.icon(
                 key: const ValueKey('garden-camera'),
-                onPressed: _pickingImage || _gardenImages.length >= _maxGardenImages
+                onPressed:
+                    _pickingImage || _gardenImages.length >= _maxGardenImages
                     ? null
                     : _pickGardenImage,
                 icon: Icon(
@@ -641,6 +966,47 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
           ],
         ),
         _gap,
+        Text(
+          'UserIdentity (optional)',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Optional identity references stay private. The local workflow sends only a short reference and whether a field was supplied, never raw values.',
+          style: TextStyle(color: Color(0xFF9BA7B8), height: 1.35),
+        ),
+        _gap,
+        _field(
+          _heartIdentityEmail,
+          'UserIdentity',
+          'Email address (optional)',
+          Icons.alternate_email_rounded,
+        ),
+        _gap,
+        Row(
+          children: [
+            Expanded(
+              child: _field(
+                _heartIdentityHandleA,
+                'UserIdentity',
+                'Handle (optional)',
+                Icons.person_pin_rounded,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _field(
+                _heartIdentityHandleB,
+                'UserIdentity',
+                'Handle (optional)',
+                Icons.badge_rounded,
+              ),
+            ),
+          ],
+        ),
+        _gap,
         _dropdown('Heart Flow request', _heartPrompt, [
           'Recovery and readiness reflection',
           'Compare exertion and baseline',
@@ -649,10 +1015,53 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
           'Build a gentle activity scenario',
         ], (v) => _heartPrompt = v),
         _gap,
+        if (_heartSimulation != null) _heartSimulationCard(_heartSimulation!),
+        if (_heartSimulation != null) _gap,
         details,
       ],
     };
   }
+
+  Widget _heartSimulationCard(NazaHeartFlowSimulation simulation) => Card(
+    color: const Color(0xFF171E28),
+    child: Padding(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Local HeartFlow simulation',
+            style: TextStyle(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'A transparent classical approximation for reflection—not a diagnosis, ranking, or measurement of human worth.',
+            style: TextStyle(color: Color(0xFF9BA7B8), height: 1.3),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _heartMetric('Stewardship', simulation.stewardship),
+              _heartMetric('Compassion', simulation.compassion),
+              _heartMetric('Creativity', simulation.creativity),
+              _heartMetric('Fairness', simulation.greedDissipation),
+              _heartMetric('Courage', simulation.courage),
+              _heartMetric('Harmony', simulation.harmony),
+              _heartMetric('Coherence', simulation.coherence),
+              _heartMetric('Index', simulation.score),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _heartMetric(String label, double value) => Chip(
+    label: Text('$label ${value.toStringAsFixed(2)}'),
+    visualDensity: VisualDensity.compact,
+  );
 
   Widget get _gap => const SizedBox(height: 12);
   Widget _field(
@@ -700,22 +1109,36 @@ class _NazaExplorationHubState extends State<NazaExplorationHub> {
     final height = double.tryParse(_gardenHeight.text.trim());
     final width = double.tryParse(_gardenWidth.text.trim());
     final health = int.tryParse(_gardenHealth.text.trim());
-    if (height == null || width == null || health == null || height <= 0 || width <= 0 || health < 0 || health > 10) {
-      setState(() => _error = 'Enter positive height and width estimates to save a garden observation.');
+    if (height == null ||
+        width == null ||
+        health == null ||
+        height <= 0 ||
+        width <= 0 ||
+        health < 0 ||
+        health > 10) {
+      setState(
+        () => _error =
+            'Enter positive height and width estimates to save a garden observation.',
+      );
       return;
     }
     setState(() {
-      _gardenLog.add(_GardenLogEntry(
-        date: DateTime.now(),
-        plant: _gardenPlant.text.trim().isEmpty ? 'Unnamed plant' : _gardenPlant.text.trim(),
-        height: height,
-        width: width,
-        health: health,
-        kind: _gardenKind,
-      ));
+      _gardenLog.add(
+        _GardenLogEntry(
+          date: DateTime.now(),
+          plant: _gardenPlant.text.trim().isEmpty
+              ? 'Unnamed plant'
+              : _gardenPlant.text.trim(),
+          height: height,
+          width: width,
+          health: health,
+          kind: _gardenKind,
+        ),
+      );
       _error = null;
     });
   }
+
   String _detailLabel(NazaExplorationSection s) => switch (s) {
     NazaExplorationSection.findIt => 'What should FindIt locate or compare?',
     NazaExplorationSection.garden => 'Garden details and your request',
