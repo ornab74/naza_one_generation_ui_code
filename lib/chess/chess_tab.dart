@@ -987,11 +987,17 @@ class _NazaChessTabState extends State<NazaChessTab> {
       '[/player_message]',
       '',
       if (opponentMode) ...<String>[
+        '',
+        '[final_authoritative_command_contract]',
+        'The side to move is ${_turn == 'w' ? 'White' : 'Black'}. Select one move for that side only.',
+        'The only legal choices are the exact strings in this final allowlist: ${jsonEncode(_legalMoveCatalog())}',
+        'Do not use a move from memory, the example position, or the player message.',
         'For opponent mode, your entire response must be exactly three lines:',
         '[action]',
         'one_exact_legal_uci_coordinate',
         '[/action]',
         'No JSON. No prose. No punctuation. No move number. No Markdown.',
+        '[/final_authoritative_command_contract]',
       ] else
         'For tutor/chat/style mode return bounded explanatory text and never commit a move.',
     ].join('\n');
