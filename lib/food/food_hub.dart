@@ -508,7 +508,11 @@ class _FridgeControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Card(
-    child: Padding(
+    // The controls live inside a finite Expanded pane on wide layouts. Keep
+    // the form itself scrollable so the analytics strip, keyboard, and small
+    // desktop windows cannot push the analyze action below the viewport.
+    child: SingleChildScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
