@@ -1,0 +1,73 @@
+name: Patch spinner source
+
+on:
+  push:
+    branches: [agent/route-engine-secure-aab]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.0
+      - name: Patch loader lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/main.dart')
+          text = path.read_text()
+
+          replacements = [
+              (
+                  '  bool busy = false;\n',
+                  '  bool busy = false;\n  bool showAnalysisLoader = false;\n',
+              ),
+              (
+                  '    busy = true;\n    lastError = null;\n',
+                  '    busy = true;\n    showAnalysisLoader = true;\n    lastError = null;\n',
+              ),
+              (
+                  "      status = 'Future collapsed: ${decision.verdict.label}';\n\n      if (settings.speakDecisions) {",
+                  "      status = 'Future collapsed: ${decision.verdict.label}';\n      showAnalysisLoader = false;\n      notifyListeners();\n\n      if (settings.speakDecisions) {",
+              ),
+              (
+                  '    } finally {\n      busy = false;\n      notifyListeners();\n',
+                  '    } finally {\n      busy = false;\n      showAnalysisLoader = false;\n      notifyListeners();\n',
+              ),
+              (
+                  '          if (controller.busy)\n',
+                  '          if (controller.showAnalysisLoader)\n',
+              ),
+          ]
+
+          changed = False
+          for old, new in replacements:
+              if new in text:
+                  continue
+              if old not in text:
+                  raise SystemExit(f'Expected source pattern not found: {old!r}')
+              text = text.replace(old, new, 1)
+              changed = True
+
+          if changed:
+              path.write_text(text)
+          PY
+      - name: Commit source fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- lib/main.dart; then
+            echo 'Spinner source is already patched.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/main.dart
+          git commit -m 'Dismiss intelligence loader when decision arrives'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
