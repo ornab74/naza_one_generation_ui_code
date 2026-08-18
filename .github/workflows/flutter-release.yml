@@ -11,7 +11,7 @@ permissions:
 
 env:
   FLUTTER_VERSION: "3.44.4"
-  JAVA_VERSION: "17"
+  JAVA_VERSION: "21"
 
 jobs:
   analyze:
