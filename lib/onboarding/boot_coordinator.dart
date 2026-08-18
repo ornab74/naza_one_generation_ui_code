@@ -845,10 +845,9 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     return _shell(
       eyebrow: '1 · Security',
       title: 'Encrypted from the first launch',
-      subtitle:
-          Platform.isLinux
-              ? 'Your vault is always encrypted. Linux uses a startup password because this session has no unlocked desktop keyring.'
-              : 'Your vault is always encrypted. For the smoothest experience, Naza One defaults to a protected device unlock key. A startup password is optional.',
+      subtitle: Platform.isLinux
+          ? 'Your vault is always encrypted. Linux uses a startup password because this session has no unlocked desktop keyring.'
+          : 'Your vault is always encrypted. For the smoothest experience, Naza One defaults to a protected device unlock key. A startup password is optional.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -957,7 +956,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       eyebrow: '2 · Local AI model',
       title: 'Verified multi-source model setup',
       subtitle:
-          'Naza can fetch 4 MiB chunks across approved HTTPS/IPFS gateway mirrors, resume completed chunks after interruption, and verify every model part plus the final SHA-256 before use.',
+          'Naza can fetch 4 MiB chunks from approved HTTPS model hosts, resume completed chunks after interruption, and verify every model part plus the final SHA-256 before use.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -1081,7 +1080,8 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                 ),
                 onChanged: _busy || _modelReady
                     ? null
-                    : (value) => setState(() => _useLocalModel = value ?? false),
+                    : (value) =>
+                          setState(() => _useLocalModel = value ?? false),
               ),
             ),
             _messageCard(
@@ -1093,7 +1093,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
           const SizedBox(height: 14),
           _messageCard(
             Icons.verified_user_outlined,
-            'Transport location is not trust. Mirror URLs may change, but model filename, immutable revision, sizes, part hashes/CIDs and the final SHA-256 are pinned in the app.',
+            'Transport location is not trust. Mirror URLs may change, but model filename, immutable revision, sizes, part hashes, and the final SHA-256 are pinned in the app.',
             scheme.primary,
           ),
         ],

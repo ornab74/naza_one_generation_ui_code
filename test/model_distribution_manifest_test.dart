@@ -22,7 +22,7 @@ void main() {
       expect(manifest.modelFileName, 'gemma-4-E2B-it.litertlm');
     });
 
-    test('has canonical full plane and three replicated part planes', () {
+    test('uses only Hugging Face and GitHub download sources', () {
       expect(manifest.fullSources, hasLength(1));
       expect(manifest.fullSources.single.isFullObject, isTrue);
       expect(manifest.parts, hasLength(3));
@@ -31,17 +31,12 @@ void main() {
         final part = manifest.parts[index];
         expect(part.index, index);
         expect(part.name, contains('part0$index.bin'));
-        expect(part.cid, startsWith('bafy'));
-        expect(part.sources, hasLength(4));
+        expect(part.sources, hasLength(1));
         expect(
-          part.sources.map((source) => source.plane).toSet(),
-          containsAll(<NazaDistributionPlane>{
-            NazaDistributionPlane.githubReleasePart,
-            NazaDistributionPlane.pinataIpfsPart,
-            NazaDistributionPlane.publicIpfsPart,
-            NazaDistributionPlane.browserIpfsPart,
-          }),
+          part.sources.single.plane,
+          NazaDistributionPlane.githubReleasePart,
         );
+        expect(part.sources.single.uri.host, 'github.com');
       }
     });
 
@@ -50,21 +45,15 @@ void main() {
         ...manifest.fullSources,
         for (final part in manifest.parts) ...part.sources,
       ];
-      expect(sources.map((source) => source.id).toSet(), hasLength(sources.length));
+      expect(
+        sources.map((source) => source.id).toSet(),
+        hasLength(sources.length),
+      );
       for (final source in sources) {
         expect(source.uri.scheme, 'https');
         expect(source.uri.host, isNotEmpty);
         expect(source.uri.userInfo, isEmpty);
         expect(source.uri.fragment, isEmpty);
-      }
-    });
-
-    test('records both direct DigitalOcean IPFS peer hints separately', () {
-      expect(manifest.ipfsPeerHints, hasLength(2));
-      for (final peer in manifest.ipfsPeerHints) {
-        expect(peer.peerId, startsWith('12D3KooW'));
-        expect(peer.tcpMultiaddr, contains('/tcp/4001/p2p/${peer.peerId}'));
-        expect(peer.quicMultiaddr, contains('/udp/4001/quic-v1/p2p/${peer.peerId}'));
       }
     });
 

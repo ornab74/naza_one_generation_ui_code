@@ -26,9 +26,9 @@ void main() {
   "sha256":"${builtIn.expectedSha256}",
   "fullSources":["${fullSource ?? builtIn.fullSources.single.uri}"],
   "parts":[
-    {"index":0,"bytes":${parts[0].expectedBytes},"sha256":"${parts[0].expectedSha256}","cid":"${parts[0].cid}","sources":["${part0Source ?? parts[0].sources.first.uri}"]},
-    {"index":1,"bytes":${parts[1].expectedBytes},"sha256":"${parts[1].expectedSha256}","cid":"${parts[1].cid}","sources":[]},
-    {"index":2,"bytes":${parts[2].expectedBytes},"sha256":"${parts[2].expectedSha256}","cid":"${parts[2].cid}","sources":[]}
+    {"index":0,"bytes":${parts[0].expectedBytes},"sha256":"${parts[0].expectedSha256}","sources":["${part0Source ?? parts[0].sources.first.uri}"]},
+    {"index":1,"bytes":${parts[1].expectedBytes},"sha256":"${parts[1].expectedSha256}","sources":[]},
+    {"index":2,"bytes":${parts[2].expectedBytes},"sha256":"${parts[2].expectedSha256}","sources":[]}
   ]
 }
 ```
@@ -38,7 +38,7 @@ void main() {
 
   test('valid catalog can add approved transport without changing identity', () {
     const mirror =
-        'https://example.mypinata.cloud/ipfs/bafybeiax5zuvour7ukmssodnaiowp6ija7t2tqzghlqnikakpcafhknpty';
+        'https://github.com/ornab74/naza_one_generation_ui_code/releases/download/v2/gemma-4-E2B-it.litertlm.part00.bin';
     final merged = NazaRuntimeMirrorCatalog.parseAndMerge(
       builtIn,
       catalog(part0Source: mirror),
@@ -50,6 +50,26 @@ void main() {
       merged.parts[0].sources.any((source) => source.uri.toString() == mirror),
       isTrue,
     );
+  });
+
+  test('removed IPFS gateway families cannot be reintroduced at runtime', () {
+    for (final mirror in <String>[
+      'https://example.mypinata.cloud/ipfs/example',
+      'https://ipfs.io/ipfs/example',
+      'https://example.ipfs.inbrowser.link/',
+    ]) {
+      final merged = NazaRuntimeMirrorCatalog.parseAndMerge(
+        builtIn,
+        catalog(part0Source: mirror),
+      );
+      expect(
+        merged.parts[0].sources.any(
+          (source) => source.uri.toString() == mirror,
+        ),
+        isFalse,
+        reason: mirror,
+      );
+    }
   });
 
   test('tampered immutable model identity is rejected', () {
@@ -80,7 +100,9 @@ void main() {
       catalog(fullSource: 'https://evil.example/model.bin'),
     );
     expect(
-      arbitraryMerged.fullSources.any((source) => source.uri.host == 'evil.example'),
+      arbitraryMerged.fullSources.any(
+        (source) => source.uri.host == 'evil.example',
+      ),
       isFalse,
     );
   });

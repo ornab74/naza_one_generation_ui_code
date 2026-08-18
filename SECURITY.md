@@ -104,10 +104,10 @@ The model identity is compiled into the app: expected filename, immutable
 revision, exact byte count, part identities, and SHA-256 values. Transport
 location is not treated as model identity.
 
-The first-run multi-source downloader may obtain chunks from the immutable full
-object or approved GitHub/IPFS-gateway replicas. Completed chunks are spooled to
-disk for bounded-memory resume. Model parts and the final assembled artifact are
-verified before promotion into the managed model location.
+The first-run multi-source downloader may obtain chunks from the immutable
+Hugging Face full object or approved GitHub Release parts. Completed chunks are
+spooled to disk for bounded-memory resume. Model parts and the final assembled
+artifact are verified before promotion into the managed model location.
 
 Desktop users may alternatively choose a local `.litertlm` file through the
 native picker. Its path is written to the encrypted vault only after exact size

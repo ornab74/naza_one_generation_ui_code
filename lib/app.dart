@@ -35,6 +35,7 @@ import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
 import 'security/post_quantum_recovery.dart';
+import 'security/bounded_input.dart';
 import 'security/secure_database.dart';
 import 'naza_healthdash_monolith.dart';
 import 'naza_bookforge.dart';
@@ -16059,9 +16060,14 @@ final class NazaLegacyVaultMigrator {
     }
     final expectedDigest = raw['sha256']?.toString().toLowerCase() ?? '';
     if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(expectedDigest)) return null;
-    final actualDigest = crypto.sha256
-        .convert(await file.readAsBytes())
+    final actualDigest = (await crypto.sha256.bind(file.openRead()).first)
         .toString();
+    final verifiedStat = await file.stat();
+    if (verifiedStat.size != stat.size ||
+        verifiedStat.modified != stat.modified ||
+        verifiedStat.changed != stat.changed) {
+      return null;
+    }
     if (actualDigest.toLowerCase() != expectedDigest) return null;
     return <String, Object?>{
       for (final entry in raw.entries) entry.key.toString(): entry.value,
@@ -17986,14 +17992,14 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
         confirmButtonText: 'Open recovery',
       );
       if (file == null || !mounted) return;
-      final length = await file.length();
-      if (length <= 0 || length > 384 * 1024 * 1024) {
-        throw const NazaVaultException(
+      backupBytes = await NazaBoundedInput.readXFile(
+        file,
+        maxBytes: 384 * 1024 * 1024,
+        violation: const NazaVaultException(
           'recovery_size',
           'Choose a non-empty recovery package under 384 MiB.',
-        );
-      }
-      backupBytes = await file.readAsBytes();
+        ),
+      );
       final packageJson = utf8.decode(backupBytes, allowMalformed: false);
       final inspected =
           await NazaPostQuantumRecoveryCodec.inspectBackupArtifact(packageJson);
@@ -18009,14 +18015,14 @@ class _NazaVaultGateState extends State<NazaVaultGate> {
           confirmButtonText: 'Open recovery key kit',
         );
         if (keyFile == null || !mounted) return;
-        final keyLength = await keyFile.length();
-        if (keyLength <= 0 || keyLength > 128 * 1024) {
-          throw const NazaVaultException(
+        keyKitBytes = await NazaBoundedInput.readXFile(
+          keyFile,
+          maxBytes: 128 * 1024,
+          violation: const NazaVaultException(
             'recovery_key_size',
             'Choose a non-empty recovery key kit under 128 KiB.',
-          );
-        }
-        keyKitBytes = await keyFile.readAsBytes();
+          ),
+        );
         keyKitJson = utf8.decode(keyKitBytes, allowMalformed: false);
       }
       final material = await NazaPostQuantumRecoveryCodec.materialForRestore(
@@ -24596,13 +24602,14 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
         confirmButtonText: 'Open private key kit',
       );
       if (keyFile == null || !mounted) return;
-      keyKitBytes = await keyFile.readAsBytes();
-      if (keyKitBytes.isEmpty || keyKitBytes.length > 128 * 1024) {
-        throw const NazaVaultException(
+      keyKitBytes = await NazaBoundedInput.readXFile(
+        keyFile,
+        maxBytes: 128 * 1024,
+        violation: const NazaVaultException(
           'pq_key_size',
           'Choose a non-empty recovery key kit under 128 KiB.',
-        );
-      }
+        ),
+      );
       final signingMaterial =
           await NazaPostQuantumRecoveryCodec.materialForBackupSigning(
             keyKitJson: utf8.decode(keyKitBytes, allowMalformed: false),
@@ -24691,13 +24698,14 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
         confirmButtonText: 'Open encrypted backup',
       );
       if (backupFile == null || !mounted) return;
-      backupBytes = await backupFile.readAsBytes();
-      if (backupBytes.isEmpty || backupBytes.length > 384 * 1024 * 1024) {
-        throw const NazaVaultException(
+      backupBytes = await NazaBoundedInput.readXFile(
+        backupFile,
+        maxBytes: 384 * 1024 * 1024,
+        violation: const NazaVaultException(
           'pq_backup_size',
           'Choose a non-empty recovery backup under 384 MiB.',
-        );
-      }
+        ),
+      );
       final keyFile = await file_selector.openFile(
         acceptedTypeGroups: const [
           file_selector.XTypeGroup(
@@ -24708,13 +24716,14 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
         confirmButtonText: 'Open private key kit',
       );
       if (keyFile == null || !mounted) return;
-      keyBytes = await keyFile.readAsBytes();
-      if (keyBytes.isEmpty || keyBytes.length > 128 * 1024) {
-        throw const NazaVaultException(
+      keyBytes = await NazaBoundedInput.readXFile(
+        keyFile,
+        maxBytes: 128 * 1024,
+        violation: const NazaVaultException(
           'pq_key_size',
           'Choose a non-empty recovery key kit under 128 KiB.',
-        );
-      }
+        ),
+      );
       final material = await NazaPostQuantumRecoveryCodec.materialForRestore(
         backupArtifactJson: utf8.decode(backupBytes, allowMalformed: false),
         keyKitJson: utf8.decode(keyBytes, allowMalformed: false),

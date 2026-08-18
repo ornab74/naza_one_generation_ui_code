@@ -326,7 +326,7 @@ To build everything in GitHub:
 The workflow jobs are separate:
 
 - `Analyze`
-- `Android APK/AAB`
+- `Android AAB`
 - `Linux x64`
 - `Windows x64`
 - `macOS`

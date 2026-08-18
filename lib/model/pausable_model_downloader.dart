@@ -98,9 +98,7 @@ final class _ProviderScore {
       retryAfter == null || DateTime.now().isAfter(retryAfter!);
 
   double get effectiveScore {
-    final speed = bps <= 0
-        ? 1.0
-        : 1.0 + math.log(1.0 + bps / (1024 * 1024));
+    final speed = bps <= 0 ? 1.0 : 1.0 + math.log(1.0 + bps / (1024 * 1024));
     final pressure = 1.0 / (1.0 + inFlight * 0.8);
     final reliability = 1.0 / (1.0 + failures * 0.45);
     return score * speed * pressure * reliability;
@@ -147,9 +145,9 @@ final class _ChunkTransfer {
 /// Unlike the legacy bootstrap downloader this class consumes the immutable
 /// multi-plane manifest directly. It needs no provider-reported topology:
 /// exact part sizes and hashes are already compiled into the application.
-/// Chunks are fetched concurrently from GitHub/IPFS gateway replicas or from
-/// the immutable full-object source, written to a bounded spool, committed in
-/// order, and retained across restarts through a compact journal.
+/// Chunks are fetched concurrently from GitHub Release parts, approved runtime
+/// mirrors, or the immutable full-object source; written to a bounded spool;
+/// committed in order; and retained across restarts through a compact journal.
 final class NazaPausableModelDownloader {
   NazaPausableModelDownloader({
     required this.manifest,
@@ -158,8 +156,8 @@ final class NazaPausableModelDownloader {
     this.concurrency = 5,
     this.requestTimeout = const Duration(seconds: 40),
     this.connectionTimeout = const Duration(seconds: 15),
-  })  : assert(chunkBytes >= 256 * 1024),
-        assert(concurrency >= 1 && concurrency <= 12);
+  }) : assert(chunkBytes >= 256 * 1024),
+       assert(concurrency >= 1 && concurrency <= 12);
 
   final NazaModelDistributionManifest manifest;
   final NazaTransferController control;
@@ -192,16 +190,18 @@ final class NazaPausableModelDownloader {
     final spool = Directory('${staging.path}.chunks');
     final stopwatch = Stopwatch()..start();
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.probing,
-      receivedBytes: 0,
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks: 0,
-      totalChunks: chunks.length,
-      bytesPerSecond: 0,
-      fastestProvider: null,
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.probing,
+        receivedBytes: 0,
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks: 0,
+        totalChunks: chunks.length,
+        bytesPerSecond: 0,
+        fastestProvider: null,
+      ),
+    );
 
     final committed = await _prepareResume(
       staging: staging,
@@ -210,16 +210,18 @@ final class NazaPausableModelDownloader {
       chunks: chunks,
     );
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.allocating,
-      receivedBytes: _prefixBytes(chunks, committed),
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks: committed,
-      totalChunks: chunks.length,
-      bytesPerSecond: 0,
-      fastestProvider: _fastestProvider(),
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.allocating,
+        receivedBytes: _prefixBytes(chunks, committed),
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks: committed,
+        totalChunks: chunks.length,
+        bytesPerSecond: 0,
+        fastestProvider: _fastestProvider(),
+      ),
+    );
 
     await _runTransfers(
       staging: staging,
@@ -231,17 +233,20 @@ final class NazaPausableModelDownloader {
       stopwatch: stopwatch,
     );
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.verifying,
-      receivedBytes: totalBytes,
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks: chunks.length,
-      totalChunks: chunks.length,
-      bytesPerSecond: totalBytes /
-          math.max(0.001, stopwatch.elapsedMilliseconds / 1000.0),
-      fastestProvider: _fastestProvider(),
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.verifying,
+        receivedBytes: totalBytes,
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks: chunks.length,
+        totalChunks: chunks.length,
+        bytesPerSecond:
+            totalBytes /
+            math.max(0.001, stopwatch.elapsedMilliseconds / 1000.0),
+        fastestProvider: _fastestProvider(),
+      ),
+    );
 
     await _verifyParts(staging, journal, spool);
     final digest = await _sha256Range(staging, 0, totalBytes);
@@ -264,24 +269,28 @@ final class NazaPausableModelDownloader {
       if (backedUp && await previous.exists()) await previous.delete();
     } catch (_) {
       if (await target.exists()) await target.delete();
-      if (backedUp && await previous.exists()) await previous.rename(target.path);
+      if (backedUp && await previous.exists())
+        await previous.rename(target.path);
       rethrow;
     }
     if (await journal.exists()) await journal.delete();
     if (await spool.exists()) await spool.delete(recursive: true);
     stopwatch.stop();
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.complete,
-      receivedBytes: totalBytes,
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks: chunks.length,
-      totalChunks: chunks.length,
-      bytesPerSecond: totalBytes /
-          math.max(0.001, stopwatch.elapsedMilliseconds / 1000.0),
-      fastestProvider: _fastestProvider(),
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.complete,
+        receivedBytes: totalBytes,
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks: chunks.length,
+        totalChunks: chunks.length,
+        bytesPerSecond:
+            totalBytes /
+            math.max(0.001, stopwatch.elapsedMilliseconds / 1000.0),
+        fastestProvider: _fastestProvider(),
+      ),
+    );
 
     return NazaDownloadResult(
       file: target,
@@ -308,17 +317,21 @@ final class NazaPausableModelDownloader {
     var index = 0;
     var fileOffset = 0;
     for (final part in manifest.parts) {
-      for (var partOffset = 0;
-          partOffset < part.expectedBytes;
-          partOffset += chunkBytes) {
+      for (
+        var partOffset = 0;
+        partOffset < part.expectedBytes;
+        partOffset += chunkBytes
+      ) {
         final length = math.min(chunkBytes, part.expectedBytes - partOffset);
-        chunks.add(_PausableChunk(
-          index: index++,
-          partIndex: part.index,
-          fileOffset: fileOffset + partOffset,
-          partOffset: partOffset,
-          length: length,
-        ));
+        chunks.add(
+          _PausableChunk(
+            index: index++,
+            partIndex: part.index,
+            fileOffset: fileOffset + partOffset,
+            partOffset: partOffset,
+            length: length,
+          ),
+        );
       }
       fileOffset += part.expectedBytes;
     }
@@ -401,7 +414,9 @@ final class NazaPausableModelDownloader {
     }
 
     final pending = Queue<_PausableChunk>.from(
-      chunks.where((chunk) => chunk.index >= committed && !ready.contains(chunk.index)),
+      chunks.where(
+        (chunk) => chunk.index >= committed && !ready.contains(chunk.index),
+      ),
     );
     final active = <int, Future<_ChunkTransfer>>{};
     final sink = staging.openWrite(mode: FileMode.writeOnlyAppend);
@@ -413,13 +428,16 @@ final class NazaPausableModelDownloader {
         chunkBytes: chunkBytes,
       );
       final temp = File('${journal.path}.tmp');
-      await temp.writeAsString(jsonEncode(<String, Object?>{
-        'schema': 'naza-onboarding-download-v1',
-        'fingerprint': fingerprint,
-        'chunkBytes': chunkBytes,
-        'totalBytes': manifest.expectedBytes,
-        'committedChunks': committed,
-      }), flush: true);
+      await temp.writeAsString(
+        jsonEncode(<String, Object?>{
+          'schema': 'naza-onboarding-download-v1',
+          'fingerprint': fingerprint,
+          'chunkBytes': chunkBytes,
+          'totalBytes': manifest.expectedBytes,
+          'committedChunks': committed,
+        }),
+        flush: true,
+      );
       if (await journal.exists()) await journal.delete();
       await temp.rename(journal.path);
     }
@@ -451,17 +469,20 @@ final class NazaPausableModelDownloader {
     void publish() {
       final completedBytes =
           _prefixBytes(chunks, committed) + _readyBytes(chunks, ready);
-      onProgress?.call(NazaDownloadSnapshot(
-        stage: NazaDownloadStage.downloading,
-        receivedBytes: completedBytes.clamp(0, manifest.expectedBytes),
-        totalBytes: manifest.expectedBytes,
-        activeTransfers: active.length,
-        completedChunks: committed + ready.length,
-        totalChunks: chunks.length,
-        bytesPerSecond: _providerBytes.values.fold<int>(0, (a, b) => a + b) /
-            math.max(0.001, stopwatch.elapsedMilliseconds / 1000.0),
-        fastestProvider: _fastestProvider(),
-      ));
+      onProgress?.call(
+        NazaDownloadSnapshot(
+          stage: NazaDownloadStage.downloading,
+          receivedBytes: completedBytes.clamp(0, manifest.expectedBytes),
+          totalBytes: manifest.expectedBytes,
+          activeTransfers: active.length,
+          completedChunks: committed + ready.length,
+          totalChunks: chunks.length,
+          bytesPerSecond:
+              _providerBytes.values.fold<int>(0, (a, b) => a + b) /
+              math.max(0.001, stopwatch.elapsedMilliseconds / 1000.0),
+          fastestProvider: _fastestProvider(),
+        ),
+      );
     }
 
     try {
@@ -472,7 +493,10 @@ final class NazaPausableModelDownloader {
             active.length < concurrency &&
             pending.isNotEmpty) {
           final chunk = pending.removeFirst();
-          active[chunk.index] = _downloadChunk(chunk, _chunkFile(spool, chunk.index));
+          active[chunk.index] = _downloadChunk(
+            chunk,
+            _chunkFile(spool, chunk.index),
+          );
         }
 
         if (active.isEmpty) {
@@ -506,7 +530,10 @@ final class NazaPausableModelDownloader {
           );
           if (attempts >= 5) {
             Error.throwWithStackTrace(
-              result.error ?? const NazaModelDistributionException('Chunk transfer failed.'),
+              result.error ??
+                  const NazaModelDistributionException(
+                    'Chunk transfer failed.',
+                  ),
               result.stackTrace ?? StackTrace.current,
             );
           }
@@ -520,7 +547,8 @@ final class NazaPausableModelDownloader {
       await sink.close();
     }
 
-    if (committed != chunks.length || await staging.length() != manifest.expectedBytes) {
+    if (committed != chunks.length ||
+        await staging.length() != manifest.expectedBytes) {
       throw NazaModelDistributionException(
         'Download assembly incomplete: $committed/${chunks.length} chunks, '
         '${await staging.length()}/${manifest.expectedBytes} bytes.',
@@ -545,10 +573,7 @@ final class NazaPausableModelDownloader {
     }
   }
 
-  Future<_ProviderScore> _fetchChunk(
-    _PausableChunk chunk,
-    File output,
-  ) async {
+  Future<_ProviderScore> _fetchChunk(_PausableChunk chunk, File output) async {
     await control.checkpoint();
     final candidates = <_ProviderScore>[];
     for (final source in manifest.parts[chunk.partIndex].sources) {
@@ -607,7 +632,10 @@ final class NazaPausableModelDownloader {
             response.statusCode == HttpStatus.ok &&
             response.contentLength == expected)) {
       await response.drain<void>();
-      throw HttpException('Range request failed with HTTP ${response.statusCode}.', uri: uri);
+      throw HttpException(
+        'Range request failed with HTTP ${response.statusCode}.',
+        uri: uri,
+      );
     }
 
     final sink = output.openWrite(mode: FileMode.writeOnly);
@@ -653,7 +681,9 @@ final class NazaPausableModelDownloader {
   }
 
   static Future<String> _sha256Range(File file, int start, int length) async {
-    final digest = await crypto.sha256.bind(file.openRead(start, start + length)).first;
+    final digest = await crypto.sha256
+        .bind(file.openRead(start, start + length))
+        .first;
     return digest.toString().toLowerCase();
   }
 
@@ -672,7 +702,9 @@ final class NazaPausableModelDownloader {
 
   static void _validateUri(Uri uri) {
     if (uri.scheme.toLowerCase() != 'https' || uri.host.trim().isEmpty) {
-      throw NazaModelDistributionException('Only HTTPS model sources are allowed: $uri');
+      throw NazaModelDistributionException(
+        'Only HTTPS model sources are allowed: $uri',
+      );
     }
     if (uri.userInfo.isNotEmpty || uri.fragment.isNotEmpty) {
       throw NazaModelDistributionException('Unsafe model source URI: $uri');
@@ -680,7 +712,9 @@ final class NazaPausableModelDownloader {
   }
 
   String? _fastestProvider() {
-    final values = _providers.values.where((provider) => provider.bps > 0).toList();
+    final values = _providers.values
+        .where((provider) => provider.bps > 0)
+        .toList();
     if (values.isEmpty) return null;
     values.sort((a, b) => b.bps.compareTo(a.bps));
     return values.first.source.id;

@@ -10,14 +10,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart' as crypto;
 
-enum NazaDistributionPlane {
-  canonicalFull,
-  githubReleasePart,
-  pinataIpfsPart,
-  publicIpfsPart,
-  browserIpfsPart,
-  runtimeMirror,
-}
+enum NazaDistributionPlane { canonicalFull, githubReleasePart, runtimeMirror }
 
 final class NazaDistributionSource {
   const NazaDistributionSource({
@@ -42,19 +35,18 @@ final class NazaDistributionSource {
   }
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'id': id,
-        'uri': uri.toString(),
-        'plane': plane.name,
-        'partIndex': partIndex,
-        'trustWeight': trustWeight,
-      };
+    'id': id,
+    'uri': uri.toString(),
+    'plane': plane.name,
+    'partIndex': partIndex,
+    'trustWeight': trustWeight,
+  };
 }
 
 final class NazaDistributionPart {
   const NazaDistributionPart({
     required this.index,
     required this.name,
-    required this.cid,
     required this.expectedBytes,
     required this.expectedSha256,
     required this.sources,
@@ -62,7 +54,6 @@ final class NazaDistributionPart {
 
   final int index;
   final String name;
-  final String cid;
   final int expectedBytes;
   final String expectedSha256;
   final List<NazaDistributionSource> sources;
@@ -71,47 +62,24 @@ final class NazaDistributionPart {
       NazaDistributionPart(
         index: index,
         name: name,
-        cid: cid,
         expectedBytes: expectedBytes,
         expectedSha256: expectedSha256,
         sources: List<NazaDistributionSource>.unmodifiable(value),
       );
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'index': index,
-        'name': name,
-        'cid': cid,
-        'expectedBytes': expectedBytes,
-        'expectedSha256': expectedSha256.toLowerCase(),
-        'sources': sources.map((source) => source.toJson()).toList(),
-      };
-}
-
-final class NazaIpfsPeerHint {
-  const NazaIpfsPeerHint({
-    required this.name,
-    required this.peerId,
-    required this.tcpMultiaddr,
-    required this.quicMultiaddr,
-  });
-
-  final String name;
-  final String peerId;
-  final String tcpMultiaddr;
-  final String quicMultiaddr;
-
-  Map<String, Object?> toJson() => <String, Object?>{
-        'name': name,
-        'peerId': peerId,
-        'tcpMultiaddr': tcpMultiaddr,
-        'quicMultiaddr': quicMultiaddr,
-      };
+    'index': index,
+    'name': name,
+    'expectedBytes': expectedBytes,
+    'expectedSha256': expectedSha256.toLowerCase(),
+    'sources': sources.map((source) => source.toJson()).toList(),
+  };
 }
 
 /// Immutable distribution identity plus transport locations for the bundled
 /// Gemma 4 E2B LiteRT-LM model.
 ///
-/// Bytes, hashes, revision and CIDs are compiled into the application. Runtime
+/// Bytes, hashes, and revision are compiled into the application. Runtime
 /// mirror discovery may add HTTPS transport locations but cannot replace any
 /// of these immutable identity fields.
 final class NazaModelDistributionManifest {
@@ -122,7 +90,6 @@ final class NazaModelDistributionManifest {
     required this.revision,
     required this.fullSources,
     required this.parts,
-    required this.ipfsPeerHints,
     required this.runtimeCatalogUri,
   });
 
@@ -132,7 +99,6 @@ final class NazaModelDistributionManifest {
   final String revision;
   final List<NazaDistributionSource> fullSources;
   final List<NazaDistributionPart> parts;
-  final List<NazaIpfsPeerHint> ipfsPeerHints;
   final Uri runtimeCatalogUri;
 
   NazaModelDistributionManifest copyWithSources({
@@ -140,7 +106,9 @@ final class NazaModelDistributionManifest {
     required List<List<NazaDistributionSource>> partSources,
   }) {
     if (partSources.length != parts.length) {
-      throw ArgumentError('Runtime mirror part-source count does not match manifest.');
+      throw ArgumentError(
+        'Runtime mirror part-source count does not match manifest.',
+      );
     }
     return NazaModelDistributionManifest(
       modelFileName: modelFileName,
@@ -152,13 +120,12 @@ final class NazaModelDistributionManifest {
         for (var i = 0; i < parts.length; i++)
           parts[i].copyWithSources(partSources[i]),
       ]),
-      ipfsPeerHints: ipfsPeerHints,
       runtimeCatalogUri: runtimeCatalogUri,
     );
   }
 
-  static final NazaModelDistributionManifest gemma4E2b =
-      NazaModelDistributionManifest(
+  static final NazaModelDistributionManifest
+  gemma4E2b = NazaModelDistributionManifest(
     modelFileName: 'gemma-4-E2B-it.litertlm',
     expectedSha256:
         'ab7838cdfc8f77e54d8ca45eadceb20452d9f01e4bfade03e5dce27911b27e42',
@@ -183,46 +150,24 @@ final class NazaModelDistributionManifest {
     parts: <NazaDistributionPart>[
       _part(
         index: 0,
-        cid: 'bafybeiax5zuvour7ukmssodnaiowp6ija7t2tqzghlqnikakpcafhknpty',
         expectedSha256:
             'b4ba4432650a1d767736b4139d9d94ab0ebb2e084a9c1fcca3824e691b4cb995',
       ),
       _part(
         index: 1,
-        cid: 'bafybeid7wk63zk76jno5rqovfbl2boekhdfhphvomvb4ztfs2oj5oasqm4',
         expectedSha256:
             '5f27ca28d693292298ce9bff48c641458af2994466cc1809576380b947861bc8',
       ),
       _part(
         index: 2,
-        cid: 'bafybeiav2gawt4c2lwz3kj52zjdyw5gtvvrpmrfisyeahhndiuzbiaeckm',
         expectedSha256:
             '00e9d3b99151f41afe9cbc2e99cd3d684b62d67238859285ec89d1cf5a94c2f3',
-      ),
-    ],
-    ipfsPeerHints: const <NazaIpfsPeerHint>[
-      NazaIpfsPeerHint(
-        name: 'do-node-1',
-        peerId: '12D3KooWCSJHymufeoVskC8kNwS14SPLgApQuNibXWSmtQJENP2d',
-        tcpMultiaddr:
-            '/ip4/161.35.112.160/tcp/4001/p2p/12D3KooWCSJHymufeoVskC8kNwS14SPLgApQuNibXWSmtQJENP2d',
-        quicMultiaddr:
-            '/ip4/161.35.112.160/udp/4001/quic-v1/p2p/12D3KooWCSJHymufeoVskC8kNwS14SPLgApQuNibXWSmtQJENP2d',
-      ),
-      NazaIpfsPeerHint(
-        name: 'do-node-2',
-        peerId: '12D3KooWA7dr9ocKA2gwhz8mtcCziZvzugbT3gnfSnqSBP2WdST9',
-        tcpMultiaddr:
-            '/ip4/165.227.17.244/tcp/4001/p2p/12D3KooWA7dr9ocKA2gwhz8mtcCziZvzugbT3gnfSnqSBP2WdST9',
-        quicMultiaddr:
-            '/ip4/165.227.17.244/udp/4001/quic-v1/p2p/12D3KooWA7dr9ocKA2gwhz8mtcCziZvzugbT3gnfSnqSBP2WdST9',
       ),
     ],
   );
 
   static NazaDistributionPart _part({
     required int index,
-    required String cid,
     required String expectedSha256,
   }) {
     final suffix = index.toString().padLeft(2, '0');
@@ -230,7 +175,6 @@ final class NazaModelDistributionManifest {
     return NazaDistributionPart(
       index: index,
       name: name,
-      cid: cid,
       expectedBytes: 861028352,
       expectedSha256: expectedSha256,
       sources: <NazaDistributionSource>[
@@ -243,29 +187,6 @@ final class NazaModelDistributionManifest {
           plane: NazaDistributionPlane.githubReleasePart,
           partIndex: index,
           trustWeight: 1.15,
-        ),
-        NazaDistributionSource(
-          id: 'pinata-part-$suffix',
-          uri: Uri.parse(
-            'https://silver-southern-echidna-758.mypinata.cloud/ipfs/$cid',
-          ),
-          plane: NazaDistributionPlane.pinataIpfsPart,
-          partIndex: index,
-          trustWeight: 1.10,
-        ),
-        NazaDistributionSource(
-          id: 'ipfs-io-part-$suffix',
-          uri: Uri.parse('https://ipfs.io/ipfs/$cid'),
-          plane: NazaDistributionPlane.publicIpfsPart,
-          partIndex: index,
-          trustWeight: 1.0,
-        ),
-        NazaDistributionSource(
-          id: 'inbrowser-part-$suffix',
-          uri: Uri.parse('https://$cid.ipfs.inbrowser.link/'),
-          plane: NazaDistributionPlane.browserIpfsPart,
-          partIndex: index,
-          trustWeight: 0.95,
         ),
       ],
     );
@@ -291,7 +212,6 @@ final class NazaModelDistributionManifest {
         for (final part in parts)
           <String, Object?>{
             'index': part.index,
-            'cid': part.cid,
             'bytes': part.expectedBytes,
             'sha256': part.expectedSha256.toLowerCase(),
           },

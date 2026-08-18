@@ -97,7 +97,16 @@ final class NazaSecurityKernel {
     int Function()? monotonicMicros,
   }) : _capabilityKey = Uint8List.fromList(capabilityKey),
        _state = initialState,
-       _monotonicMicros = monotonicMicros ?? _newMonotonicClock();
+       _monotonicMicros = monotonicMicros ?? _newMonotonicClock() {
+    if (_capabilityKey.length != 32) {
+      _capabilityKey.fillRange(0, _capabilityKey.length, 0);
+      throw ArgumentError.value(
+        capabilityKey.length,
+        'capabilityKey',
+        'must contain exactly 32 bytes',
+      );
+    }
+  }
 
   final Uint8List _capabilityKey;
   final Hmac _hmac = Hmac.sha256();

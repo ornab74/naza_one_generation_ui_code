@@ -77,10 +77,12 @@ jobs:
           test_archive/pq_trust_policy_test.dart
           test_archive/persistent_audit_test.dart
           test_archive/release_trust_test.dart
+      - name: Run developer-tool security tests
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
 
   android:
-    name: Android APK/AAB
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android' }}
+    name: Android AAB
+    if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android') }}
     runs-on: ubuntu-24.04
     needs: analyze
     steps:
@@ -97,18 +99,38 @@ jobs:
           cache: true
       - name: Fetch dependencies
         run: flutter pub get
-      - name: Build Android APK
-        run: flutter build apk --release --no-pub
+      - name: Configure Android release signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required Android signing secret: $name" >&2
+              exit 1
+            fi
+          done
+          keystore_path="$RUNNER_TEMP/naza-one-upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > "$keystore_path"
+          test -s "$keystore_path"
+          {
+            printf 'NAZA_ANDROID_KEYSTORE_PATH=%s\n' "$keystore_path"
+            printf 'NAZA_ANDROID_KEYSTORE_PASSWORD=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'NAZA_ANDROID_KEY_ALIAS=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'NAZA_ANDROID_KEY_PASSWORD=%s\n' "$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
       - name: Build Android App Bundle
         run: flutter build appbundle --release --no-pub
-      - name: Upload Android artifacts
+      - name: Upload Android AAB
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Naza-One-Android
+          name: Naza-One-Android-AAB
           retention-days: 3
-          path: |
-            build/app/outputs/flutter-apk/*.apk
-            build/app/outputs/bundle/release/*.aab
+          path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
   linux:

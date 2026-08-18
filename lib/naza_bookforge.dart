@@ -17,6 +17,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xml/xml.dart';
 
+import 'security/bounded_input.dart';
 import 'security/secure_database.dart';
 
 const Object _bookUnset = Object();
@@ -405,17 +406,18 @@ class ImportService {
     final FilePickerResult? result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: <String>['md', 'markdown', 'txt', 'docx'],
-      withData: true,
+      withData: false,
+      withReadStream: true,
     );
     if (result == null || result.files.isEmpty) return null;
     final PlatformFile file = result.files.single;
-    final Uint8List? bytes = file.bytes;
-    if (bytes == null) throw StateError('The selected file could not be read.');
-    if (bytes.length > maxCompressedBytes) {
-      throw const FormatException(
-        'Selected file exceeds the 32 MiB import limit.',
-      );
-    }
+    final Uint8List bytes = await NazaBoundedInput.readPlatformFile(
+      file,
+      maxBytes: maxCompressedBytes,
+      violation: const FormatException(
+        'Choose a non-empty file within the 32 MiB import limit.',
+      ),
+    );
     final String ext = (file.extension ?? '').toLowerCase();
     // Decode once and reuse the validated archive for both document text and
     // media extraction. This halves ZIP parsing and avoids duplicate lazy

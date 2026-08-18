@@ -8,6 +8,7 @@
 // LLM-CONTEXT:END
 import java.io.FileInputStream
 import java.util.Properties
+import org.gradle.api.GradleException
 
 plugins {
     id("com.android.application")
@@ -18,9 +19,51 @@ plugins {
 
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
-val hasReleaseSigning = keystorePropertiesFile.exists()
-if (hasReleaseSigning) {
+val hasLocalReleaseSigning = keystorePropertiesFile.exists()
+if (hasLocalReleaseSigning) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
+fun requireSigningValues(
+    source: String,
+    values: Map<String, String?>,
+): Map<String, String> {
+    val missing = values.filterValues { it.isNullOrBlank() }.keys.sorted()
+    if (missing.isNotEmpty()) {
+        throw GradleException(
+            "$source is incomplete; missing ${missing.joinToString(", ")}.",
+        )
+    }
+    return values.mapValues { checkNotNull(it.value).trim() }
+}
+
+val environmentSigningValues = mapOf(
+    "storeFile" to System.getenv("NAZA_ANDROID_KEYSTORE_PATH"),
+    "storePassword" to System.getenv("NAZA_ANDROID_KEYSTORE_PASSWORD"),
+    "keyAlias" to System.getenv("NAZA_ANDROID_KEY_ALIAS"),
+    "keyPassword" to System.getenv("NAZA_ANDROID_KEY_PASSWORD"),
+)
+val hasEnvironmentReleaseSigning =
+    environmentSigningValues.values.any { !it.isNullOrBlank() }
+val releaseSigning = when {
+    hasLocalReleaseSigning -> requireSigningValues(
+        "android/key.properties",
+        mapOf(
+            "storeFile" to keystoreProperties.getProperty("storeFile"),
+            "storePassword" to keystoreProperties.getProperty("storePassword"),
+            "keyAlias" to keystoreProperties.getProperty("keyAlias"),
+            "keyPassword" to keystoreProperties.getProperty("keyPassword"),
+        ),
+    )
+    hasEnvironmentReleaseSigning -> requireSigningValues(
+        "Android release-signing environment",
+        environmentSigningValues,
+    )
+    else -> null
+}
+val releaseStoreFile = releaseSigning?.getValue("storeFile")?.let(rootProject::file)
+if (releaseStoreFile != null && !releaseStoreFile.isFile) {
+    throw GradleException("Android release keystore does not exist: $releaseStoreFile")
 }
 
 android {
@@ -47,24 +90,22 @@ android {
     }
 
     signingConfigs {
-        if (hasReleaseSigning) {
+        if (releaseSigning != null) {
             create("release") {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = releaseSigning.getValue("keyAlias")
+                keyPassword = releaseSigning.getValue("keyPassword")
+                storeFile = checkNotNull(releaseStoreFile)
+                storePassword = releaseSigning.getValue("storePassword")
             }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = if (hasReleaseSigning) {
-                signingConfigs.getByName("release")
-            } else {
-                // Local fallback so release builds still work before a private
-                // upload keystore is supplied through GitHub Actions secrets.
-                signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (releaseSigning != null) {
+                signingConfig = signingConfigs.getByName("release")
             }
         }
     }

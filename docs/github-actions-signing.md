@@ -2,7 +2,7 @@
 
 The workflow in `.github/workflows/flutter-release.yml` builds:
 
-- Android APK and AAB on Ubuntu
+- one signed Android AAB on Ubuntu (pushes to `main` and manual Android/all runs)
 - Linux x64 bundle on Ubuntu
 - Windows x64 bundle on Windows
 - optional Windows Store/MSIX package on Windows
@@ -37,8 +37,17 @@ base64 -w0 upload-keystore.jks
 base64 -i upload-keystore.jks
 ```
 
-The workflow writes `android/key.properties` at build time. Do not commit your
-real keystore or real `key.properties`.
+The workflow decodes the keystore into the runner's temporary directory and
+passes signing values directly to Gradle through masked environment variables.
+It fails before building if any required secret is absent. Do not commit your
+real keystore or real `key.properties`; local release builds without signing
+material produce an unsigned bundle and never fall back to the debug key.
+
+CI uploads only:
+
+```text
+build/app/outputs/bundle/release/app-release.aab
+```
 
 ## iOS signing
 

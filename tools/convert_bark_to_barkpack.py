@@ -78,7 +78,13 @@ def load_state(path: Path) -> Dict[str, "torch.Tensor"]:
         return dict(load_safetensors(str(path), device="cpu"))
     if torch is None:
         raise RuntimeError("Install torch to read .bin/.pt/.pth files: pip install torch")
-    obj = torch.load(str(path), map_location="cpu")
+    try:
+        obj = torch.load(str(path), map_location="cpu", weights_only=True)
+    except TypeError as exc:
+        raise RuntimeError(
+            "The installed PyTorch cannot safely load weights-only checkpoints. "
+            "Upgrade PyTorch or convert the source model to safetensors."
+        ) from exc
     if isinstance(obj, dict) and "state_dict" in obj and isinstance(obj["state_dict"], dict):
         obj = obj["state_dict"]
     if not isinstance(obj, dict):

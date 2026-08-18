@@ -203,16 +203,13 @@ lib/model/local_model_preference.dart
 mirrors.md
 ```
 
-The first-run downloader uses immutable model identity compiled into the app. Runtime mirror discovery may add approved transport locations but cannot change the expected filename, revision, total size, part sizes, part hashes/CIDs, or final SHA-256.
+The first-run downloader uses immutable model identity compiled into the app. Runtime mirror discovery may add approved transport locations but cannot change the expected filename, revision, total size, part sizes, part hashes, or final SHA-256.
 
 Current transport families include:
 
 - immutable Hugging Face full-object source;
 - GitHub Release parts;
-- Pinata IPFS gateways;
-- `ipfs.io`;
-- `*.ipfs.inbrowser.link`;
-- documented direct IPFS peer IDs/multiaddrs as topology hints for future native libp2p/Bitswap transport.
+- optional runtime mirrors restricted to those same two host families.
 
 The onboarding transfer engine uses 4 MiB chunks, concurrent range requests, provider scoring, persistent chunk spool state, contiguous-prefix assembly, part hash verification, final full-file SHA-256 verification, and atomic promotion into the managed model location.
 

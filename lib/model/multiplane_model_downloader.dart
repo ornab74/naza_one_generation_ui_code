@@ -18,13 +18,7 @@ import 'model_distribution_manifest.dart';
 
 typedef NazaDownloadProgress = void Function(NazaDownloadSnapshot snapshot);
 
-enum NazaDownloadStage {
-  probing,
-  allocating,
-  downloading,
-  verifying,
-  complete,
-}
+enum NazaDownloadStage { probing, allocating, downloading, verifying, complete }
 
 final class NazaDownloadSnapshot {
   const NazaDownloadSnapshot({
@@ -109,9 +103,7 @@ final class _Chunk {
 }
 
 final class _ProviderState {
-  _ProviderState(this.source)
-      : score = source.trustWeight,
-        ewmaBps = 0;
+  _ProviderState(this.source) : score = source.trustWeight, ewmaBps = 0;
 
   final NazaDistributionSource source;
   double score;
@@ -183,12 +175,12 @@ final class _ResumeJournal {
   final int committedPrefixChunks;
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'schema': 'naza-model-download-journal-v2',
-        'fingerprint': fingerprint,
-        'totalBytes': totalBytes,
-        'chunkBytes': chunkBytes,
-        'committedPrefixChunks': committedPrefixChunks,
-      };
+    'schema': 'naza-model-download-journal-v2',
+    'fingerprint': fingerprint,
+    'totalBytes': totalBytes,
+    'chunkBytes': chunkBytes,
+    'committedPrefixChunks': committedPrefixChunks,
+  };
 
   static _ResumeJournal? decode(String text) {
     try {
@@ -222,11 +214,11 @@ final class _ResumeState {
 /// A bounded, resumable, multi-provider HTTPS swarm for immutable model files.
 ///
 /// The scheduler can fetch the same logical bytes from several independent
-/// planes (canonical full object, GitHub release parts, Pinata and public IPFS
-/// gateways). Chunks arrive out of order, but are committed to the staging file
-/// only when the contiguous prefix advances. This gives torrent-like parallel
-/// fetching without holding model chunks in RAM and without requiring unsafe
-/// random-write reopen semantics.
+/// planes (the canonical full object, GitHub release parts, and approved runtime
+/// mirrors). Chunks arrive out of order, but are committed to the staging file
+/// only when the contiguous prefix advances. This provides parallel fetching
+/// without holding model chunks in RAM or requiring unsafe random-write reopen
+/// semantics.
 final class NazaMultiplaneModelDownloader {
   NazaMultiplaneModelDownloader({
     required this.manifest,
@@ -235,9 +227,9 @@ final class NazaMultiplaneModelDownloader {
     this.maxConcurrency = 8,
     this.requestTimeout = const Duration(seconds: 35),
     this.connectionTimeout = const Duration(seconds: 12),
-  })  : assert(chunkBytes >= 256 * 1024),
-        assert(minConcurrency > 0),
-        assert(maxConcurrency >= minConcurrency);
+  }) : assert(chunkBytes >= 256 * 1024),
+       assert(minConcurrency > 0),
+       assert(maxConcurrency >= minConcurrency);
 
   final NazaModelDistributionManifest manifest;
   final int chunkBytes;
@@ -290,17 +282,19 @@ final class NazaMultiplaneModelDownloader {
       chunks: chunks,
     );
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.allocating,
-      receivedBytes: _prefixBytes(chunks, resume.committedPrefixChunks),
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks:
-          resume.committedPrefixChunks + resume.readyChunkIndexes.length,
-      totalChunks: chunks.length,
-      bytesPerSecond: 0,
-      fastestProvider: null,
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.allocating,
+        receivedBytes: _prefixBytes(chunks, resume.committedPrefixChunks),
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks:
+            resume.committedPrefixChunks + resume.readyChunkIndexes.length,
+        totalChunks: chunks.length,
+        bytesPerSecond: 0,
+        fastestProvider: null,
+      ),
+    );
 
     await _downloadChunks(
       staging: staging,
@@ -314,17 +308,19 @@ final class NazaMultiplaneModelDownloader {
       onProgress: onProgress,
     );
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.verifying,
-      receivedBytes: totalBytes,
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks: chunks.length,
-      totalChunks: chunks.length,
-      bytesPerSecond: totalBytes /
-          math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
-      fastestProvider: _fastestProvider(),
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.verifying,
+        receivedBytes: totalBytes,
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks: chunks.length,
+        totalChunks: chunks.length,
+        bytesPerSecond:
+            totalBytes / math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
+        fastestProvider: _fastestProvider(),
+      ),
+    );
 
     final digest = await _sha256File(staging);
     final expected = manifest.expectedSha256.toLowerCase();
@@ -356,17 +352,19 @@ final class NazaMultiplaneModelDownloader {
     if (await spool.exists()) await spool.delete(recursive: true);
     stopwatch.stop();
 
-    onProgress?.call(NazaDownloadSnapshot(
-      stage: NazaDownloadStage.complete,
-      receivedBytes: totalBytes,
-      totalBytes: totalBytes,
-      activeTransfers: 0,
-      completedChunks: chunks.length,
-      totalChunks: chunks.length,
-      bytesPerSecond: totalBytes /
-          math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
-      fastestProvider: _fastestProvider(),
-    ));
+    onProgress?.call(
+      NazaDownloadSnapshot(
+        stage: NazaDownloadStage.complete,
+        receivedBytes: totalBytes,
+        totalBytes: totalBytes,
+        activeTransfers: 0,
+        completedChunks: chunks.length,
+        totalChunks: chunks.length,
+        bytesPerSecond:
+            totalBytes / math.max(0.001, stopwatch.elapsedMilliseconds / 1000),
+        fastestProvider: _fastestProvider(),
+      ),
+    );
 
     return NazaDownloadResult(
       file: target,
@@ -380,16 +378,18 @@ final class NazaMultiplaneModelDownloader {
   Future<({List<_PartLayout> layouts, int totalBytes})> _probeTopology(
     NazaDownloadProgress? onProgress,
   ) async {
-    onProgress?.call(const NazaDownloadSnapshot(
-      stage: NazaDownloadStage.probing,
-      receivedBytes: 0,
-      totalBytes: 0,
-      activeTransfers: 0,
-      completedChunks: 0,
-      totalChunks: 0,
-      bytesPerSecond: 0,
-      fastestProvider: null,
-    ));
+    onProgress?.call(
+      const NazaDownloadSnapshot(
+        stage: NazaDownloadStage.probing,
+        receivedBytes: 0,
+        totalBytes: 0,
+        activeTransfers: 0,
+        completedChunks: 0,
+        totalChunks: 0,
+        bytesPerSecond: 0,
+        fastestProvider: null,
+      ),
+    );
 
     for (final source in manifest.fullSources) {
       _providers.putIfAbsent(source.id, () => _ProviderState(source));
@@ -427,11 +427,9 @@ final class NazaMultiplaneModelDownloader {
     var offset = 0;
     final layouts = <_PartLayout>[];
     for (var i = 0; i < partLengths.length; i++) {
-      layouts.add(_PartLayout(
-        partIndex: i,
-        start: offset,
-        length: partLengths[i],
-      ));
+      layouts.add(
+        _PartLayout(partIndex: i, start: offset, length: partLengths[i]),
+      );
       offset += partLengths[i];
     }
 
@@ -508,17 +506,21 @@ final class NazaMultiplaneModelDownloader {
     final chunks = <_Chunk>[];
     var index = 0;
     for (final layout in layouts) {
-      for (var partOffset = 0;
-          partOffset < layout.length;
-          partOffset += chunkBytes) {
+      for (
+        var partOffset = 0;
+        partOffset < layout.length;
+        partOffset += chunkBytes
+      ) {
         final length = math.min(chunkBytes, layout.length - partOffset);
-        chunks.add(_Chunk(
-          index: index++,
-          partIndex: layout.partIndex,
-          fileOffset: layout.start + partOffset,
-          partOffset: partOffset,
-          length: length,
-        ));
+        chunks.add(
+          _Chunk(
+            index: index++,
+            partIndex: layout.partIndex,
+            fileOffset: layout.start + partOffset,
+            partOffset: partOffset,
+            length: length,
+          ),
+        );
       }
     }
     return chunks;
@@ -595,7 +597,8 @@ final class NazaMultiplaneModelDownloader {
     final ready = Set<int>.from(resume.readyChunkIndexes);
     final pending = Queue<_Chunk>.from(
       chunks.where(
-        (chunk) => chunk.index >= committedPrefix && !ready.contains(chunk.index),
+        (chunk) =>
+            chunk.index >= committedPrefix && !ready.contains(chunk.index),
       ),
     );
     final active = <int, Future<_TransferResult>>{};
@@ -608,12 +611,14 @@ final class NazaMultiplaneModelDownloader {
     final sink = staging.openWrite(mode: FileMode.writeOnlyAppend);
 
     Future<void> persist() async {
-      final encoded = jsonEncode(_ResumeJournal(
-        fingerprint: fingerprint,
-        totalBytes: totalBytes,
-        chunkBytes: chunkBytes,
-        committedPrefixChunks: committedPrefix,
-      ).toJson());
+      final encoded = jsonEncode(
+        _ResumeJournal(
+          fingerprint: fingerprint,
+          totalBytes: totalBytes,
+          chunkBytes: chunkBytes,
+          committedPrefixChunks: committedPrefix,
+        ).toJson(),
+      );
       final temp = File('${journal.path}.tmp');
       await temp.writeAsString(encoded, flush: true);
       await temp.rename(journal.path);
@@ -647,17 +652,20 @@ final class NazaMultiplaneModelDownloader {
         _prefixBytes(chunks, committedPrefix) + _readyBytes(chunks, ready);
 
     void publish() {
-      onProgress?.call(NazaDownloadSnapshot(
-        stage: NazaDownloadStage.downloading,
-        receivedBytes: deliveredBytes().clamp(0, totalBytes),
-        totalBytes: totalBytes,
-        activeTransfers: active.length,
-        completedChunks: committedPrefix + ready.length,
-        totalChunks: chunks.length,
-        bytesPerSecond: networkReceived /
-            math.max(0.001, started.elapsedMilliseconds / 1000),
-        fastestProvider: _fastestProvider(),
-      ));
+      onProgress?.call(
+        NazaDownloadSnapshot(
+          stage: NazaDownloadStage.downloading,
+          receivedBytes: deliveredBytes().clamp(0, totalBytes),
+          totalBytes: totalBytes,
+          activeTransfers: active.length,
+          completedChunks: committedPrefix + ready.length,
+          totalChunks: chunks.length,
+          bytesPerSecond:
+              networkReceived /
+              math.max(0.001, started.elapsedMilliseconds / 1000),
+          fastestProvider: _fastestProvider(),
+        ),
+      );
     }
 
     try {
@@ -744,11 +752,7 @@ final class NazaMultiplaneModelDownloader {
   }) async {
     try {
       final provider = await _fetchChunk(chunk, layouts, file);
-      return _TransferResult(
-        chunk: chunk,
-        file: file,
-        provider: provider,
-      );
+      return _TransferResult(chunk: chunk, file: file, provider: provider);
     } catch (error, stack) {
       return _TransferResult(
         chunk: chunk,

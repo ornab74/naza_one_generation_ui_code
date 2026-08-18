@@ -24,14 +24,15 @@ final class NazaRuntimeMirrorCatalog {
   /// parsing or validation failure returns [builtIn] unchanged.
   ///
   /// This is intentionally fail-safe: the remote file can add URLs, but cannot
-  /// alter the compiled model identity, hashes, sizes, revision or CIDs.
+  /// alter the compiled model identity, hashes, sizes, or revision.
   static Future<NazaModelDistributionManifest> resolve(
     NazaModelDistributionManifest builtIn, {
     Duration timeout = defaultTimeout,
     HttpClient? client,
   }) async {
     final ownedClient = client == null;
-    final http = client ??
+    final http =
+        client ??
         (HttpClient()
           ..connectionTimeout = timeout
           ..idleTimeout = timeout
@@ -60,7 +61,10 @@ final class NazaRuntimeMirrorCatalog {
     request.followRedirects = false;
     request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     request.headers.set(HttpHeaders.acceptHeader, 'text/plain, text/markdown');
-    request.headers.set(HttpHeaders.userAgentHeader, 'NAZA-One/1 mirror-catalog-v1');
+    request.headers.set(
+      HttpHeaders.userAgentHeader,
+      'NAZA-One/1 mirror-catalog-v1',
+    );
     final response = await request.close().timeout(timeout);
     if (response.statusCode != HttpStatus.ok) {
       await response.drain<void>();
@@ -95,8 +99,10 @@ final class NazaRuntimeMirrorCatalog {
       throw const FormatException('Mirror catalog markers are missing.');
     }
     final section = markdown.substring(begin + _begin.length, end);
-    final fenced = RegExp(r'```json\s*([\s\S]*?)\s*```', caseSensitive: false)
-        .firstMatch(section);
+    final fenced = RegExp(
+      r'```json\s*([\s\S]*?)\s*```',
+      caseSensitive: false,
+    ).firstMatch(section);
     if (fenced == null) {
       throw const FormatException('Mirror catalog JSON block is missing.');
     }
@@ -108,7 +114,8 @@ final class NazaRuntimeMirrorCatalog {
 
     final mergedFull = <NazaDistributionSource>[...builtIn.fullSources];
     final mergedParts = <List<NazaDistributionSource>>[
-      for (final part in builtIn.parts) <NazaDistributionSource>[...part.sources],
+      for (final part in builtIn.parts)
+        <NazaDistributionSource>[...part.sources],
     ];
     final seen = <String>{
       for (final source in mergedFull) source.uri.toString(),
@@ -121,12 +128,14 @@ final class NazaRuntimeMirrorCatalog {
       for (final value in remoteFull.take(24)) {
         final uri = _parseMirrorUri(value);
         if (uri == null || !seen.add(uri.toString())) continue;
-        mergedFull.add(NazaDistributionSource(
-          id: 'runtime-full-${_stableId(uri)}',
-          uri: uri,
-          plane: NazaDistributionPlane.runtimeMirror,
-          trustWeight: 0.90,
-        ));
+        mergedFull.add(
+          NazaDistributionSource(
+            id: 'runtime-full-${_stableId(uri)}',
+            uri: uri,
+            plane: NazaDistributionPlane.runtimeMirror,
+            trustWeight: 0.90,
+          ),
+        );
       }
     }
 
@@ -143,8 +152,7 @@ final class NazaRuntimeMirrorCatalog {
       if ((raw['index'] as num?)?.toInt() != expected.index ||
           (raw['bytes'] as num?)?.toInt() != expected.expectedBytes ||
           raw['sha256']?.toString().toLowerCase() !=
-              expected.expectedSha256.toLowerCase() ||
-          raw['cid']?.toString() != expected.cid) {
+              expected.expectedSha256.toLowerCase()) {
         throw FormatException('Mirror catalog part $i identity mismatch.');
       }
       final sources = raw['sources'];
@@ -152,13 +160,15 @@ final class NazaRuntimeMirrorCatalog {
       for (final value in sources.take(32)) {
         final uri = _parseMirrorUri(value);
         if (uri == null || !seen.add(uri.toString())) continue;
-        mergedParts[i].add(NazaDistributionSource(
-          id: 'runtime-part-$i-${_stableId(uri)}',
-          uri: uri,
-          plane: NazaDistributionPlane.runtimeMirror,
-          partIndex: i,
-          trustWeight: 0.88,
-        ));
+        mergedParts[i].add(
+          NazaDistributionSource(
+            id: 'runtime-part-$i-${_stableId(uri)}',
+            uri: uri,
+            plane: NazaDistributionPlane.runtimeMirror,
+            partIndex: i,
+            trustWeight: 0.88,
+          ),
+        );
       }
     }
 
@@ -200,11 +210,9 @@ final class NazaRuntimeMirrorCatalog {
     final host = uri.host.toLowerCase();
     if (_isForbiddenHost(host)) return false;
 
-    if (host == 'github.com' || host == 'huggingface.co' || host == 'ipfs.io') {
+    if (host == 'github.com' || host == 'huggingface.co') {
       return true;
     }
-    if (host.endsWith('.mypinata.cloud')) return true;
-    if (host.endsWith('.ipfs.inbrowser.link')) return true;
     return false;
   }
 

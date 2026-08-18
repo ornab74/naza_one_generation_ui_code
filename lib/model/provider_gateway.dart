@@ -8,12 +8,20 @@
 // LLM-CONTEXT:END
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
 import '../security/secure_database.dart';
 
-enum NazaRemoteProvider { openAi, anthropic, gemini, meta, digitalOcean, custom }
+enum NazaRemoteProvider {
+  openAi,
+  anthropic,
+  gemini,
+  meta,
+  digitalOcean,
+  custom,
+}
 
 extension NazaRemoteProviderX on NazaRemoteProvider {
   String get label => switch (this) {
@@ -82,11 +90,14 @@ final class NazaRemoteModelProfile {
   static NazaRemoteModelProfile? fromJson(Object? value) {
     if (value is! Map) return null;
     final providerName = value['provider']?.toString();
-    final provider = NazaRemoteProvider.values.where((p) => p.name == providerName);
+    final provider = NazaRemoteProvider.values.where(
+      (p) => p.name == providerName,
+    );
     final id = value['id']?.toString().trim() ?? '';
     final model = value['model']?.toString().trim() ?? '';
     final endpoint = value['endpoint']?.toString().trim() ?? '';
-    if (id.isEmpty || model.isEmpty || endpoint.isEmpty || provider.isEmpty) return null;
+    if (id.isEmpty || model.isEmpty || endpoint.isEmpty || provider.isEmpty)
+      return null;
     return NazaRemoteModelProfile(
       id: id,
       provider: provider.first,
@@ -109,7 +120,7 @@ final class NazaRemoteModelCatalog {
   static const String _key = 'profiles-v1';
 
   NazaRemoteModelCatalog({NazaSecureDatabase? database})
-      : _database = database ?? NazaSecureDatabase.instance;
+    : _database = database ?? NazaSecureDatabase.instance;
   final NazaSecureDatabase _database;
 
   Future<List<NazaRemoteModelProfile>> load() async {
@@ -123,10 +134,13 @@ final class NazaRemoteModelCatalog {
   }
 
   Future<void> save(Iterable<NazaRemoteModelProfile> profiles) async {
-    final bounded = profiles.take(maxProfiles).map((profile) {
-      _validateProfile(profile);
-      return profile.toJson();
-    }).toList(growable: false);
+    final bounded = profiles
+        .take(maxProfiles)
+        .map((profile) {
+          _validateProfile(profile);
+          return profile.toJson();
+        })
+        .toList(growable: false);
     await _database.writeJson(_namespace, _key, bounded);
   }
 
@@ -149,7 +163,8 @@ final class NazaRemoteModelCatalog {
     if (profile.id.trim().isEmpty || profile.id.length > 100) {
       throw const FormatException('Invalid remote model profile id.');
     }
-    if (profile.model.trim().isEmpty || profile.model.length > maxModelIdLength) {
+    if (profile.model.trim().isEmpty ||
+        profile.model.length > maxModelIdLength) {
       throw const FormatException('Invalid remote model identifier.');
     }
     NazaProviderGateway.validateEndpoint(
@@ -164,12 +179,17 @@ final class NazaRemoteModelResponse {
   final String text;
   final String provider;
   final String model;
-  const NazaRemoteModelResponse({required this.text, required this.provider, required this.model});
+  const NazaRemoteModelResponse({
+    required this.text,
+    required this.provider,
+    required this.model,
+  });
 }
 
 /// One bounded adapter for all supported remote request shapes.
 final class NazaProviderGateway {
-  NazaProviderGateway({http.Client? client}) : _client = client ?? http.Client();
+  NazaProviderGateway({http.Client? client})
+    : _client = client ?? http.Client();
   final http.Client _client;
 
   static const int maxPromptCharacters = 120000;
@@ -183,13 +203,23 @@ final class NazaProviderGateway {
     NazaRemoteModelCatalog._validateProfile(profile);
     final cleanPrompt = prompt.trim();
     if (cleanPrompt.isEmpty || cleanPrompt.length > maxPromptCharacters) {
-      throw const FormatException('Prompt is empty or exceeds the remote limit.');
+      throw const FormatException(
+        'Prompt is empty or exceeds the remote limit.',
+      );
     }
     final uri = Uri.parse(profile.endpoint);
     final headers = <String, String>{'content-type': 'application/json'};
     final body = switch (profile.provider) {
-      NazaRemoteProvider.anthropic => _anthropicBody(profile, cleanPrompt, systemInstruction),
-      NazaRemoteProvider.gemini => _geminiBody(profile, cleanPrompt, systemInstruction),
+      NazaRemoteProvider.anthropic => _anthropicBody(
+        profile,
+        cleanPrompt,
+        systemInstruction,
+      ),
+      NazaRemoteProvider.gemini => _geminiBody(
+        profile,
+        cleanPrompt,
+        systemInstruction,
+      ),
       _ => _openAiBody(profile, cleanPrompt, systemInstruction),
     };
     if (profile.provider == NazaRemoteProvider.gemini) {
@@ -200,19 +230,24 @@ final class NazaProviderGateway {
     } else {
       headers['authorization'] = 'Bearer ${profile.apiKey}';
     }
-    final response = await _client
-        .post(uri, headers: headers, body: jsonEncode(body))
-        .timeout(const Duration(seconds: 45));
-    if (response.bodyBytes.length > maxResponseBytes) {
-      throw const FormatException('Remote response exceeds the safety limit.');
-    }
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException('Remote provider returned HTTP ${response.statusCode}.');
-    }
-    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: false));
+    final request = http.Request('POST', uri)
+      ..followRedirects = false
+      ..headers.addAll(headers)
+      ..body = jsonEncode(body);
+    final responseBytes = await _sendBounded(
+      request,
+    ).timeout(const Duration(seconds: 45));
+    final decoded = jsonDecode(
+      utf8.decode(responseBytes, allowMalformed: false),
+    );
     final text = _extractText(profile.provider, decoded).trim();
-    if (text.isEmpty) throw const FormatException('Remote provider returned no text.');
-    return NazaRemoteModelResponse(text: text, provider: profile.provider.label, model: profile.model);
+    if (text.isEmpty)
+      throw const FormatException('Remote provider returned no text.');
+    return NazaRemoteModelResponse(
+      text: text,
+      provider: profile.provider.label,
+      model: profile.model,
+    );
   }
 
   static void validateEndpoint({
@@ -221,59 +256,140 @@ final class NazaProviderGateway {
     required bool allowCustomEndpoint,
   }) {
     final uri = Uri.tryParse(endpoint.trim());
-    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty || uri.userInfo.isNotEmpty) {
-      throw const FormatException('Remote model endpoints must use HTTPS without embedded credentials.');
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.fragment.isNotEmpty) {
+      throw const FormatException(
+        'Remote model endpoints must use HTTPS without embedded credentials.',
+      );
     }
     final allowed = switch (provider) {
       NazaRemoteProvider.openAi => <String>{'api.openai.com'},
       NazaRemoteProvider.anthropic => <String>{'api.anthropic.com'},
-      NazaRemoteProvider.gemini => <String>{'generativelanguage.googleapis.com'},
-      NazaRemoteProvider.digitalOcean => <String>{'inference.do-ai.run', 'api.digitalocean.com'},
+      NazaRemoteProvider.gemini => <String>{
+        'generativelanguage.googleapis.com',
+      },
+      NazaRemoteProvider.digitalOcean => <String>{
+        'inference.do-ai.run',
+        'api.digitalocean.com',
+      },
       NazaRemoteProvider.meta => <String>{},
       NazaRemoteProvider.custom => <String>{},
     };
     if (!allowCustomEndpoint && !allowed.contains(uri.host.toLowerCase())) {
-      throw const FormatException('This provider requires its official HTTPS origin.');
+      throw const FormatException(
+        'This provider requires its official HTTPS origin.',
+      );
+    }
+    if (!allowCustomEndpoint && uri.hasPort && uri.port != 443) {
+      throw const FormatException(
+        'Official provider endpoints must use HTTPS port 443.',
+      );
     }
     if (provider == NazaRemoteProvider.meta && !allowCustomEndpoint) {
-      throw const FormatException('Meta requires an explicitly approved custom HTTPS endpoint.');
+      throw const FormatException(
+        'Meta requires an explicitly approved custom HTTPS endpoint.',
+      );
     }
   }
 
-  static Map<String, Object?> _openAiBody(NazaRemoteModelProfile p, String prompt, String? system) => <String, Object?>{
+  Future<Uint8List> _sendBounded(http.Request request) async {
+    final response = await _client.send(request);
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      throw HttpException(
+        'Remote provider redirects are not allowed (HTTP ${response.statusCode}).',
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(
+        'Remote provider returned HTTP ${response.statusCode}.',
+      );
+    }
+    final declaredLength = response.contentLength;
+    if (declaredLength != null && declaredLength > maxResponseBytes) {
+      throw const FormatException('Remote response exceeds the safety limit.');
+    }
+    final builder = BytesBuilder(copy: false);
+    var total = 0;
+    await for (final chunk in response.stream) {
+      if (chunk.length > maxResponseBytes - total) {
+        throw const FormatException(
+          'Remote response exceeds the safety limit.',
+        );
+      }
+      total += chunk.length;
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
+
+  void close() => _client.close();
+
+  static Map<String, Object?> _openAiBody(
+    NazaRemoteModelProfile p,
+    String prompt,
+    String? system,
+  ) => <String, Object?>{
     'model': p.model,
     'messages': <Object?>[
-      if (system?.trim().isNotEmpty == true) <String, String>{'role': 'system', 'content': system!.trim()},
+      if (system?.trim().isNotEmpty == true)
+        <String, String>{'role': 'system', 'content': system!.trim()},
       <String, String>{'role': 'user', 'content': prompt},
     ],
   };
 
-  static Map<String, Object?> _anthropicBody(NazaRemoteModelProfile p, String prompt, String? system) => <String, Object?>{
+  static Map<String, Object?> _anthropicBody(
+    NazaRemoteModelProfile p,
+    String prompt,
+    String? system,
+  ) => <String, Object?>{
     'model': p.model,
     'max_tokens': 4096,
     if (system?.trim().isNotEmpty == true) 'system': system!.trim(),
-    'messages': <Object?>[<String, String>{'role': 'user', 'content': prompt}],
+    'messages': <Object?>[
+      <String, String>{'role': 'user', 'content': prompt},
+    ],
   };
 
-  static Map<String, Object?> _geminiBody(NazaRemoteModelProfile p, String prompt, String? system) => <String, Object?>{
-    'contents': <Object?>[<String, Object?>{'role': 'user', 'parts': <Object?>[<String, String>{'text': '${system ?? ''}\n$prompt'}]}],
+  static Map<String, Object?> _geminiBody(
+    NazaRemoteModelProfile p,
+    String prompt,
+    String? system,
+  ) => <String, Object?>{
+    'contents': <Object?>[
+      <String, Object?>{
+        'role': 'user',
+        'parts': <Object?>[
+          <String, String>{'text': '${system ?? ''}\n$prompt'},
+        ],
+      },
+    ],
   };
 
   static String _extractText(NazaRemoteProvider provider, Object? value) {
     if (value is! Map) return '';
     if (provider == NazaRemoteProvider.anthropic) {
       final content = value['content'];
-      if (content is List && content.isNotEmpty && content.first is Map) return (content.first as Map)['text']?.toString() ?? '';
+      if (content is List && content.isNotEmpty && content.first is Map)
+        return (content.first as Map)['text']?.toString() ?? '';
     }
     if (provider == NazaRemoteProvider.gemini) {
       final candidates = value['candidates'];
       if (candidates is List && candidates.isNotEmpty) {
         final parts = (candidates.first as Map?)?['content'];
-        if (parts is Map && parts['parts'] is List) return (parts['parts'] as List).map((part) => (part as Map?)?['text'] ?? '').join();
+        if (parts is Map && parts['parts'] is List)
+          return (parts['parts'] as List)
+              .map((part) => (part as Map?)?['text'] ?? '')
+              .join();
       }
     }
     final choices = value['choices'];
-    if (choices is List && choices.isNotEmpty) return ((choices.first as Map?)?['message'] as Map?)?['content']?.toString() ?? '';
+    if (choices is List && choices.isNotEmpty)
+      return ((choices.first as Map?)?['message'] as Map?)?['content']
+              ?.toString() ??
+          '';
     return '';
   }
 }

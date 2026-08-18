@@ -24,6 +24,26 @@ void main() {
     );
   }
 
+  test('capability kernel rejects weak or malformed key lengths', () {
+    for (final length in <int>[0, 16, 31, 33, 64]) {
+      expect(
+        () => NazaSecurityKernel(
+          capabilityKey: Uint8List(length),
+          initialState: state(1),
+        ),
+        throwsArgumentError,
+        reason: 'length $length',
+      );
+    }
+    expect(
+      () => NazaSecurityKernel(
+        capabilityKey: Uint8List(32),
+        initialState: state(1),
+      ),
+      returnsNormally,
+    );
+  });
+
   test('single-use capability cannot be replayed', () async {
     final kernel = NazaSecurityKernel(
       capabilityKey: Uint8List.fromList(List<int>.generate(32, (i) => i + 1)),

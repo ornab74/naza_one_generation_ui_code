@@ -85,9 +85,9 @@ administrator override. It does not bypass model-integrity verification.
 ## 3. Model downloads and network data
 
 The Gemma model can be downloaded over HTTPS from an immutable Hugging Face
-revision or from approved GitHub/IPFS-gateway replicas described by the App's
-compiled distribution identity and optional validated runtime mirror catalog.
-The downloader may fetch different chunks from different approved transports.
+revision or approved GitHub Release parts described by the App's compiled
+distribution identity and optional validated runtime mirror catalog. The
+downloader may fetch different chunks from those approved transports.
 
 The App verifies the model against pinned size and SHA-256 values before use;
 the distribution also contains pinned identities for the model parts. Runtime
@@ -97,12 +97,10 @@ identity.
 Model-delivery requests do not intentionally contain prompts, conversations,
 scanner entries, images, generated responses, or encrypted user records.
 
-Hugging Face, GitHub, IPFS gateway operators, Pinata, content-delivery
-infrastructure, and other selected transport providers may receive normal
-connection data such as your IP address, request time, requested file/range,
-user-agent string, and network metadata under their own policies. A
-multi-provider download can therefore expose normal connection metadata to more
-than one delivery provider.
+Hugging Face and GitHub may receive normal connection data such as your IP
+address, request time, requested file/range, user-agent string, and network
+metadata under their own policies. A multi-provider download can therefore
+expose normal connection metadata to more than one delivery provider.
 
 The App has no analytics or crash-reporting SDK and does not automatically send
 local diagnostics to the developer. If you share a screenshot, error, log, or
@@ -199,9 +197,8 @@ handled in these limited circumstances:
 1. **At your direction.** You copy, export, post, or otherwise share content,
    diagnostics, recovery material, or an encrypted backup.
 2. **Model delivery.** Approved model-delivery providers receive the network
-   requests used to obtain model bytes or ranges. Depending on the active
-   mirror set this may include Hugging Face, GitHub, Pinata, or other approved
-   IPFS gateway infrastructure.
+   requests used to obtain model bytes or ranges. The current approved host
+   families are Hugging Face and GitHub.
 3. **Operating-system services.** The camera, system file or photo picker, and
    secure credential store operate under the platform provider's policies.
 4. **Legal and safety matters.** The developer may disclose information
