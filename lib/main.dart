@@ -1501,6 +1501,28 @@ class DoorDashMonitorBridge {
     }
   }
 
+  Future<int?> saveManualCapture({
+    required Uint8List screenshot,
+    required String fileName,
+    required RouteDecision decision,
+  }) async {
+    try {
+      final id = await _methods.invokeMethod<num>(
+        'saveManualCapture',
+        {
+          'screenshot': screenshot,
+          'fileName': fileName,
+          'decision': decision.toJson(),
+        },
+      );
+      return id?.toInt();
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   Future<void> clearCaptures() async {
     try {
       await _methods.invokeMethod('clearCaptures');
@@ -1765,6 +1787,29 @@ class RouteEngineController extends ChangeNotifier {
     return recent.length >= 3 && recent.reduce((a, b) => a + b) / recent.length < .38;
   }
 
+  Future<void> _reloadManualScreenshotHistory() async {
+    final restored = <ManualScreenshotRecord>[];
+    final manualCaptures = captures
+        .where((item) => item.kind == 'MANUAL_SCREENSHOT')
+        .take(20);
+
+    for (final summary in manualCaptures) {
+      final detail = await _monitor.loadCapture(summary.id);
+      if (detail?.screenshot == null || detail?.decision == null) continue;
+      restored.add(
+        ManualScreenshotRecord(
+          bytes: detail!.screenshot!,
+          createdAt: detail.createdAt,
+          decision: RouteDecision.fromJson(detail.decision!),
+        ),
+      );
+    }
+
+    manualScreenshotHistory
+      ..clear()
+      ..addAll(restored);
+  }
+
   Future<void> initialize() async {
     try {
       settings = await _store.loadSettings();
@@ -1785,6 +1830,7 @@ class RouteEngineController extends ChangeNotifier {
       }
       history = await _store.loadHistory();
       captures = await _monitor.listCaptures();
+      await _reloadManualScreenshotHistory();
       nativeStatus = await _monitor.runtimeStatus();
       initialized = true;
       if (settings.monitorEnabled && defaultTargetPlatform == TargetPlatform.android) {
@@ -1930,21 +1976,38 @@ class RouteEngineController extends ChangeNotifier {
         currentPosition: position,
         screenshot: testScreenshot,
       );
-      if (testScreenshot != null) {
-        manualScreenshotHistory.insert(0, ManualScreenshotRecord(
-          bytes: testScreenshot!,
-          createdAt: DateTime.now(),
-          decision: decision,
-        ));
-        if (manualScreenshotHistory.length > 20) {
-          manualScreenshotHistory.removeLast();
-        }
-      }
-
       simulatedAction = _resolveAction(decision);
       status = 'Future collapsed: ${decision.verdict.label}';
       showAnalysisLoader = false;
       notifyListeners();
+
+      if (testScreenshot != null) {
+        final screenshot = testScreenshot!;
+        final fileName = testScreenshotName ?? 'manual-screenshot';
+        final persistedId = await _monitor.saveManualCapture(
+          screenshot: screenshot,
+          fileName: fileName,
+          decision: decision,
+        );
+
+        if (persistedId != null) {
+          captures = await _monitor.listCaptures();
+          await _reloadManualScreenshotHistory();
+        } else {
+          manualScreenshotHistory.insert(
+            0,
+            ManualScreenshotRecord(
+              bytes: screenshot,
+              createdAt: DateTime.now(),
+              decision: decision,
+            ),
+          );
+          if (manualScreenshotHistory.length > 20) {
+            manualScreenshotHistory.removeLast();
+          }
+        }
+        notifyListeners();
+      }
 
       if (settings.speakDecisions) {
         await _voice.speak(
@@ -2029,6 +2092,7 @@ class RouteEngineController extends ChangeNotifier {
 
   Future<void> refreshCaptures() async {
     captures = await _monitor.listCaptures();
+    await _reloadManualScreenshotHistory();
     nativeStatus = await _monitor.runtimeStatus();
     notifyListeners();
   }
@@ -2039,6 +2103,7 @@ class RouteEngineController extends ChangeNotifier {
   Future<void> clearSecureCaptures() async {
     await _monitor.clearCaptures();
     captures = const [];
+    manualScreenshotHistory.clear();
     notifyListeners();
   }
 
@@ -3257,7 +3322,10 @@ class HistoryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = controller.captures;
+    final allItems = controller.captures;
+    final items = allItems
+        .where((item) => item.kind != 'MANUAL_SCREENSHOT')
+        .toList();
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 20, 18, 110),
       children: [
@@ -3281,7 +3349,7 @@ class HistoryPage extends StatelessWidget {
             ),
             IconButton(
               tooltip: 'Clear vault',
-              onPressed: items.isEmpty
+              onPressed: allItems.isEmpty
                   ? null
                   : () async {
                       final confirmed = await showDialog<bool>(
