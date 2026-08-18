@@ -114,12 +114,27 @@ jobs:
             throw 'WINDOWS_MSIX_PUBLISHER is not configured in GitHub Actions secrets.'
           }
 
+          $versionLine = Get-Content pubspec.yaml |
+            Select-String '^version:' |
+            Select-Object -First 1
+          if (-not $versionLine) {
+            throw 'pubspec version not found.'
+          }
+
+          $appVersion = (($versionLine.ToString() -replace '^version:\s*', '').Trim()).Split('+')[0]
+          if ($appVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid pubspec version '$appVersion'; expected a.b.c."
+          }
+          $msixVersion = "$appVersion.0"
+          Write-Host "Creating Microsoft Store MSIX version $msixVersion from pubspec version $appVersion."
+
           & dart run msix:create `
             --store `
             --display-name "$env:STORE_DISPLAY_NAME" `
             --publisher-display-name "$env:STORE_PUBLISHER_DISPLAY_NAME" `
             --identity-name "$env:STORE_IDENTITY_NAME" `
             --publisher "$env:WINDOWS_MSIX_PUBLISHER" `
+            --version "$msixVersion" `
             --build-windows false `
             --sign-msix false `
             --output-name "naza-one-windows-store"
@@ -134,8 +149,22 @@ jobs:
           WINDOWS_MSIX_PUBLISHER: ${{ secrets.WINDOWS_MSIX_PUBLISHER }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $msix = Get-ChildItem -Path build/windows -Recurse -Filter '*.msix' | Select-Object -First 1
-          if (-not $msix) { throw 'Generated MSIX was not found.' }
+          $versionLine = Get-Content pubspec.yaml |
+            Select-String '^version:' |
+            Select-Object -First 1
+          if (-not $versionLine) { throw 'pubspec version not found.' }
+          $appVersion = (($versionLine.ToString() -replace '^version:\s*', '').Trim()).Split('+')[0]
+          if ($appVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid pubspec version '$appVersion'; expected a.b.c."
+          }
+          $expectedMsixVersion = "$appVersion.0"
+
+          $msixFiles = @(Get-ChildItem -Path build/windows -Recurse -Filter '*.msix')
+          if ($msixFiles.Count -eq 0) { throw 'Generated MSIX was not found.' }
+          if ($msixFiles.Count -ne 1) {
+            throw "Expected exactly one generated MSIX, found $($msixFiles.Count): $($msixFiles.FullName -join ', ')"
+          }
+          $msix = $msixFiles[0]
 
           $makeAppx = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
             -Recurse -Filter 'makeappx.exe' -ErrorAction SilentlyContinue |
@@ -161,6 +190,7 @@ jobs:
           $publisherDisplayName = $manifest.Package.Properties.PublisherDisplayName
           $identityName = $manifest.Package.Identity.Name
           $publisher = $manifest.Package.Identity.Publisher
+          $packageVersion = $manifest.Package.Identity.Version
 
           if ($publisherDisplayName -ne $env:STORE_PUBLISHER_DISPLAY_NAME) {
             throw "PublisherDisplayName is '$publisherDisplayName'; expected '$env:STORE_PUBLISHER_DISPLAY_NAME'."
@@ -171,10 +201,14 @@ jobs:
           if ($publisher -ne $env:WINDOWS_MSIX_PUBLISHER) {
             throw "Publisher is '$publisher'; it does not match WINDOWS_MSIX_PUBLISHER."
           }
+          if ($packageVersion -ne $expectedMsixVersion) {
+            throw "Package version is '$packageVersion'; expected '$expectedMsixVersion' from pubspec.yaml."
+          }
 
           Write-Host "Validated PublisherDisplayName: $publisherDisplayName"
           Write-Host "Validated Identity Name: $identityName"
           Write-Host "Validated Publisher: $publisher"
+          Write-Host "Validated Package Version: $packageVersion"
 
       - name: Upload validated Store package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
