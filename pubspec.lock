@@ -109,18 +109,18 @@ packages:
     dependency: transitive
     description:
       name: file_selector_android
-      sha256: 37ea8835437433fb85e53baaf0409e131071aa143097493289ae8769846fd48c
+      sha256: d2317834d700408672a722580104123698b0f04a5cba6ed7c636bb13762bce5c
       url: "https://pub.dev"
     source: hosted
-    version: "0.5.1+15"
+    version: "0.5.1+16"
   file_selector_ios:
     dependency: transitive
     description:
       name: file_selector_ios
-      sha256: 88625674fa8451344ceb8385927349033a2c3c9f173ecc314455c62a0262b100
+      sha256: 3f1d33e5702c507c47a0956320a9bd151c4a0a8c471de0a16c8afe7f5290c77d
       url: "https://pub.dev"
     source: hosted
-    version: "0.5.3+4"
+    version: "0.5.3+5"
   file_selector_linux:
     dependency: transitive
     description:
@@ -244,18 +244,26 @@ packages:
     dependency: transitive
     description:
       name: geolocator_android
-      sha256: 87453a341d396f949486d39c36e8ef342b69ee140997e39ff7213e23187a29c1
+      sha256: "86ea1654e4f61ff51466848e91c116b422d6010ea269fda0fbe1af7e9e742ce1"
       url: "https://pub.dev"
     source: hosted
-    version: "5.0.2"
+    version: "5.0.3"
   geolocator_apple:
     dependency: transitive
     description:
       name: geolocator_apple
-      sha256: 1b7145914e222bcb18ed36c3fec1cb16bf99d3f0b4673b6e3c37179de2fb6671
+      sha256: "853803d6bb1713c094e935b4a5ae5f19c0308acf81da13fa9ff84fb4c70c0b73"
       url: "https://pub.dev"
     source: hosted
-    version: "2.3.13"
+    version: "2.3.14"
+  geolocator_linux:
+    dependency: transitive
+    description:
+      name: geolocator_linux
+      sha256: d64112a205931926f4363bb6bd48f14cb38e7326833041d170615586cd143797
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.2.4"
   geolocator_platform_interface:
     dependency: transitive
     description:
@@ -284,7 +292,7 @@ packages:
     dependency: "direct main"
     description:
       name: http
-      sha256: 70eb435142fcfc395221ce9c7e6df23d4ac34449597a87d3e4f4d8d93248d6e
+      sha256: "2c11b3f94c687a01f7cc49531c03f35b32e4f8c8943782f403c21bda1723e2e0"
       url: "https://pub.dev"
     source: hosted
     version: "1.6.0"
@@ -332,7 +340,7 @@ packages:
     dependency: transitive
     description:
       name: matcher
-      sha256: dc58c723c3c24bf8d3e2d3ad3f2f9d7c8227e98dfcb0c777f1ab28523f793141
+      sha256: 3b4ef66fda5f7de9e49c32e33f57df429543189509ec471ed0145272da72aeb7
       url: "https://pub.dev"
     source: hosted
     version: "0.12.17"
@@ -340,7 +348,7 @@ packages:
     dependency: transitive
     description:
       name: material_color_utilities
-      sha256: 243b34b4e57c742714f6c9648737088279d42b7c8c7969e670c9f3a611650a7c
+      sha256: 3f1e78ededa04937f92506753f2ab499e0c1192d4ed4ef2fbf74820a6b918b30
       url: "https://pub.dev"
     source: hosted
     version: "0.11.1"
@@ -348,7 +356,7 @@ packages:
     dependency: transitive
     description:
       name: meta
-      sha256: 0c14c529a543cb70b4ae43b8334b5ec83fe0f95ea99c710efcd987b12dbdc950
+      sha256: 15e89f3724d5c40f2f2cb26b53b02145b40c2b992f00dadd5d7e193206537dca
       url: "https://pub.dev"
     source: hosted
     version: "1.17.0"
@@ -505,7 +513,7 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: f84d8c72c7e815fe941b0276296fd5fbe4d3e6dc82e5f0dab2f8bc3204cb0512
+      sha256: 4543666ec3250950c89cb64bc8308d8c05b190fc7cf5f4d27c488428e8e83f8b
       url: "https://pub.dev"
     source: hosted
     version: "0.7.7"
