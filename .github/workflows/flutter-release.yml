@@ -34,7 +34,7 @@ jobs:
 
   android:
     name: Android APK and AAB
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
     needs: analyze
     steps:
