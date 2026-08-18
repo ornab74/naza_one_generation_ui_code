@@ -1,5 +1,5 @@
 # BarkPack: Secure, Compact, and Traceable Bark-Inspired Conversation Audio for Local Flutter Applications
-
+# old
 Naza One Project  
 Draft research whitepaper, 2026-07-07
 
