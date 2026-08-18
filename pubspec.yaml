@@ -1,0 +1,26 @@
+name: route_engine
+description: Naza Route Engine - online DoorDash offer capture, Luna analysis, weather radar, encrypted vault, TTS, and overlay.
+publish_to: none
+version: 0.4.0+4
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_tts: ^4.2.5
+  geolocator: ^14.0.2
+  http: ^1.6.0
+  shared_preferences: ^2.5.5
+  url_launcher: ^6.3.2
+  file_selector: ^1.0.3
+  flutter_secure_storage: ^9.2.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
