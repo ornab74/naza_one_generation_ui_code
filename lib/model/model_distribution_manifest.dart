@@ -12,6 +12,27 @@ import 'package:crypto/crypto.dart' as crypto;
 
 enum NazaDistributionPlane { canonicalFull, githubReleasePart, runtimeMirror }
 
+/// Closed transport policy for compiled sources and their legitimate CDN hops.
+/// Model bytes remain hash-verified independently; this policy confines where
+/// the downloader is allowed to send probe and range requests.
+bool nazaIsApprovedModelTransportUri(Uri uri) {
+  if (uri.toString().length > 2048 ||
+      uri.scheme.toLowerCase() != 'https' ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty ||
+      uri.fragment.isNotEmpty ||
+      (uri.hasPort && uri.port != 443)) {
+    return false;
+  }
+  final host = uri.host.toLowerCase();
+  return host == 'github.com' ||
+      host == 'huggingface.co' ||
+      host == 'githubusercontent.com' ||
+      host.endsWith('.githubusercontent.com') ||
+      host == 'hf.co' ||
+      host.endsWith('.hf.co');
+}
+
 final class NazaDistributionSource {
   const NazaDistributionSource({
     required this.id,

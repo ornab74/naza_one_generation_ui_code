@@ -57,6 +57,41 @@ void main() {
       }
     });
 
+    test('redirect transport policy is closed to arbitrary destinations', () {
+      expect(
+        nazaIsApprovedModelTransportUri(
+          Uri.parse('https://release-assets.githubusercontent.com/file'),
+        ),
+        isTrue,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(
+          Uri.parse('https://cdn-lfs.hf.co/model'),
+        ),
+        isTrue,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(Uri.parse('http://github.com/model')),
+        isFalse,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(Uri.parse('https://localhost/model')),
+        isFalse,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(
+          Uri.parse('https://github.com:8443/model'),
+        ),
+        isFalse,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(
+          Uri.parse('https://attacker.example/model'),
+        ),
+        isFalse,
+      );
+    });
+
     test('topology fingerprint is deterministic and layout-sensitive', () {
       final a = manifest.fingerprintFor(
         totalBytes: 900,

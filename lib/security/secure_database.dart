@@ -23,6 +23,8 @@ const _vaultFormat = 'naza-vault-v3';
 const _databaseFileName = 'naza_one_vault.sqlite3';
 const _headerFileName = 'naza_one_vault.header.json';
 const _deviceKeyName = 'naza-one-device-unlock-v3';
+const _headerAuthenticationField = 'headerAuthentication';
+const _headerAuthenticationFormat = 'naza-vault-header-authentication-v1';
 const _sentinelNamespace = '_system';
 const _sentinelKey = 'vault-sentinel';
 const _recordIdSeparator = '\u001f';
@@ -473,6 +475,10 @@ final class NazaSecureDatabase {
           'envelope': await _seal(dataKey, vaultKey, _dataKeyAad(vaultId, 1)),
         },
       ];
+      header[_headerAuthenticationField] = await _headerAuthentication(
+        header,
+        vaultKey,
+      );
 
       _header = header;
       _vaultUnlockKey = Uint8List.fromList(vaultKey);
@@ -586,6 +592,13 @@ final class NazaSecureDatabase {
           'The active data key is missing from the vault header.',
         );
       }
+      await _verifyOrMigrateHeaderAuthentication(
+        headerFile,
+        header,
+        vaultKey,
+        dataKeys,
+        activeId,
+      );
       _header = header;
       _vaultUnlockKey = Uint8List.fromList(vaultKey);
       _indexKey = await _deriveIndexKey(vaultKey, header['vaultId'].toString());
@@ -893,6 +906,10 @@ final class NazaSecureDatabase {
         _vaultKeyAad(header),
       );
       header['updatedAt'] = DateTime.now().toUtc().toIso8601String();
+      header[_headerAuthenticationField] = await _headerAuthentication(
+        header,
+        vaultKey,
+      );
       await _writeHeader(await _headerFile(), header);
       _header = header;
       if (passwordRequired && !oldPasswordRequired) {
@@ -934,6 +951,11 @@ final class NazaSecureDatabase {
       header['activeDataKeyId'] = nextId;
       header['rotationPending'] = true;
       header['generation'] = _intValue(header['generation']) + 1;
+      header['updatedAt'] = DateTime.now().toUtc().toIso8601String();
+      header[_headerAuthenticationField] = await _headerAuthentication(
+        header,
+        vaultKey,
+      );
       await _writeHeader(await _headerFile(), header);
       _header = header;
       _dataKeys[nextId] = Uint8List.fromList(nextKey);
@@ -1066,6 +1088,10 @@ final class NazaSecureDatabase {
     header['wrappedDataKeys'] = wrapped;
     header['rotationPending'] = false;
     header['updatedAt'] = DateTime.now().toUtc().toIso8601String();
+    header[_headerAuthenticationField] = await _headerAuthentication(
+      header,
+      _requireVaultKey(),
+    );
     await _writeHeader(await _headerFile(), header);
     for (final id in _dataKeys.keys.toList()) {
       if (id == activeId) continue;
@@ -1224,6 +1250,141 @@ final class NazaSecureDatabase {
   List<int> _recordAad(Uint8List recordId, int keyId) {
     return utf8.encode(
       '$_vaultFormat/record/$keyId/${base64UrlEncode(recordId)}',
+    );
+  }
+
+  Future<void> _verifyOrMigrateHeaderAuthentication(
+    File headerFile,
+    Map<String, Object?> header,
+    Uint8List vaultKey,
+    Map<int, Uint8List> dataKeys,
+    int activeId,
+  ) async {
+    final encoded = header[_headerAuthenticationField];
+    if (encoded == null) {
+      _validateLegacyRotationState(header, dataKeys.keys, activeId);
+      header['updatedAt'] = DateTime.now().toUtc().toIso8601String();
+      header[_headerAuthenticationField] = await _headerAuthentication(
+        header,
+        vaultKey,
+      );
+      await _writeHeader(headerFile, header);
+      return;
+    }
+    Uint8List? supplied;
+    try {
+      supplied = Uint8List.fromList(base64Decode(encoded.toString()));
+    } catch (error) {
+      throw NazaVaultException(
+        'header_authentication',
+        'The vault header authentication value is malformed.',
+        error,
+      );
+    }
+    final expected = await _headerAuthenticationBytes(header, vaultKey);
+    try {
+      if (supplied.length != 32 || !_constantTimeEquals(supplied, expected)) {
+        throw const NazaVaultException(
+          'header_authentication',
+          'The vault header security controls failed authentication.',
+        );
+      }
+    } finally {
+      _zero(supplied);
+      _zero(expected);
+    }
+  }
+
+  void _validateLegacyRotationState(
+    Map<String, Object?> header,
+    Iterable<int> unwrappedKeyIds,
+    int activeId,
+  ) {
+    final ids = unwrappedKeyIds.toList()..sort();
+    if (ids.isEmpty || !ids.contains(activeId)) {
+      throw const NazaVaultException(
+        'header_authentication',
+        'The legacy vault header has invalid data-key controls.',
+      );
+    }
+    if (header['rotationPending'] == true) {
+      if (ids.length < 2 || activeId != ids.last) {
+        throw const NazaVaultException(
+          'header_authentication',
+          'The legacy pending rotation does not select the newest data key.',
+        );
+      }
+      return;
+    }
+    if (ids.length != 1 || activeId != ids.single) {
+      throw const NazaVaultException(
+        'header_authentication',
+        'The legacy finalized header retains ambiguous data keys.',
+      );
+    }
+  }
+
+  Future<String> _headerAuthentication(
+    Map<String, Object?> header,
+    List<int> vaultKey,
+  ) async {
+    final bytes = await _headerAuthenticationBytes(header, vaultKey);
+    try {
+      return base64Encode(bytes);
+    } finally {
+      _zero(bytes);
+    }
+  }
+
+  Future<Uint8List> _headerAuthenticationBytes(
+    Map<String, Object?> header,
+    List<int> vaultKey,
+  ) async {
+    final vaultId = header['vaultId']?.toString() ?? '';
+    final derived = await _hkdf.deriveKey(
+      secretKey: SecretKey(vaultKey),
+      nonce: utf8.encode(vaultId),
+      info: utf8.encode('$_vaultFormat/header-authentication-key/v1'),
+    );
+    final key = Uint8List.fromList(await derived.extractBytes());
+    try {
+      final canonical = <String, Object?>{
+        for (final entry in header.entries)
+          if (entry.key != _headerAuthenticationField)
+            entry.key: _canonicalJsonValue(entry.value),
+      };
+      final material = utf8.encode(
+        '$_headerAuthenticationFormat\u001f${jsonEncode(_canonicalJsonValue(canonical))}',
+      );
+      final mac = await _hmac.calculateMac(material, secretKey: SecretKey(key));
+      return Uint8List.fromList(mac.bytes);
+    } finally {
+      _zero(key);
+    }
+  }
+
+  Object? _canonicalJsonValue(Object? value) {
+    if (value == null || value is bool || value is num || value is String) {
+      return value;
+    }
+    if (value is List) {
+      return value.map(_canonicalJsonValue).toList(growable: false);
+    }
+    if (value is Map) {
+      final keys = value.keys.map((key) {
+        if (key is! String) {
+          throw const FormatException(
+            'Vault header authentication requires string map keys.',
+          );
+        }
+        return key;
+      }).toList()..sort();
+      return <String, Object?>{
+        for (final key in keys) key: _canonicalJsonValue(value[key]),
+      };
+    }
+    throw const FormatException(
+      'Vault header authentication contains an unsupported value.',
     );
   }
 

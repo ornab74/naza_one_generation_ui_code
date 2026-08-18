@@ -455,12 +455,8 @@ final class NazaMultiplaneModelDownloader {
 
   Future<int> _probeLength(Uri uri) async {
     _validateUri(uri);
-    final client = _clientFor(uri);
     try {
-      final request = await client.openUrl('HEAD', uri).timeout(requestTimeout);
-      request.followRedirects = true;
-      request.maxRedirects = 5;
-      final response = await request.close().timeout(requestTimeout);
+      final response = await _openApproved('HEAD', uri);
       try {
         if (response.statusCode >= 200 && response.statusCode < 400) {
           if (response.contentLength > 0) return response.contentLength;
@@ -473,12 +469,14 @@ final class NazaMultiplaneModelDownloader {
       }
     } catch (_) {}
 
-    final request = await client.getUrl(uri).timeout(requestTimeout);
-    request.followRedirects = true;
-    request.maxRedirects = 5;
-    request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
-    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-    final response = await request.close().timeout(requestTimeout);
+    final response = await _openApproved(
+      'GET',
+      uri,
+      configure: (request) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
+        request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+      },
+    );
     try {
       if (response.statusCode != HttpStatus.partialContent &&
           response.statusCode != HttpStatus.ok) {
@@ -837,12 +835,14 @@ final class NazaMultiplaneModelDownloader {
     required File output,
   }) async {
     _validateUri(uri);
-    final request = await _clientFor(uri).getUrl(uri).timeout(requestTimeout);
-    request.followRedirects = true;
-    request.maxRedirects = 5;
-    request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
-    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-    final response = await request.close().timeout(requestTimeout);
+    final response = await _openApproved(
+      'GET',
+      uri,
+      configure: (request) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
+        request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+      },
+    );
     final expected = end - start + 1;
 
     if (response.statusCode != HttpStatus.partialContent &&
@@ -879,6 +879,47 @@ final class NazaMultiplaneModelDownloader {
     }
   }
 
+  Future<HttpClientResponse> _openApproved(
+    String method,
+    Uri initial, {
+    void Function(HttpClientRequest request)? configure,
+  }) async {
+    var current = initial;
+    final visited = <String>{};
+    for (var redirects = 0; redirects <= 5; redirects++) {
+      _validateUri(current);
+      if (!visited.add(current.toString())) {
+        throw NazaModelDistributionException(
+          'Model source redirect loop detected at $current.',
+        );
+      }
+      final request = await _clientFor(
+        current,
+      ).openUrl(method, current).timeout(requestTimeout);
+      request.followRedirects = false;
+      configure?.call(request);
+      final response = await request.close().timeout(requestTimeout);
+      if (!response.isRedirect) return response;
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      await response.drain<void>().timeout(requestTimeout);
+      if (redirects == 5 || location == null) {
+        throw NazaModelDistributionException(
+          'Model source exceeded the approved redirect limit at $current.',
+        );
+      }
+      final parsed = Uri.tryParse(location);
+      if (parsed == null) {
+        throw NazaModelDistributionException(
+          'Model source returned a malformed redirect from $current.',
+        );
+      }
+      current = current.resolveUri(parsed);
+    }
+    throw const NazaModelDistributionException(
+      'Model source redirect validation failed.',
+    );
+  }
+
   HttpClient _clientFor(Uri uri) {
     final key = '${uri.scheme}://${uri.host}:${uri.hasPort ? uri.port : 443}';
     return _clients.putIfAbsent(key, () {
@@ -893,13 +934,10 @@ final class NazaMultiplaneModelDownloader {
   }
 
   static void _validateUri(Uri uri) {
-    if (uri.scheme.toLowerCase() != 'https' || uri.host.trim().isEmpty) {
+    if (!nazaIsApprovedModelTransportUri(uri)) {
       throw NazaModelDistributionException(
-        'Only HTTPS model sources are allowed: $uri',
+        'Model source is outside the approved HTTPS transport policy: $uri',
       );
-    }
-    if (uri.userInfo.isNotEmpty || uri.fragment.isNotEmpty) {
-      throw NazaModelDistributionException('Unsafe model source URI: $uri');
     }
   }
 

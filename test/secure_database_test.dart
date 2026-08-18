@@ -152,6 +152,45 @@ void main() {
     expect(await vault.readJson('history', 'two'), containsPair('value', 2));
   });
 
+  test('tampered rotation controls fail header authentication', () async {
+    await vault.create(password: 'header-auth-password');
+    await vault.writeJson('history', 'one', {'value': 1});
+    await vault.lock();
+
+    final headerFile = File('${directory.path}/naza_one_vault.header.json');
+    final header = Map<String, Object?>.from(
+      jsonDecode(await headerFile.readAsString()) as Map,
+    );
+    header['rotationPending'] = true;
+    await headerFile.writeAsString(jsonEncode(header), flush: true);
+
+    await expectLater(
+      vault.unlock('header-auth-password'),
+      throwsA(
+        isA<NazaVaultException>().having(
+          (error) => error.code,
+          'code',
+          'header_authentication',
+        ),
+      ),
+    );
+    expect(vault.isUnlocked, isFalse);
+  });
+
+  test('legacy finalized header receives authenticated controls', () async {
+    await vault.create(password: 'legacy-header-password');
+    await vault.lock();
+    final headerFile = File('${directory.path}/naza_one_vault.header.json');
+    final header = Map<String, Object?>.from(
+      jsonDecode(await headerFile.readAsString()) as Map,
+    )..remove('headerAuthentication');
+    await headerFile.writeAsString(jsonEncode(header), flush: true);
+
+    await vault.unlock('legacy-header-password');
+    final migrated = jsonDecode(await headerFile.readAsString()) as Map;
+    expect(migrated['headerAuthentication'], isA<String>());
+  });
+
   test(
     'tampered ciphertext is reported instead of becoming empty data',
     () async {

@@ -267,53 +267,48 @@ extension FirstOrNull<T> on Iterable<T> {
 }
 
 class LibraryStore {
+  LibraryStore({NazaSecureDatabase? database})
+    : _database = database ?? NazaSecureDatabase.instance;
+
   static const String _legacyKey = 'bookforge.library.v1';
   static const String _indexKey = 'bookforge.library-index.v2';
   static const String _bookPrefix = 'bookforge.book.v2.';
 
+  final NazaSecureDatabase _database;
+
   Future<List<BookDocument>> load() async {
-    Object? index;
-    try {
-      index = await NazaSecureDatabase.instance.readJson(
-        'bookforge',
-        _indexKey,
-      );
-    } catch (_) {
-      index = null;
-    }
+    final index = await _database.readJson('bookforge', _indexKey);
     if (index is List) {
       final books = <BookDocument>[];
       for (final Object? id in index) {
-        if (id is! String || id.isEmpty) continue;
-        try {
-          final Object? value = await NazaSecureDatabase.instance.readJson(
-            'bookforge',
-            _recordKey(id),
-          );
-          if (value is Map) {
-            books.add(BookDocument.fromJson(Map<String, Object?>.from(value)));
-          }
-        } catch (_) {
-          // A corrupt/missing record should not hide the rest of the library.
+        if (id is! String || id.isEmpty) {
+          throw StateError('The encrypted BookForge index is malformed.');
         }
+        final value = await _database.readJson('bookforge', _recordKey(id));
+        if (value is! Map) {
+          throw StateError(
+            'An encrypted BookForge record referenced by the index is missing or malformed.',
+          );
+        }
+        books.add(BookDocument.fromJson(Map<String, Object?>.from(value)));
       }
+      await _removeLegacyPlaintextIfPresent();
       return books;
     }
+    if (index != null) {
+      throw StateError('The encrypted BookForge index is malformed.');
+    }
 
-    Object? secure;
-    var secureReadSucceeded = false;
-    try {
-      secure = await NazaSecureDatabase.instance.readJson(
-        'bookforge',
-        'library',
-      );
-      secureReadSucceeded = true;
-      if (secure is List) {
-        final books = _decode(secure);
-        await _migrateBooks(books);
-        return books;
-      }
-    } catch (_) {}
+    final secure = await _database.readJson('bookforge', 'library');
+    if (secure is List) {
+      final books = _decode(secure);
+      await _migrateBooks(books);
+      await _removeLegacyPlaintextIfPresent();
+      return books;
+    }
+    if (secure != null) {
+      throw StateError('The encrypted BookForge library is malformed.');
+    }
 
     // Older builds mirrored the encrypted library into preferences. Read that
     // value only as a one-time migration source; never write new manuscripts
@@ -322,50 +317,41 @@ class LibraryStore {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     final String? raw = prefs.getString(_legacyKey);
     if (raw == null || raw.isEmpty) return <BookDocument>[];
+    late final List<BookDocument> books;
     try {
       final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
-      final books = _decode(decoded);
-      if (!secureReadSucceeded || secure is! List) {
-        try {
-          await _migrateBooks(books);
-          await prefs.remove(_legacyKey);
-        } catch (_) {
-          // Preserve the legacy copy until migration completes successfully.
-        }
-      }
-      return books;
-    } catch (_) {
-      return <BookDocument>[];
+      books = _decode(decoded);
+    } catch (error) {
+      throw StateError('The legacy BookForge library is malformed: $error');
     }
+    await _migrateBooks(books);
+    await _removeLegacyPlaintextIfPresent(preferences: prefs);
+    return books;
   }
 
   Future<void> saveBook(BookDocument book) async {
-    await NazaSecureDatabase.instance.writeJson(
-      'bookforge',
-      _recordKey(book.id),
-      book.toJson(),
-    );
+    await _database.writeJson('bookforge', _recordKey(book.id), book.toJson());
   }
 
   Future<void> saveBooks(List<BookDocument> books) async {
     for (final BookDocument book in books) {
       await saveBook(book);
     }
-    await NazaSecureDatabase.instance.writeJson(
+    await _database.writeJson(
       'bookforge',
       _indexKey,
       books.map((BookDocument book) => book.id).toList(),
     );
     // Remove the old monolithic encrypted record after the per-book migration.
-    await NazaSecureDatabase.instance.delete('bookforge', 'library');
+    await _database.delete('bookforge', 'library');
   }
 
   Future<void> deleteBook(
     BookDocument book,
     List<BookDocument> remaining,
   ) async {
-    await NazaSecureDatabase.instance.delete('bookforge', _recordKey(book.id));
-    await NazaSecureDatabase.instance.writeJson(
+    await _database.delete('bookforge', _recordKey(book.id));
+    await _database.writeJson(
       'bookforge',
       _indexKey,
       remaining.map((BookDocument item) => item.id).toList(),
@@ -373,6 +359,19 @@ class LibraryStore {
   }
 
   Future<void> _migrateBooks(List<BookDocument> books) => saveBooks(books);
+
+  Future<void> _removeLegacyPlaintextIfPresent({
+    SharedPreferences? preferences,
+  }) async {
+    final prefs = preferences ?? await SharedPreferences.getInstance();
+    if (prefs.getString(_legacyKey) == null) return;
+    final removed = await prefs.remove(_legacyKey);
+    if (!removed || prefs.getString(_legacyKey) != null) {
+      throw StateError(
+        'The legacy plaintext BookForge library could not be removed securely.',
+      );
+    }
+  }
 
   String _recordKey(String id) =>
       '$_bookPrefix${base64UrlEncode(utf8.encode(id)).replaceAll('=', '')}';

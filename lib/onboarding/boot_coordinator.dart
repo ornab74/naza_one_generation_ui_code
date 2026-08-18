@@ -561,7 +561,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       if (mounted)
         setState(
           () => _status =
-              'Model hash matched. Linking into the managed verified cache…',
+              'Model hash matched. Copying a private verified snapshot…',
         );
       await _localPreference.materializeForApp(preference);
       final refreshed = await app.NazaSecureModelStore.refresh();

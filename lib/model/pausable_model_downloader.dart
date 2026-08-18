@@ -620,12 +620,14 @@ final class NazaPausableModelDownloader {
   Future<void> _rangeGet(Uri uri, int start, int end, File output) async {
     _validateUri(uri);
     await control.checkpoint();
-    final request = await _clientFor(uri).getUrl(uri).timeout(requestTimeout);
-    request.followRedirects = true;
-    request.maxRedirects = 5;
-    request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
-    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-    final response = await request.close().timeout(requestTimeout);
+    final response = await _openApproved(
+      'GET',
+      uri,
+      configure: (request) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
+        request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+      },
+    );
     final expected = end - start + 1;
     if (response.statusCode != HttpStatus.partialContent &&
         !(start == 0 &&
@@ -660,6 +662,47 @@ final class NazaPausableModelDownloader {
         'Provider ended range at $received of $expected bytes.',
       );
     }
+  }
+
+  Future<HttpClientResponse> _openApproved(
+    String method,
+    Uri initial, {
+    required void Function(HttpClientRequest request) configure,
+  }) async {
+    var current = initial;
+    final visited = <String>{};
+    for (var redirects = 0; redirects <= 5; redirects++) {
+      _validateUri(current);
+      if (!visited.add(current.toString())) {
+        throw NazaModelDistributionException(
+          'Model source redirect loop detected at $current.',
+        );
+      }
+      final request = await _clientFor(
+        current,
+      ).openUrl(method, current).timeout(requestTimeout);
+      request.followRedirects = false;
+      configure(request);
+      final response = await request.close().timeout(requestTimeout);
+      if (!response.isRedirect) return response;
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      await response.drain<void>().timeout(requestTimeout);
+      if (redirects == 5 || location == null) {
+        throw NazaModelDistributionException(
+          'Model source exceeded the approved redirect limit at $current.',
+        );
+      }
+      final parsed = Uri.tryParse(location);
+      if (parsed == null) {
+        throw NazaModelDistributionException(
+          'Model source returned a malformed redirect from $current.',
+        );
+      }
+      current = current.resolveUri(parsed);
+    }
+    throw const NazaModelDistributionException(
+      'Model source redirect validation failed.',
+    );
   }
 
   Future<void> _verifyParts(File staging, File journal, Directory spool) async {
@@ -701,13 +744,10 @@ final class NazaPausableModelDownloader {
   }
 
   static void _validateUri(Uri uri) {
-    if (uri.scheme.toLowerCase() != 'https' || uri.host.trim().isEmpty) {
+    if (!nazaIsApprovedModelTransportUri(uri)) {
       throw NazaModelDistributionException(
-        'Only HTTPS model sources are allowed: $uri',
+        'Model source is outside the approved HTTPS transport policy: $uri',
       );
-    }
-    if (uri.userInfo.isNotEmpty || uri.fragment.isNotEmpty) {
-      throw NazaModelDistributionException('Unsafe model source URI: $uri');
     }
   }
 

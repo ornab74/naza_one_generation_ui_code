@@ -28,12 +28,12 @@ final class NazaLocalModelSelection {
   final String source;
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'schema': 'naza-local-model-selection-v1',
-        'path': path,
-        'sha256': sha256,
-        'bytes': bytes,
-        'source': source,
-      };
+    'schema': 'naza-local-model-selection-v1',
+    'path': path,
+    'sha256': sha256,
+    'bytes': bytes,
+    'source': source,
+  };
 
   static NazaLocalModelSelection? fromJson(Object? raw) {
     if (raw is! Map || raw['schema'] != 'naza-local-model-selection-v1') {
@@ -43,7 +43,9 @@ final class NazaLocalModelSelection {
     final sha = raw['sha256']?.toString().trim().toLowerCase() ?? '';
     final bytes = (raw['bytes'] as num?)?.toInt() ?? -1;
     final source = raw['source']?.toString().trim() ?? 'local-file';
-    if (path.isEmpty || !RegExp(r'^[0-9a-f]{64}$').hasMatch(sha) || bytes <= 0) {
+    if (path.isEmpty ||
+        !RegExp(r'^[0-9a-f]{64}$').hasMatch(sha) ||
+        bytes <= 0) {
       return null;
     }
     return NazaLocalModelSelection(
@@ -61,16 +63,21 @@ final class NazaLocalModelPreference {
   NazaLocalModelPreference({
     NazaSecureDatabase? database,
     NazaModelDistributionManifest? manifest,
-  })  : _database = database ?? NazaSecureDatabase.instance,
-        _manifest = manifest ?? NazaModelDistributionManifest.gemma4E2b;
+    Future<Directory> Function()? supportDirectoryProvider,
+  }) : _database = database ?? NazaSecureDatabase.instance,
+       _manifest = manifest ?? NazaModelDistributionManifest.gemma4E2b,
+       _supportDirectoryProvider =
+           supportDirectoryProvider ?? getApplicationSupportDirectory;
 
   static const String namespace = 'naza-model-preference-v1';
   static const String key = 'desktop-local-model';
 
   final NazaSecureDatabase _database;
   final NazaModelDistributionManifest _manifest;
+  final Future<Directory> Function() _supportDirectoryProvider;
 
-  bool get desktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+  bool get desktop =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
   Future<NazaLocalModelSelection?> read() async {
     if (!_database.isUnlocked) return null;
@@ -103,7 +110,10 @@ final class NazaLocalModelPreference {
     String source = 'local-file',
   }) async {
     if (!await file.exists()) {
-      throw FileSystemException('Selected model file does not exist.', file.path);
+      throw FileSystemException(
+        'Selected model file does not exist.',
+        file.path,
+      );
     }
     final bytes = await file.length();
     if (bytes != _manifest.expectedBytes) {
@@ -159,66 +169,58 @@ final class NazaLocalModelPreference {
     }
   }
 
-  /// Makes a verified desktop selection visible to the existing app model
-  /// store. Prefer a link to avoid duplicating a ~2.4 GiB model; fall back to a
-  /// byte-for-byte copy when the host cannot create a link (for example a
-  /// Windows volume/privilege restriction).
+  /// Copies a verified desktop selection into application-private storage.
+  ///
+  /// The managed artifact must be a regular snapshot rather than a symbolic or
+  /// hard link. External model files can remain writable after selection, and
+  /// invoking a platform command interpreter to create links would also turn
+  /// the untrusted pathname into command text on Windows.
   Future<File> materializeForApp(NazaLocalModelSelection selection) async {
     final source = File(selection.path);
     await verify(source, source: selection.source);
-    final support = await getApplicationSupportDirectory();
-    final target = File('${support.path}/verified_models/${_manifest.modelFileName}');
+    final support = await _supportDirectoryProvider();
+    final target = File(
+      '${support.path}/verified_models/${_manifest.modelFileName}',
+    );
     await target.parent.create(recursive: true);
 
     if (target.absolute.path == source.absolute.path) return target;
-    if (await target.exists()) {
+
+    // A v2 managed preference proves this installation previously created a
+    // private copy. Legacy preferences retain the external path, forcing one
+    // safe copy that also replaces any old symbolic or hard link.
+    final saved = await read();
+    if (saved?.source == 'managed-private-copy-v2' &&
+        saved?.path == target.absolute.path &&
+        await target.exists()) {
       try {
         final existing = await verify(target, source: 'managed-cache');
-        if (_constantTimeEquals(existing.sha256, selection.sha256)) return target;
-      } catch (_) {}
-    }
-    final backup = File('${target.path}.previous');
-    if (await backup.exists()) await backup.delete();
-    final link = Link(target.path);
-    if (await link.exists()) await link.delete();
-
-    var linked = false;
-    if (Platform.isWindows) {
-      try {
-        final result = await Process.run(
-          'cmd',
-          <String>['/c', 'mklink', '/H', target.path, source.path],
-          runInShell: false,
-        );
-        linked = result.exitCode == 0 && await target.exists();
-      } catch (_) {}
-    } else {
-      try {
-        await link.create(source.absolute.path);
-        linked = await link.exists();
+        if (_constantTimeEquals(existing.sha256, selection.sha256))
+          return target;
       } catch (_) {}
     }
 
-    if (!linked) {
-      if (await link.exists()) await link.delete();
-      final temporary = File('${target.path}.new');
-      if (await temporary.exists()) await temporary.delete();
+    final temporary = File(
+      '${target.path}.new-$pid-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    try {
       await source.copy(temporary.path);
       await verify(temporary, source: 'managed-copy');
-      if (await target.exists()) await target.rename(backup.path);
-      try {
-        await temporary.rename(target.path);
-        if (await backup.exists()) await backup.delete();
-      } catch (_) {
-        if (await temporary.exists()) await temporary.delete();
-        if (!await target.exists() && await backup.exists()) {
-          await backup.rename(target.path);
-        }
-        rethrow;
+      final targetLink = Link(target.path);
+      if (await targetLink.exists()) {
+        await targetLink.delete();
+      } else if (await target.exists()) {
+        await target.delete();
       }
+      await temporary.rename(target.path);
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
     }
 
-    await verify(target, source: linked ? 'managed-link' : 'managed-copy');
+    final managed = await verify(target, source: 'managed-private-copy-v2');
+    if (_database.isUnlocked) {
+      await _database.writeJson(namespace, key, managed.toJson());
+    }
     return target;
   }
 
