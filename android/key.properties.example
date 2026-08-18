@@ -1,0 +1,4 @@
+storeFile=/absolute/path/to/upload.jks
+storePassword=change-me
+keyAlias=upload
+keyPassword=change-me
