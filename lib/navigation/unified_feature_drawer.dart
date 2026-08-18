@@ -48,7 +48,7 @@ final class NazaFeatureDestination {
 
 final class NazaFeaturePinPolicy {
   static const String requiredId = 'chat';
-  static const int maxPins = 7;
+  static const int maxPins = 20;
   static const List<String> defaults = <String>[
     requiredId,
     'road-scanner',
@@ -104,8 +104,8 @@ final class NazaFeaturePinStore {
   }
 }
 
-/// The single mobile navigation entry point. A compact pinned dock opens the
-/// same drawer used for discovery, rotation, deep links, and pin management.
+/// The single mobile navigation entry point. The centered orbit control opens
+/// every feature; pins are managed inside that same surface.
 final class NazaUnifiedFeatureDrawer extends StatefulWidget {
   final List<NazaFeatureDestination> destinations;
   final String selectedId;
@@ -223,16 +223,16 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
       );
   }
 
+  void _open(NazaFeatureDestination destination) {
+    HapticFeedback.selectionClick();
+    destination.onOpen();
+  }
+
   NazaFeatureDestination? _byId(String id) {
     for (final destination in widget.destinations) {
       if (destination.id == id) return destination;
     }
     return null;
-  }
-
-  void _open(NazaFeatureDestination destination) {
-    HapticFeedback.selectionClick();
-    destination.onOpen();
   }
 
   Future<void> _showDrawer() async {
@@ -271,14 +271,17 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
     final pinned = _pins
         .map(_byId)
         .whereType<NazaFeatureDestination>()
-        .toList();
+        .toList(growable: false);
+    final midpoint = (pinned.length + 1) ~/ 2;
+    final leftPins = pinned.take(midpoint).toList(growable: false);
+    final rightPins = pinned.skip(midpoint).toList(growable: false);
     return Semantics(
       container: true,
       label: 'Feature wheel navigation',
       child: Container(
         key: const ValueKey<String>('unified-feature-drawer'),
-        height: 72,
-        padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+        height: 62,
+        padding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
         decoration: BoxDecoration(
           color: widget.surface,
           border: Border(top: BorderSide(color: widget.border)),
@@ -286,28 +289,17 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
         child: Row(
           children: <Widget>[
             Expanded(
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: pinned.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 4),
-                itemBuilder: (context, index) {
-                  final item = pinned[index];
-                  final selected = item.id == widget.selectedId;
-                  return _PinnedDockButton(
-                    destination: item,
-                    selected: selected,
-                    text: widget.text,
-                    subtext: widget.subtext,
-                    border: widget.border,
-                    onTap: () => _open(item),
-                    onLongPress: item.id == NazaFeaturePinPolicy.requiredId
-                        ? null
-                        : () => _togglePin(item.id),
-                  );
-                },
+              child: _OrbitPinStrip(
+                pins: leftPins,
+                reverse: true,
+                selectedId: widget.selectedId,
+                border: widget.border,
+                subtext: widget.subtext,
+                onOpen: _open,
+                onUnpin: _togglePin,
               ),
             ),
-            const SizedBox(width: 7),
+            const SizedBox(width: 6),
             Semantics(
               button: true,
               label: 'Open all features',
@@ -321,8 +313,19 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
                   backgroundColor: widget.panel,
                   foregroundColor: widget.text,
                   side: BorderSide(color: widget.border),
-                  minimumSize: const Size(52, 52),
+                  minimumSize: const Size(48, 48),
                 ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: _OrbitPinStrip(
+                pins: rightPins,
+                selectedId: widget.selectedId,
+                border: widget.border,
+                subtext: widget.subtext,
+                onOpen: _open,
+                onUnpin: _togglePin,
               ),
             ),
           ],
@@ -338,6 +341,64 @@ class _NazaUnifiedFeatureDrawerState extends State<NazaUnifiedFeatureDrawer> {
     }
     return true;
   }
+}
+
+final class _OrbitPinStrip extends StatelessWidget {
+  final List<NazaFeatureDestination> pins;
+  final bool reverse;
+  final String selectedId;
+  final Color border;
+  final Color subtext;
+  final ValueChanged<NazaFeatureDestination> onOpen;
+  final ValueChanged<String> onUnpin;
+
+  const _OrbitPinStrip({
+    required this.pins,
+    this.reverse = false,
+    required this.selectedId,
+    required this.border,
+    required this.subtext,
+    required this.onOpen,
+    required this.onUnpin,
+  });
+
+  @override
+  Widget build(BuildContext context) => ListView.separated(
+    reverse: reverse,
+    scrollDirection: Axis.horizontal,
+    itemCount: pins.length,
+    separatorBuilder: (_, _) => const SizedBox(width: 4),
+    itemBuilder: (_, index) {
+      final item = pins[index];
+      final selected = item.id == selectedId;
+      return Tooltip(
+        message: item.label,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => onOpen(item),
+          onLongPress: item.id == NazaFeaturePinPolicy.requiredId
+              ? null
+              : () => onUnpin(item.id),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: 44,
+            decoration: BoxDecoration(
+              color: selected
+                  ? item.accent.withValues(alpha: .2)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: selected ? item.accent : border),
+            ),
+            child: Icon(
+              item.icon,
+              size: 20,
+              color: selected ? item.accent : subtext,
+            ),
+          ),
+        ),
+      );
+    },
+  );
 }
 
 /// Desktop presentation of the same allowlisted registry and persisted pins.
@@ -759,75 +820,6 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
   }
 }
 
-final class _PinnedDockButton extends StatelessWidget {
-  final NazaFeatureDestination destination;
-  final bool selected;
-  final Color text;
-  final Color subtext;
-  final Color border;
-  final VoidCallback onTap;
-  final VoidCallback? onLongPress;
-
-  const _PinnedDockButton({
-    required this.destination,
-    required this.selected,
-    required this.text,
-    required this.subtext,
-    required this.border,
-    required this.onTap,
-    this.onLongPress,
-  });
-
-  @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    selected: selected,
-    label: destination.label,
-    hint: onLongPress == null ? null : 'Long press to unpin',
-    child: Material(
-      color: selected
-          ? destination.accent.withValues(alpha: 0.18)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(19),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(19),
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          constraints: const BoxConstraints(minWidth: 58, maxWidth: 88),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(19),
-            border: Border.all(color: selected ? destination.accent : border),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              Icon(
-                destination.icon,
-                color: selected ? destination.accent : subtext,
-                size: 21,
-              ),
-              const SizedBox(height: 2),
-              Text(
-                destination.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: selected ? text : subtext,
-                  fontSize: 9.5,
-                  fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-}
-
 final class _FeatureWheelSheet extends StatefulWidget {
   final List<NazaFeatureDestination> destinations;
   final List<String> pins;
@@ -858,6 +850,7 @@ final class _FeatureWheelSheet extends StatefulWidget {
 }
 
 class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
+  static const int _orbitBase = 10000;
   late final PageController _controller;
   double _page = 0;
   String _category = 'All';
@@ -882,10 +875,26 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
     final selected = widget.destinations.indexWhere(
       (e) => e.id == widget.selectedId,
     );
-    final initial = selected < 0 ? 0 : selected;
+    final count = widget.destinations.length;
+    final logical = selected < 0 ? 0 : selected;
+    final initial = count == 0
+        ? _orbitBase
+        : _orbitBase - (_orbitBase % count) + logical;
     _page = initial.toDouble();
     _controller = PageController(initialPage: initial, viewportFraction: 0.38)
       ..addListener(_trackPage);
+  }
+
+  void _recenterOrbit() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      final count = _visible.length;
+      final target = count == 0
+          ? _orbitBase
+          : _orbitBase - (_orbitBase % count);
+      _page = target.toDouble();
+      _controller.jumpToPage(target);
+    });
   }
 
   void _trackPage() {
@@ -910,7 +919,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
     final visible = _visible;
     return Container(
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+        maxHeight: MediaQuery.sizeOf(context).height * 0.74,
       ),
       decoration: BoxDecoration(
         color: widget.surface,
@@ -965,8 +974,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
             child: TextField(
               onChanged: (value) => setState(() {
                 _query = value;
-                _page = 0;
-                if (_controller.hasClients) _controller.jumpToPage(0);
+                _recenterOrbit();
               }),
               style: TextStyle(color: widget.text),
               decoration: InputDecoration(
@@ -1001,8 +1009,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
                   onSelected: (_) => setState(() {
                     _category = category;
                     _query = '';
-                    _page = 0;
-                    if (_controller.hasClients) _controller.jumpToPage(0);
+                    _recenterOrbit();
                   }),
                 );
               },
@@ -1010,81 +1017,87 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
           ),
           const SizedBox(height: 14),
           SizedBox(
-            height: 210,
+            height: 184,
             child: PageView.builder(
               key: ValueKey<String>(_category),
               controller: _controller,
               padEnds: true,
-              itemCount: visible.length,
+              itemCount: visible.isEmpty ? 0 : null,
               itemBuilder: (context, index) {
                 final distance = (index - _page).abs().clamp(0.0, 1.0);
-                final scale = 1 - distance * 0.18;
-                final lift = math.sin((1 - distance) * math.pi / 2) * 14;
-                final item = visible[index];
+                final signedDistance = index - _page;
+                final scale = 1 - distance * 0.2;
+                final lift = math.cos(signedDistance * math.pi / 3) * 18;
+                final item = visible[index % visible.length];
                 final pinned = widget.pins.contains(item.id);
                 return Transform.translate(
                   offset: Offset(0, -lift),
-                  child: Transform.scale(
-                    scale: scale,
-                    child: Semantics(
-                      button: true,
-                      selected: item.id == widget.selectedId,
-                      label: item.label,
-                      hint: pinned
-                          ? 'Long press to unpin'
-                          : 'Long press to pin',
-                      child: Card(
-                        color: Color.alphaBlend(
-                          item.accent.withValues(alpha: 0.13),
-                          widget.panel,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(28),
-                          side: BorderSide(
-                            color: pinned ? item.accent : widget.border,
-                            width: pinned ? 1.5 : 1,
+                  child: Transform.rotate(
+                    angle: signedDistance * 0.16,
+                    child: Transform.scale(
+                      scale: scale,
+                      child: Semantics(
+                        button: true,
+                        selected: item.id == widget.selectedId,
+                        label: item.label,
+                        hint: pinned
+                            ? 'Long press to unpin'
+                            : 'Long press to pin',
+                        child: Card(
+                          color: Color.alphaBlend(
+                            item.accent.withValues(alpha: 0.13),
+                            widget.panel,
                           ),
-                        ),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(28),
-                          onTap: () => widget.onOpen(item),
-                          onLongPress: () => widget.onTogglePin(item.id),
-                          child: Padding(
-                            padding: const EdgeInsets.all(14),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: <Widget>[
-                                CircleAvatar(
-                                  radius: 26,
-                                  backgroundColor: item.accent.withValues(
-                                    alpha: 0.18,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(28),
+                            side: BorderSide(
+                              color: pinned ? item.accent : widget.border,
+                              width: pinned ? 1.5 : 1,
+                            ),
+                          ),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(28),
+                            onTap: () => widget.onOpen(item),
+                            onLongPress: () => widget.onTogglePin(item.id),
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: <Widget>[
+                                  CircleAvatar(
+                                    radius: 26,
+                                    backgroundColor: item.accent.withValues(
+                                      alpha: 0.18,
+                                    ),
+                                    child: Icon(
+                                      item.icon,
+                                      color: item.accent,
+                                      size: 28,
+                                    ),
                                   ),
-                                  child: Icon(
-                                    item.icon,
-                                    color: item.accent,
-                                    size: 28,
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    item.label,
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: widget.text,
+                                      fontWeight: FontWeight.w900,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  item.label,
-                                  textAlign: TextAlign.center,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: widget.text,
-                                    fontWeight: FontWeight.w900,
+                                  const SizedBox(height: 5),
+                                  Icon(
+                                    pinned
+                                        ? Icons.push_pin_rounded
+                                        : Icons.push_pin_outlined,
+                                    size: 15,
+                                    color: pinned
+                                        ? item.accent
+                                        : widget.subtext,
                                   ),
-                                ),
-                                const SizedBox(height: 5),
-                                Icon(
-                                  pinned
-                                      ? Icons.push_pin_rounded
-                                      : Icons.push_pin_outlined,
-                                  size: 15,
-                                  color: pinned ? item.accent : widget.subtext,
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -1099,7 +1112,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 0, 24, 22),
               child: Text(
-                visible[_page.round().clamp(0, visible.length - 1)].description,
+                visible[_page.round() % visible.length].description,
                 textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,

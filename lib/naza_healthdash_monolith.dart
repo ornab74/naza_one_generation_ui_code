@@ -21,6 +21,10 @@ import 'dart:math' as math;
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
+import 'package:pedometer/pedometer.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -31,6 +35,39 @@ import 'analytics/trend_charts.dart';
 import 'security/secure_database.dart';
 
 const Object _healthUnset = Object();
+
+final class NazaWeatherPoint {
+  const NazaWeatherPoint({required this.time, required this.temperature, required this.wind, required this.rain, required this.snow, required this.code});
+  final DateTime time;
+  final double temperature, wind, rain, snow;
+  final int code;
+}
+
+final class OpenMeteoService {
+  static const _maxPoints = 240;
+  Future<List<NazaWeatherPoint>> forecast({required double latitude, required double longitude, int days = 7}) async {
+    if (!latitude.isFinite || !longitude.isFinite || latitude.abs() > 90 || longitude.abs() > 180) throw const FormatException('Invalid location.');
+    final uri = Uri.https('api.open-meteo.com', '/v1/forecast', {
+      'latitude': latitude.toStringAsFixed(4), 'longitude': longitude.toStringAsFixed(4),
+      'hourly': 'temperature_2m,precipitation,rain,snowfall,wind_speed_10m,weather_code',
+      'forecast_days': days.clamp(1, 16).toString(), 'timezone': 'auto',
+    });
+    final response = await http.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) throw StateError('Open-Meteo unavailable (${response.statusCode}).');
+    final body = jsonDecode(response.body);
+    if (body is! Map) throw const FormatException('Invalid weather response.');
+    final hourly = body['hourly'];
+    if (hourly is! Map) throw const FormatException('Weather hourly data missing.');
+    final times = (hourly['time'] as List?)?.cast<String>() ?? const <String>[];
+    final temp = (hourly['temperature_2m'] as List?) ?? const [];
+    final wind = (hourly['wind_speed_10m'] as List?) ?? const [];
+    final rain = (hourly['rain'] as List?) ?? const [];
+    final snow = (hourly['snowfall'] as List?) ?? const [];
+    final codes = (hourly['weather_code'] as List?) ?? const [];
+    final count = [times.length, temp.length, wind.length, rain.length, snow.length, codes.length].reduce(math.min).clamp(0, _maxPoints).toInt();
+    return List.generate(count, (i) => NazaWeatherPoint(time: DateTime.tryParse(times[i]) ?? DateTime.now(), temperature: (temp[i] as num).toDouble(), wind: (wind[i] as num).toDouble(), rain: (rain[i] as num).toDouble(), snow: (snow[i] as num).toDouble(), code: (codes[i] as num).round()));
+  }
+}
 
 typedef NazaHealthTextRunner =
     Future<String> Function({
@@ -4383,6 +4420,9 @@ final class NazaWalkingSession {
   final DateTime endedAt;
   final int steps;
   final int activeMinutes;
+  final double distanceMeters;
+  final double outdoorTempC;
+  final bool gpsTracked;
 
   const NazaWalkingSession({
     required this.id,
@@ -4390,6 +4430,9 @@ final class NazaWalkingSession {
     required this.endedAt,
     required this.steps,
     required this.activeMinutes,
+    this.distanceMeters = 0,
+    this.outdoorTempC = 0,
+    this.gpsTracked = false,
   });
 
   Map<String, Object?> toJson() => {
@@ -4398,6 +4441,9 @@ final class NazaWalkingSession {
     'ended_at': endedAt.toUtc().toIso8601String(),
     'steps': steps,
     'active_minutes': activeMinutes,
+    'distance_meters': distanceMeters,
+    'outdoor_temp_c': outdoorTempC,
+    'gps_tracked': gpsTracked,
   };
 
   factory NazaWalkingSession.fromJson(Map<String, Object?> j) =>
@@ -4413,6 +4459,9 @@ final class NazaWalkingSession {
         activeMinutes: ((j['active_minutes'] as num?)?.round() ?? 0)
             .clamp(0, 1440)
             .toInt(),
+        distanceMeters: ((j['distance_meters'] as num?)?.toDouble() ?? 0).clamp(0, 100000).toDouble(),
+        outdoorTempC: ((j['outdoor_temp_c'] as num?)?.toDouble() ?? 0).clamp(-80, 70).toDouble(),
+        gpsTracked: j['gps_tracked'] == true,
       );
 }
 
@@ -6620,16 +6669,6 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
     }
   }
 
-  Future<void> _showCommandPalette() async {
-    final command = await showModalBottomSheet<_NazaCommandSpec>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (_) => _NazaCommandPaletteSheet(commands: _commands()),
-    );
-    if (command != null) command.invoke();
-  }
-
   Future<void> _openHelpStep(NazaHelpFlowStep step) async {
     var flow = state.helpFlow.copyWith(lastStepId: step.id);
     if (const {'I', 'J', 'K'}.contains(step.id)) {
@@ -6716,11 +6755,6 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
           title: Text(_pageLabel(page)),
           actions: [
             IconButton(
-              tooltip: 'Search commands',
-              onPressed: _showCommandPalette,
-              icon: const Icon(Icons.manage_search_rounded),
-            ),
-            IconButton(
               tooltip: 'Daily + weekly review',
               onPressed: _runFlow,
               icon: const Icon(Icons.auto_awesome_rounded),
@@ -6740,6 +6774,7 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
     NazaHealthPage.walking => _WalkingMetabolismPage(
       state: state,
       onState: _persist,
+      agent: widget.agent,
     ),
     NazaHealthPage.workflow => _WorkflowPage(
       state: state,
@@ -9105,17 +9140,28 @@ final class _HabitCard extends StatelessWidget {
 final class _WalkingMetabolismPage extends StatefulWidget {
   final NazaHealthState state;
   final Future<void> Function(NazaHealthState) onState;
+  final NazaHealthAgentBridge agent;
 
-  const _WalkingMetabolismPage({required this.state, required this.onState});
+  const _WalkingMetabolismPage({required this.state, required this.onState, required this.agent});
 
   @override
   State<_WalkingMetabolismPage> createState() => _WalkingMetabolismPageState();
 }
 
 class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
+  final _weather = OpenMeteoService();
+  List<NazaWeatherPoint> _forecast = const [];
+  bool _weatherBusy = false;
+  String? _weatherError;
+  String? _weatherReview;
+  bool _reviewBusy = false;
   Timer? _timer;
+  StreamSubscription<StepCount>? _stepSubscription;
+  int? _sensorStartSteps;
   DateTime? _startedAt;
   final _steps = TextEditingController();
+  final _distance = TextEditingController();
+  final _temperature = TextEditingController();
   final _weight = TextEditingController();
   final _calories = TextEditingController();
   final _sleep = TextEditingController();
@@ -9124,12 +9170,21 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
   @override
   void dispose() {
     _timer?.cancel();
-    for (final c in [_steps, _weight, _calories, _sleep, _meds]) c.dispose();
+    _stepSubscription?.cancel();
+    for (final c in [_steps, _distance, _temperature, _weight, _calories, _sleep, _meds]) c.dispose();
     super.dispose();
   }
 
   int get _minutes =>
       _startedAt == null ? 0 : DateTime.now().difference(_startedAt!).inMinutes;
+
+  Future<void> _startWalk() async {
+    setState(() {
+      _startedAt = DateTime.now();
+      _timer = Timer.periodic(const Duration(seconds: 30), (_) { if (mounted) setState(() {}); });
+    });
+    await _startStepSensor();
+  }
 
   Future<void> _finishWalk() async {
     final start = _startedAt;
@@ -9140,8 +9195,12 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
       endedAt: DateTime.now(),
       steps: int.tryParse(_steps.text) ?? 0,
       activeMinutes: _minutes,
+      distanceMeters: double.tryParse(_distance.text) ?? 0,
+      outdoorTempC: double.tryParse(_temperature.text) ?? 0,
+      gpsTracked: _forecast.isNotEmpty,
     );
     _timer?.cancel();
+    await _stepSubscription?.cancel();
     setState(() => _startedAt = null);
     await widget.onState(
       widget.state.copyWith(
@@ -9172,6 +9231,49 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
       );
   }
 
+  Future<void> _loadWeather() async {
+    setState(() { _weatherBusy = true; _weatherError = null; });
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) throw StateError('Location services are disabled.');
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) throw StateError('Location permission was not granted.');
+      final position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.reduced, timeLimit: Duration(seconds: 15)));
+      final points = await _weather.forecast(latitude: position.latitude, longitude: position.longitude);
+      if (mounted) setState(() => _forecast = points);
+    } catch (error) {
+      if (mounted) setState(() => _weatherError = 'Weather unavailable: $error');
+    } finally { if (mounted) setState(() => _weatherBusy = false); }
+  }
+
+  Future<void> _startStepSensor() async {
+    final permission = await Permission.activityRecognition.request();
+    if (!permission.isGranted) {
+      if (mounted) setState(() => _weatherError = 'Activity permission was not granted; enter steps manually.');
+      return;
+    }
+    await _stepSubscription?.cancel();
+    _sensorStartSteps = null;
+    _stepSubscription = Pedometer.stepCountStream.listen((event) {
+      _sensorStartSteps ??= event.steps;
+      if (mounted) setState(() => _steps.text = math.max(0, event.steps - _sensorStartSteps!).toString());
+    }, onError: (_) {
+      if (mounted) setState(() => _weatherError = 'Step sensor unavailable; enter steps manually.');
+    });
+  }
+
+  Future<void> _reviewWeather() async {
+    if (_forecast.isEmpty || _reviewBusy) return;
+    setState(() => _reviewBusy = true);
+    try {
+      final sample = _forecast.take(24).map((p) => '${p.time.toIso8601String()} temp=${p.temperature}C wind=${p.wind}km/h rain=${p.rain}mm snow=${p.snow}cm code=${p.code}').join('\n');
+      final review = await widget.agent.runText(systemInstruction: 'Review bounded weather data for walking. Discuss heat/cold, wind, rain, snow or ice, visibility, and useful time windows. Be conservative, do not invent observations, and state uncertainty.', prompt: 'Open-Meteo hourly observations:\n$sample\nSuggest safer walking windows and practical precautions.');
+      if (mounted) setState(() => _weatherReview = review.trim());
+    } catch (error) {
+      if (mounted) setState(() => _weatherError = 'Weather review unavailable: $error');
+    } finally { if (mounted) setState(() => _reviewBusy = false); }
+  }
+
   @override
   Widget build(BuildContext context) {
     final sessions = widget.state.walkingSessions;
@@ -9180,6 +9282,7 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
           e.endedAt.isAfter(DateTime.now().subtract(const Duration(days: 28))),
     );
     final totalSteps = recent.fold<int>(0, (sum, e) => sum + e.steps);
+    final totalMeters = recent.fold<double>(0, (sum, e) => sum + e.distanceMeters);
     final avgSteps = recent.isEmpty ? 0 : totalSteps ~/ recent.length;
     final latest = widget.state.metabolicCheckins.isEmpty
         ? null
@@ -9222,13 +9325,7 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
                     ),
                     FilledButton.icon(
                       onPressed: _startedAt == null
-                          ? () => setState(() {
-                              _startedAt = DateTime.now();
-                              _timer = Timer.periodic(
-                                const Duration(seconds: 30),
-                                (_) => setState(() {}),
-                              );
-                            })
+                          ? () => unawaited(_startWalk())
                           : _finishWalk,
                       icon: Icon(
                         _startedAt == null
@@ -9248,6 +9345,14 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
                     prefixIcon: Icon(Icons.stairs_rounded),
                   ),
                 ),
+                const SizedBox(height: 10),
+                LayoutBuilder(builder: (context, constraints) {
+                  final width = constraints.maxWidth < 430 ? constraints.maxWidth : (constraints.maxWidth - 10) / 2;
+                  return Wrap(spacing: 10, runSpacing: 10, children: [
+                    SizedBox(width: width, child: TextField(controller: _distance, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Distance (meters)', prefixIcon: Icon(Icons.straighten_rounded)))),
+                    SizedBox(width: width, child: TextField(controller: _temperature, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: const InputDecoration(labelText: 'Outdoor temp (°C)', prefixIcon: Icon(Icons.thermostat_rounded)))),
+                  ]);
+                }),
                 const SizedBox(height: 14),
                 SizedBox(
                   height: 88,
@@ -9259,11 +9364,30 @@ class _WalkingMetabolismPageState extends State<_WalkingMetabolismPage> {
                   ),
                 ),
                 Text(
-                  '$totalSteps steps across the last 28 days • ${recent.length} logged walks',
+                  '$totalSteps steps • ${(totalMeters / 1000).toStringAsFixed(2)} km (${(totalMeters * 3.28084).toStringAsFixed(0)} ft) • ${recent.length} logged walks',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [const Expanded(child: Text('Walk weather window', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800))), FilledButton.icon(onPressed: _weatherBusy ? null : _loadWeather, icon: const Icon(Icons.cloud_sync_rounded), label: Text(_weatherBusy ? 'Loading…' : 'Refresh'))]),
+              const SizedBox(height: 6),
+              const Text('Open‑Meteo hourly forecast · location is requested only when Refresh is pressed.', style: TextStyle(color: Color(0xFF8A94A6))),
+              if (_weatherError != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_weatherError!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
+              if (_forecast.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                SizedBox(height: 112, child: ListView.separated(scrollDirection: Axis.horizontal, itemCount: math.min(24, _forecast.length), separatorBuilder: (_, _) => const SizedBox(width: 8), itemBuilder: (context, i) { final p = _forecast[i]; return Container(width: 96, padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)), child: Column(children: [Text('${p.time.hour.toString().padLeft(2, '0')}:00'), Text('${p.temperature.round()}°', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)), Text('💨 ${p.wind.round()}'), Text('☔ ${(p.rain + p.snow).toStringAsFixed(1)}mm', style: const TextStyle(fontSize: 11))])); })),
+                const SizedBox(height: 8),
+                FilledButton.tonalIcon(onPressed: _reviewBusy ? null : _reviewWeather, icon: const Icon(Icons.auto_awesome_rounded), label: Text(_reviewBusy ? 'Reviewing…' : 'AI weather review')),
+                if (_weatherReview != null) Padding(padding: const EdgeInsets.only(top: 10), child: SelectableText(_weatherReview!)),
+              ],
+            ]),
           ),
         ),
         const SizedBox(height: 12),

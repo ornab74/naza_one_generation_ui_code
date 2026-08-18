@@ -10,7 +10,12 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart' as crypto;
 
-enum NazaDistributionPlane { canonicalFull, githubReleasePart, runtimeMirror }
+enum NazaDistributionPlane {
+  canonicalFull,
+  githubReleasePart,
+  pinataPart,
+  runtimeMirror,
+}
 
 /// Closed transport policy for compiled sources and their legitimate CDN hops.
 /// Model bytes remain hash-verified independently; this policy confines where
@@ -30,7 +35,8 @@ bool nazaIsApprovedModelTransportUri(Uri uri) {
       host == 'githubusercontent.com' ||
       host.endsWith('.githubusercontent.com') ||
       host == 'hf.co' ||
-      host.endsWith('.hf.co');
+      host.endsWith('.hf.co') ||
+      host == 'silver-southern-echidna-758.mypinata.cloud';
 }
 
 final class NazaDistributionSource {

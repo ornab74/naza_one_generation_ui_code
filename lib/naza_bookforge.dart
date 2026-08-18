@@ -473,11 +473,21 @@ class ImportService {
     );
     final StringBuffer out = StringBuffer();
     for (final XmlElement paragraph in xml.findAllElements('w:p')) {
-      final String text = paragraph
-          .findAllElements('w:t')
-          .map((XmlElement node) => node.innerText)
-          .join()
-          .trim();
+      // DOCX stores a paragraph across many runs.  Reading only `w:t` and
+      // joining blindly loses spaces, tabs, and explicit line breaks, which
+      // makes imported books appear as one long/vertical word on mobile.
+      final StringBuffer paragraphText = StringBuffer();
+      for (final XmlNode node in paragraph.descendants) {
+        if (node is! XmlElement) continue;
+        if (node.name.local == 't') {
+          paragraphText.write(node.innerText);
+        } else if (node.name.local == 'tab') {
+          paragraphText.write('    ');
+        } else if (node.name.local == 'br' || node.name.local == 'cr') {
+          paragraphText.write('\n');
+        }
+      }
+      final String text = paragraphText.toString().replaceAll(RegExp(r'[ \t]+'), ' ').trim();
       if (text.isEmpty) continue;
       final String? style = paragraph
           .findAllElements('w:pStyle')
@@ -569,16 +579,35 @@ class ImportService {
   }
 
   String titleFrom(String content, String fallback) {
-    final RegExpMatch? heading = RegExp(
-      r'^#\s+(.+)$',
-      multiLine: true,
-    ).firstMatch(content);
-    if (heading != null) return heading.group(1)!.trim();
-    return fallback
+    final String fileTitle = fallback
         .replaceFirst(RegExp(r'\.[^.]+$'), '')
-        .replaceAll('_', ' ')
+        .replaceAll(RegExp(r'[_-]+'), ' ')
         .trim();
+    final generic = <String>{
+      'table of contents',
+      'contents',
+      'toc',
+      'index',
+    };
+    final headings = RegExp(r'^#{1,2}\s+(.+)$', multiLine: true)
+        .allMatches(content)
+        .map((match) => _cleanTitle(match.group(1) ?? ''))
+        .where((title) => title.isNotEmpty && !generic.contains(title.toLowerCase()))
+        .toList();
+    // Prefer the repository filename when the document only exposes a
+    // navigational “Table of Contents” heading (common in DOCX exports).
+    if (fileTitle.isNotEmpty && !generic.contains(fileTitle.toLowerCase())) {
+      return fileTitle.length > 160 ? fileTitle.substring(0, 160) : fileTitle;
+    }
+    if (headings.isNotEmpty) return headings.first;
+    return fileTitle.isEmpty ? 'Imported book' : fileTitle;
   }
+
+  String _cleanTitle(String value) => value
+      .replaceAll(RegExp(r'[\u0000-\u001F]'), ' ')
+      .replaceAll(RegExp(r'[*_`<>]'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 
   String sanitize(String value) {
     final String clean = value
@@ -907,6 +936,7 @@ class GenerationService {
         throw const NazaBookGenerationCancelled();
       }
     }
+
     checkCancelled();
     final int total = request.chapterCount + 1;
     yield GenerationProgress(
@@ -1106,23 +1136,25 @@ final class NazaBookGenerationCancelled implements Exception {
 }
 
 class BookForgeApp extends StatelessWidget {
-  const BookForgeApp({super.key, this.completion});
+  const BookForgeApp({super.key, this.completion, this.initialPage = 0});
 
   final NazaBookCompletion? completion;
+  final int initialPage;
 
   @override
   Widget build(BuildContext context) {
     return Theme(
       data: Theme.of(context),
-      child: StudioScreen(completion: completion),
+      child: StudioScreen(completion: completion, initialPage: initialPage),
     );
   }
 }
 
 class StudioScreen extends StatefulWidget {
-  const StudioScreen({super.key, this.completion});
+  const StudioScreen({super.key, this.completion, this.initialPage = 0});
 
   final NazaBookCompletion? completion;
+  final int initialPage;
 
   @override
   State<StudioScreen> createState() => _StudioScreenState();
@@ -1161,7 +1193,7 @@ class _StudioScreenState extends State<StudioScreen> {
   Timer? _editorUiTimer;
   Future<void> _saveQueue = Future<void>.value();
   int _saveRevision = 0;
-  int _page = 0;
+  late int _page = widget.initialPage.clamp(0, 2);
   bool _loading = true;
   bool _saving = false;
   bool _busy = false;
@@ -1223,6 +1255,11 @@ class _StudioScreenState extends State<StudioScreen> {
       _error(error);
     }
     try {
+      final Object? savedGitHubToken = await NazaSecureDatabase.instance
+          .readJson('bookforge', 'github-token');
+      if (savedGitHubToken is String && savedGitHubToken.isNotEmpty) {
+        _githubToken.text = savedGitHubToken;
+      }
       final Object? savedKey = await NazaSecureDatabase.instance.readJson(
         'bookforge',
         'openai-api-key',
@@ -1240,11 +1277,6 @@ class _StudioScreenState extends State<StudioScreen> {
       );
       if (savedEndpoint is String && savedEndpoint.isNotEmpty)
         _endpoint.text = savedEndpoint;
-      final Object? savedProvider = await NazaSecureDatabase.instance.readJson(
-        'bookforge',
-        'provider',
-      );
-      if (savedProvider == 'gpt56Luna') _provider = BookProvider.gpt56Luna;
     } catch (_) {
       // The vault may still be locked during first paint; the key remains editable.
     }
@@ -1638,62 +1670,92 @@ class _StudioScreenState extends State<StudioScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Row(
-          children: <Widget>[
-            NavigationRail(
-              selectedIndex: _page == 4
-                  ? 1
-                  : (_page >= 0 && _page < 4 ? _page : 0),
-              onDestinationSelected: (int value) =>
-                  setState(() => _page = value),
-              labelType: NavigationRailLabelType.all,
-              leading: Padding(
-                padding: const EdgeInsets.only(bottom: 18),
-                child: Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: <Color>[Color(0xFF9A7CFF), Color(0xFF4D7DFF)],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 700;
+        final content = _pageBody();
+        return Scaffold(
+          body: SafeArea(
+            child: compact
+                ? content
+                : Row(
+                    children: <Widget>[
+                      NavigationRail(
+                        selectedIndex: _page == 4
+                            ? 1
+                            : (_page >= 0 && _page < 4 ? _page : 0),
+                        onDestinationSelected: (int value) =>
+                            setState(() => _page = value),
+                        labelType: NavigationRailLabelType.all,
+                        leading: Padding(
+                          padding: const EdgeInsets.only(bottom: 18),
+                          child: Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: <Color>[
+                                  Color(0xFF9A7CFF),
+                                  Color(0xFF4D7DFF),
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(
+                              Icons.menu_book_rounded,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                        destinations: const <NavigationRailDestination>[
+                          NavigationRailDestination(
+                            icon: Icon(Icons.auto_stories_outlined),
+                            selectedIcon: Icon(Icons.auto_stories),
+                            label: Text('Library'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.auto_awesome_outlined),
+                            selectedIcon: Icon(Icons.auto_awesome),
+                            label: Text('Generate'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.cloud_outlined),
+                            selectedIcon: Icon(Icons.cloud),
+                            label: Text('Repository'),
+                          ),
+                        ],
+                      ),
+                      const VerticalDivider(width: 1, color: Color(0xFF202632)),
+                      Expanded(child: content),
+                    ],
+                  ),
+          ),
+          bottomNavigationBar: compact
+              ? NavigationBar(
+                  selectedIndex: _page == 4 ? 1 : _page.clamp(0, 2),
+                  onDestinationSelected: (value) =>
+                      setState(() => _page = value),
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.auto_stories_outlined),
+                      selectedIcon: Icon(Icons.auto_stories),
+                      label: 'Library',
                     ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Icon(
-                    Icons.menu_book_rounded,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-              destinations: const <NavigationRailDestination>[
-                NavigationRailDestination(
-                  icon: Icon(Icons.auto_stories_outlined),
-                  selectedIcon: Icon(Icons.auto_stories),
-                  label: Text('Library'),
-                ),
-                NavigationRailDestination(
-                  icon: Icon(Icons.auto_awesome_outlined),
-                  selectedIcon: Icon(Icons.auto_awesome),
-                  label: Text('Generate'),
-                ),
-                NavigationRailDestination(
-                  icon: Icon(Icons.cloud_outlined),
-                  selectedIcon: Icon(Icons.cloud),
-                  label: Text('Repository'),
-                ),
-                NavigationRailDestination(
-                  icon: Icon(Icons.tune_outlined),
-                  selectedIcon: Icon(Icons.tune),
-                  label: Text('Settings'),
-                ),
-              ],
-            ),
-            const VerticalDivider(width: 1, color: Color(0xFF202632)),
-            Expanded(child: _pageBody()),
-          ],
-        ),
-      ),
+                    NavigationDestination(
+                      icon: Icon(Icons.auto_awesome_outlined),
+                      selectedIcon: Icon(Icons.auto_awesome),
+                      label: 'Generate',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.cloud_outlined),
+                      selectedIcon: Icon(Icons.cloud),
+                      label: 'Repository',
+                    ),
+                  ],
+                )
+              : null,
+        );
+      },
     );
   }
 
@@ -1712,61 +1774,8 @@ class _StudioScreenState extends State<StudioScreen> {
         onOpen: _download,
       ),
       4 => _liveGenerationPage(),
-      _ => SettingsPanel(
-        githubToken: _githubToken,
-        apiKey: _apiKey,
-        endpoint: _endpoint,
-        model: _model,
-        provider: _provider,
-        onProviderChanged: _setProvider,
-        onSaveApiKey: _saveOpenAiSettings,
-      ),
+      _ => _library(),
     };
-  }
-
-  Future<void> _saveOpenAiSettings() async {
-    try {
-      await NazaSecureDatabase.instance.writeJson(
-        'bookforge',
-        'openai-api-key',
-        _apiKey.text.trim(),
-      );
-      await NazaSecureDatabase.instance.writeJson(
-        'bookforge',
-        'openai-model',
-        'gpt-5.6-luna',
-      );
-      await NazaSecureDatabase.instance.writeJson(
-        'bookforge',
-        'openai-endpoint',
-        _endpoint.text.trim(),
-      );
-      _model.text = 'gpt-5.6-luna';
-      _message('OpenAI key saved in the encrypted Naza vault.');
-    } catch (error) {
-      _error('Unlock the Naza vault before saving the OpenAI key: $error');
-    }
-  }
-
-  Future<void> _setProvider(BookProvider value) async {
-    setState(() => _provider = value);
-    try {
-      await NazaSecureDatabase.instance.writeJson(
-        'bookforge',
-        'provider',
-        value.name,
-      );
-      if (value == BookProvider.gpt56Luna)
-        await NazaSecureDatabase.instance.writeJson(
-          'bookforge',
-          'openai-model',
-          'gpt-5.6-luna',
-        );
-    } catch (error) {
-      _error(
-        'Provider changed for this session, but could not persist it until the vault is unlocked: $error',
-      );
-    }
   }
 
   Widget _liveGenerationPage() {
@@ -1817,6 +1826,10 @@ class _StudioScreenState extends State<StudioScreen> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final List<BookDocument> visibleBooks = _visibleBooks;
+    final bool compact = MediaQuery.sizeOf(context).width < 760;
+    if (compact) {
+      return _compactLibrary(visibleBooks, scheme);
+    }
     return Row(
       children: <Widget>[
         SizedBox(
@@ -1902,7 +1915,8 @@ class _StudioScreenState extends State<StudioScreen> {
                                                   ]
                                                 : <Color>[
                                                     scheme.surfaceContainerHigh,
-                                                    scheme.surfaceContainerHighest,
+                                                    scheme
+                                                        .surfaceContainerHighest,
                                                   ],
                                           ),
                                           borderRadius: BorderRadius.circular(
@@ -2082,6 +2096,96 @@ class _StudioScreenState extends State<StudioScreen> {
       ],
     );
   }
+
+  Widget _compactLibrary(
+    List<BookDocument> visibleBooks,
+    ColorScheme scheme,
+  ) {
+    return CustomScrollView(
+      slivers: <Widget>[
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          sliver: SliverToBoxAdapter(
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text('BookForge', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
+                ),
+                IconButton(onPressed: _newBook, tooltip: 'New book', icon: const Icon(Icons.add_rounded)),
+                IconButton(onPressed: _import, tooltip: 'Import', icon: const Icon(Icons.upload_file_rounded)),
+              ],
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverToBoxAdapter(
+            child: TextField(controller: _search, decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search library')),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.all(16),
+          sliver: SliverToBoxAdapter(
+            child: Text('${visibleBooks.length} books', style: TextStyle(color: scheme.onSurfaceVariant)),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverList.builder(
+            itemCount: visibleBooks.length,
+            itemBuilder: (context, index) {
+              final book = visibleBooks[index];
+              final active = _selected?.id == book.id;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  tileColor: active ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+                  leading: CircleAvatar(child: Text(book.title.isEmpty ? '?' : book.title[0].toUpperCase())),
+                  title: Text(book.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('${book.wordCount} words · ${book.status.name}'),
+                  onTap: () => _select(book),
+                ),
+              );
+            },
+          ),
+        ),
+        if (_selected != null)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            sliver: SliverToBoxAdapter(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      Text(_selected!.title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                      const SizedBox(height: 8),
+                      SegmentedButton<bool>(
+                        segments: const [
+                          ButtonSegment(value: true, icon: Icon(Icons.visibility_outlined), label: Text('Read')),
+                          ButtonSegment(value: false, icon: Icon(Icons.edit_outlined), label: Text('Edit')),
+                        ],
+                        selected: {_preview},
+                        onSelectionChanged: (value) => setState(() => _preview = value.first),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        height: 420,
+                        child: _preview
+                            ? ReadingPane(book: _selected!)
+                            : TextField(controller: _editor, maxLines: null, expands: true, textAlignVertical: TextAlignVertical.top),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 class ReadingPane extends StatelessWidget {
@@ -2105,42 +2209,46 @@ class ReadingPane extends StatelessWidget {
         ),
         itemCount: itemCount,
         itemBuilder: (BuildContext context, int index) {
-        if (index < textChunks) {
-          final int start = index * linesPerChunk;
-          final int end = math.min(start + linesPerChunk, lines.length);
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: SelectableText(
-              lines.sublist(start, end).join('\n'),
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                height: 1.55,
+          if (index < textChunks) {
+            final int start = index * linesPerChunk;
+            final int end = math.min(start + linesPerChunk, lines.length);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: SelectableText(
+                lines.sublist(start, end).join('\n'),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(height: 1.55),
               ),
-            ),
-          );
-        }
-        return Padding(
-          padding: const EdgeInsets.only(top: 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text('Figures and diagrams', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 14),
-              ...book.media.map(
-                (BookMedia media) => Padding(
-                  padding: const EdgeInsets.only(bottom: 18),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: Image.memory(
-                      Uint8List.fromList(media.bytes),
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) => Text('Unable to render ${media.name}'),
+            );
+          }
+          return Padding(
+            padding: const EdgeInsets.only(top: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Figures and diagrams',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 14),
+                ...book.media.map(
+                  (BookMedia media) => Padding(
+                    padding: const EdgeInsets.only(bottom: 18),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: Image.memory(
+                        Uint8List.fromList(media.bytes),
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) =>
+                            Text('Unable to render ${media.name}'),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        );
+              ],
+            ),
+          );
         },
       ),
     );
@@ -2525,8 +2633,11 @@ class RepositoryPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool compact = MediaQuery.sizeOf(context).width < 760;
+    final double compactFieldWidth =
+        (MediaQuery.sizeOf(context).width - 68).clamp(220.0, 900.0);
     return Padding(
-      padding: const EdgeInsets.all(30),
+      padding: EdgeInsets.all(compact ? 16 : 30),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -2543,42 +2654,14 @@ class RepositoryPanel extends StatelessWidget {
           Card(
             child: Padding(
               padding: const EdgeInsets.all(18),
-              child: Row(
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 12,
                 children: <Widget>[
-                  Expanded(
-                    child: TextField(
-                      controller: owner,
-                      decoration: const InputDecoration(labelText: 'Owner'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextField(
-                      controller: repo,
-                      decoration: const InputDecoration(
-                        labelText: 'Repository',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    width: 140,
-                    child: TextField(
-                      controller: branch,
-                      decoration: const InputDecoration(labelText: 'Branch'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    width: 165,
-                    child: TextField(
-                      controller: directory,
-                      decoration: const InputDecoration(
-                        labelText: 'Publish folder',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
+                  SizedBox(width: compact ? compactFieldWidth : 180, child: TextField(controller: owner, decoration: const InputDecoration(labelText: 'Owner'))),
+                  SizedBox(width: compact ? compactFieldWidth : 180, child: TextField(controller: repo, decoration: const InputDecoration(labelText: 'Repository'))),
+                  SizedBox(width: compact ? compactFieldWidth : 140, child: TextField(controller: branch, decoration: const InputDecoration(labelText: 'Branch'))),
+                  SizedBox(width: compact ? compactFieldWidth : 165, child: TextField(controller: directory, decoration: const InputDecoration(labelText: 'Publish folder'))),
                   FilledButton.icon(
                     onPressed: busy ? null : onScan,
                     icon: busy

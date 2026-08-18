@@ -37,7 +37,9 @@ continuity.
 Scanner entries are information you intentionally provide. Depending on the
 entry, they may contain location descriptions, health or safety observations,
 food details, or other sensitive text. The App does not automatically acquire
-GPS location or contacts.
+GPS location or contacts. If you explicitly enable Walking weather and grant
+location access on a supported mobile build, current coordinates may be used
+transiently for an Open-Meteo forecast; they are not saved to chat history.
 
 ### Images you capture or select
 
@@ -96,6 +98,11 @@ identity.
 
 Model-delivery requests do not intentionally contain prompts, conversations,
 scanner entries, images, generated responses, or encrypted user records.
+
+Open-Meteo requests contain only the selected coordinates and forecast window.
+Weather data is sent to an AI review only when you request it. Local Gemma
+keeps that review on-device; a remote provider receives it under your selected
+model. Forecast points and prompt/response sizes are bounded.
 
 Hugging Face and GitHub may receive normal connection data such as your IP
 address, request time, requested file/range, user-agent string, and network
@@ -249,6 +256,12 @@ cannot be guaranteed.
   include a `.litertlm` model file you explicitly select.
 - **Operating-system secure credential storage:** stores the random local unlock
   secret when the default no-password startup mode is used.
+- **Location (optional, supported devices only):** supplies a current coordinate for a
+  Walking weather forecast after an explicit user action and platform grant.
+  Location is not collected in the background.
+- **Activity sensors (optional, supported devices only):** step-counter adapters may read
+  steps only while an activity session is explicitly started. Manual entry
+  remains available when sensors or permission are unavailable.
 
 Text features do not require microphone access.
 

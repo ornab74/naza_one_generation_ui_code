@@ -30,6 +30,7 @@ import 'food/photo_picker.dart';
 import 'food/prompts.dart';
 import 'food/repository.dart';
 import 'navigation/unified_feature_drawer.dart';
+import 'model/provider_gateway.dart';
 import 'chat/history_metadata_repository.dart';
 import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
@@ -18739,6 +18740,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
   Map<String, String> _foodDraft = const {};
   Map<String, String> _foodPlannerDraft = const {'max_targets': '6'};
   String _foodWorkspace = 'fridge';
+  int _bookWorkspace = 0;
+  String? _gameWorkspace;
   NazaScannerResult? _roadResult;
   NazaScannerResult? _foodResult;
   NazaScannerResult? _foodPlannerResult;
@@ -19083,24 +19086,42 @@ class _NazaStableHomeState extends State<NazaStableHome>
             'Active assistant personality:\n${NazaPersonalityStore.selected.value.stylePrompt}',
       );
       final sender = widget.chatPromptSender;
-      response = sender == null
-          ? await NazaLocalGemma.instance.send(
-              request.prompt,
-              onPartial: request.onPartial,
-              historyUserText: request.historyUserText,
-              visionImage: request.visionImage,
-              useMemory: request.useMemory,
-              historyThreadId: request.historyThreadId,
-              historyTurnId: request.historyTurnId,
-              threadContext: request.threadContext,
-              excludedMemoryTurnIds: request.excludedMemoryTurnIds,
-              maxContinuationsOverride: request.maxContinuationsOverride,
-              systemInstructionOverride: request.systemInstruction,
+      final remote = sender == null && visionImage == null
+          ? await _sendRemoteIfSelected(
+              feature: NazaModelFeature.chat,
+              prompt: request.prompt,
+              systemInstruction: request.systemInstruction,
             )
-          : await sender(request);
+          : null;
+      if (remote != null) {
+        paintPartial(remote.text);
+        response = NazaResponse(
+          text: remote.text,
+          score: 1,
+          route: 'remote-${remote.provider}-${remote.model}',
+          cancelled: false,
+          createdAt: DateTime.now(),
+        );
+      } else {
+        response = sender == null
+            ? await NazaLocalGemma.instance.send(
+                request.prompt,
+                onPartial: request.onPartial,
+                historyUserText: request.historyUserText,
+                visionImage: request.visionImage,
+                useMemory: request.useMemory,
+                historyThreadId: request.historyThreadId,
+                historyTurnId: request.historyTurnId,
+                threadContext: request.threadContext,
+                excludedMemoryTurnIds: request.excludedMemoryTurnIds,
+                maxContinuationsOverride: request.maxContinuationsOverride,
+                systemInstructionOverride: request.systemInstruction,
+              )
+            : await sender(request);
+      }
     } catch (error) {
       response = NazaResponse(
-        text: 'Local model error: $error',
+        text: 'Model error: $error',
         score: 0,
         route: 'error',
         cancelled: false,
@@ -19294,16 +19315,34 @@ class _NazaStableHomeState extends State<NazaStableHome>
       _status = 'planning recipes from encrypted inventory';
     });
     try {
-      final response = await NazaLocalGemma.instance.send(
-        FoodVisionPrompts.recipeSuggestions(visibleItems: analysis.items),
-        historyUserText: 'Generate recipes from the latest fridge inventory',
-        useMemory: false,
-        persistTurn: false,
-        maxContinuationsOverride: 0,
-        origin: NazaGenerationOrigin.scanner,
-        routeOverride: 'food-recipe-planner',
-        systemInstructionOverride: FoodVisionPrompts.recipeSystemInstruction,
+      final prompt = FoodVisionPrompts.recipeSuggestions(
+        visibleItems: analysis.items,
       );
+      final remote = await _sendRemoteIfSelected(
+        feature: NazaModelFeature.foodRecipes,
+        prompt: prompt,
+        systemInstruction: FoodVisionPrompts.recipeSystemInstruction,
+      );
+      final response = remote == null
+          ? await NazaLocalGemma.instance.send(
+              prompt,
+              historyUserText:
+                  'Generate recipes from the latest fridge inventory',
+              useMemory: false,
+              persistTurn: false,
+              maxContinuationsOverride: 0,
+              origin: NazaGenerationOrigin.scanner,
+              routeOverride: 'food-recipe-planner',
+              systemInstructionOverride:
+                  FoodVisionPrompts.recipeSystemInstruction,
+            )
+          : NazaResponse(
+              text: remote.text,
+              score: 1,
+              route: 'remote-${remote.provider}-${remote.model}',
+              cancelled: false,
+              createdAt: DateTime.now(),
+            );
       if (response.cancelled ||
           response.route.contains('error') ||
           response.route.contains('unavailable')) {
@@ -19429,17 +19468,32 @@ class _NazaStableHomeState extends State<NazaStableHome>
         primaryPrompt: riskPrompt,
         safetyPrompt: safetyPrompt,
       );
-      final scannerResponse = await NazaLocalGemma.instance.send(
-        scannerPrompt,
-        historyUserText: visibleSummary,
-        useMemory: false,
-        persistTurn: false,
-        maxContinuationsOverride: 0,
-        origin: NazaGenerationOrigin.scanner,
-        scannerMode: true,
-        routeOverride:
-            'scanner-${kind.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-')}',
+      final feature = kind.toLowerCase().contains('road')
+          ? NazaModelFeature.roadScanner
+          : NazaModelFeature.foodScanner;
+      final remote = await _sendRemoteIfSelected(
+        feature: feature,
+        prompt: scannerPrompt,
       );
+      final scannerResponse = remote == null
+          ? await NazaLocalGemma.instance.send(
+              scannerPrompt,
+              historyUserText: visibleSummary,
+              useMemory: false,
+              persistTurn: false,
+              maxContinuationsOverride: 0,
+              origin: NazaGenerationOrigin.scanner,
+              scannerMode: true,
+              routeOverride:
+                  'scanner-${kind.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-')}',
+            )
+          : NazaResponse(
+              text: remote.text,
+              score: 1,
+              route: 'remote-${remote.provider}-${remote.model}',
+              cancelled: false,
+              createdAt: DateTime.now(),
+            );
 
       if (mounted) {
         setState(() => _status = safetyStatus);
@@ -19747,7 +19801,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
     setState(() {
       _exploreSection = section;
       _panel = NazaPanel.labs;
-      _status = section.label.toLowerCase();
+      _status = section.label;
     });
   }
 
@@ -19757,6 +19811,24 @@ class _NazaStableHomeState extends State<NazaStableHome>
       _panel = NazaPanel.foodWater;
       _status = 'food $workspace';
       _panelCache.remove(NazaPanel.foodWater);
+    });
+  }
+
+  void _openBookWorkspace(int workspace) {
+    setState(() {
+      _bookWorkspace = workspace.clamp(0, 2);
+      _panel = NazaPanel.book;
+      _status = 'bookforge';
+      _panelCache.remove(NazaPanel.book);
+    });
+  }
+
+  void _openGames([String? game]) {
+    setState(() {
+      _gameWorkspace = game;
+      _panel = NazaPanel.games;
+      _status = game ?? 'games';
+      _panelCache.remove(NazaPanel.games);
     });
   }
 
@@ -19774,7 +19846,46 @@ class _NazaStableHomeState extends State<NazaStableHome>
     });
   }
 
+  Future<NazaRemoteModelResponse?> _sendRemoteIfSelected({
+    required NazaModelFeature feature,
+    required String prompt,
+    String? systemInstruction,
+  }) async {
+    final routing = await NazaModelRoutingStore().load();
+    final profileId = routing.profileFor(feature);
+    if (profileId == null ||
+        profileId == NazaModelRoutingStore.localProfileId) {
+      return null;
+    }
+    final profiles = await NazaRemoteModelCatalog().load();
+    final matches = profiles.where(
+      (profile) => profile.id == profileId && profile.enabled,
+    );
+    if (matches.isEmpty) {
+      throw StateError(
+        'The selected ${feature.label} remote model is unavailable. Open Settings and choose another model.',
+      );
+    }
+    final gateway = NazaProviderGateway();
+    try {
+      return await gateway.send(
+        profile: matches.first,
+        prompt: prompt,
+        systemInstruction: systemInstruction,
+      );
+    } finally {
+      gateway.close();
+    }
+  }
+
   Future<String> _runChessAgent(String prompt) async {
+    final remote = await _sendRemoteIfSelected(
+      feature: NazaModelFeature.chess,
+      prompt: prompt,
+      systemInstruction:
+          'Return only the legal chess action requested by the host.',
+    );
+    if (remote != null) return remote.text;
     final response = await NazaLocalGemma.instance.send(
       prompt,
       historyUserText: 'Naza Chess Gemma opponent turn',
@@ -19799,6 +19910,12 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
     required String systemInstruction,
     required String prompt,
   }) async {
+    final remote = await _sendRemoteIfSelected(
+      feature: _modelFeatureForHealthPage(),
+      prompt: prompt,
+      systemInstruction: systemInstruction,
+    );
+    if (remote != null) return remote.text;
     final response = await NazaLocalGemma.instance.send(
       prompt,
       historyUserText: 'Private Naza HealthDash workflow',
@@ -19811,11 +19928,33 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
     return response.text;
   }
 
+  NazaModelFeature _modelFeatureForHealthPage() => switch (_healthPage) {
+    NazaHealthPage.medications => NazaModelFeature.healthMedications,
+    NazaHealthPage.dental => NazaModelFeature.healthDental,
+    NazaHealthPage.exercise => NazaModelFeature.healthExercise,
+    NazaHealthPage.recovery => NazaModelFeature.healthRecovery,
+    NazaHealthPage.intelligence => NazaModelFeature.healthIntelligence,
+    NazaHealthPage.meals ||
+    NazaHealthPage.mealPlan ||
+    NazaHealthPage.groceries ||
+    NazaHealthPage.foodShare => NazaModelFeature.foodRecipes,
+    _ => NazaModelFeature.healthToday,
+  };
+
   Future<String> _runBookText({
     required String systemInstruction,
     required String prompt,
     void Function(String text)? onPartial,
   }) async {
+    final remote = await _sendRemoteIfSelected(
+      feature: NazaModelFeature.bookForge,
+      prompt: prompt,
+      systemInstruction: systemInstruction,
+    );
+    if (remote != null) {
+      onPartial?.call(remote.text);
+      return remote.text;
+    }
     final response = await NazaLocalGemma.instance.send(
       prompt,
       historyUserText: 'Private Naza BookForge authoring workflow',
@@ -19834,6 +19973,20 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
     required String prompt,
     Uint8List? imageBytes,
   }) async {
+    if (imageBytes == null) {
+      final remote = await _sendRemoteIfSelected(
+        feature: switch (_exploreSection) {
+          NazaExplorationSection.garden => NazaModelFeature.garden,
+          NazaExplorationSection.findIt => NazaModelFeature.findIt,
+          NazaExplorationSection.drive => NazaModelFeature.drive,
+          NazaExplorationSection.predict => NazaModelFeature.predict,
+          NazaExplorationSection.heartFlow => NazaModelFeature.heartFlow,
+        },
+        prompt: prompt,
+        systemInstruction: systemInstruction,
+      );
+      if (remote != null) return remote.text;
+    }
     final response = await NazaLocalGemma.instance.send(
       prompt,
       historyUserText: 'Private Naza Intelligence workflow',
@@ -20037,7 +20190,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         id: 'road-scanner',
         label: 'Road',
         description: 'Inspect road conditions and visible hazards.',
-        category: 'Scan',
+        category: 'Road',
         icon: Icons.route_rounded,
         accent: Color(0xFF65DDF3),
         onOpen: () => _setPanel(NazaPanel.roadScanner),
@@ -20058,13 +20211,13 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         category: 'Games',
         icon: Icons.sports_esports_rounded,
         accent: Color(0xFFFF668D),
-        onOpen: () => _setPanel(NazaPanel.games),
+        onOpen: _openGames,
       ),
       NazaFeatureDestination(
         id: 'food-scanner',
-        label: 'Food',
+        label: 'Fridge Scanner',
         description: 'Scan food, water, shelves, and your kitchen.',
-        category: 'Scan',
+        category: 'Food',
         icon: Icons.restaurant_rounded,
         accent: Color(0xFFFFA56B),
         onOpen: () => _setPanel(NazaPanel.foodWater),
@@ -20088,13 +20241,22 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         onOpen: () => _openFoodWorkspace('shelf'),
       ),
       NazaFeatureDestination(
-        id: 'food-more',
-        label: 'Food More',
-        description: 'Open baking, safety, planning, and advanced food tools.',
+        id: 'food-bake',
+        label: 'Bake Lab',
+        description: 'Track bake timing, visible cues, and estimates.',
         category: 'Food',
-        icon: Icons.restaurant_menu_rounded,
-        accent: Color(0xFFFF926B),
-        onOpen: () => _openFoodWorkspace('more'),
+        icon: Icons.bakery_dining_rounded,
+        accent: Color(0xFFFF8F70),
+        onOpen: () => _openFoodWorkspace('bake'),
+      ),
+      NazaFeatureDestination(
+        id: 'food-safety',
+        label: 'FoodQualityScanner',
+        description: 'Scan food and water quality with conservative guidance.',
+        category: 'Food',
+        icon: Icons.health_and_safety_rounded,
+        accent: Color(0xFFFF7A72),
+        onOpen: () => _openFoodWorkspace('safety'),
       ),
       NazaFeatureDestination(
         id: 'knowledge-vault',
@@ -20161,7 +20323,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         category: 'Games',
         icon: Icons.psychology_alt_rounded,
         accent: Color(0xFFFF86B3),
-        onOpen: () => _setPanel(NazaPanel.games),
+        onOpen: () => _openGames('revrecall'),
       ),
       ..._healthDrawerDestinations(healthAccent),
       NazaFeatureDestination(
@@ -20194,12 +20356,30 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       ),
       NazaFeatureDestination(
         id: 'bookforge',
-        label: 'BookForge',
-        description: 'Draft and refine long-form writing.',
+        label: 'Read',
+        description: 'Open and read your private BookForge library.',
         category: 'Create',
         icon: Icons.menu_book_rounded,
         accent: Color(0xFFFFD27D),
-        onOpen: () => _setPanel(NazaPanel.book),
+        onOpen: () => _openBookWorkspace(0),
+      ),
+      NazaFeatureDestination(
+        id: 'bookforge-generate',
+        label: 'CreateBooks',
+        description: 'Generate structured long-form drafts locally.',
+        category: 'Create',
+        icon: Icons.auto_awesome_rounded,
+        accent: Color(0xFFB69CFF),
+        onOpen: () => _openBookWorkspace(1),
+      ),
+      NazaFeatureDestination(
+        id: 'bookforge-repository',
+        label: 'AddBooks',
+        description: 'Review and synchronize your writing repository.',
+        category: 'Create',
+        icon: Icons.cloud_outlined,
+        accent: Color(0xFF7DA7FF),
+        onOpen: () => _openBookWorkspace(2),
       ),
       ..._explorationDestinations(),
       NazaFeatureDestination(
@@ -20239,15 +20419,6 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         onOpen: () => _setPanel(NazaPanel.settings),
       ),
       NazaFeatureDestination(
-        id: 'whats-new',
-        label: "What's New",
-        description: 'See the latest Naza One features and improvements.',
-        category: 'System',
-        icon: Icons.new_releases_rounded,
-        accent: Color(0xFFFFD27D),
-        onOpen: () => _setPanel(NazaPanel.settings),
-      ),
-      NazaFeatureDestination(
         id: 'history',
         label: 'History',
         description: 'Browse private local conversations.',
@@ -20274,7 +20445,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         <(String, String, String, IconData, Color, NazaExplorationSection)>[
           (
             'findit',
-            'FindIt',
+            'Find It',
             'Location-grounded place and service discovery.',
             Icons.travel_explore_rounded,
             Color(0xFF65DDF3),
@@ -20400,6 +20571,27 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         Icons.insights_rounded,
         NazaHealthPage.intelligence,
       ),
+      (
+        'health-workflow',
+        'Care Workflow',
+        'Guided A–K health workflow.',
+        Icons.account_tree_rounded,
+        NazaHealthPage.workflow,
+      ),
+      (
+        'health-command',
+        'Health Commands',
+        'All HealthDash actions in one command center.',
+        Icons.dashboard_customize_rounded,
+        NazaHealthPage.command,
+      ),
+      (
+        'health-food-share',
+        'Food Sharing',
+        'Private, explicitly scoped food sharing.',
+        Icons.ios_share_rounded,
+        NazaHealthPage.foodShare,
+      ),
     ];
     return specs
         .map(
@@ -20407,7 +20599,16 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
             id: spec.$1,
             label: spec.$2,
             description: spec.$3,
-            category: 'Health',
+            category: switch (spec.$5) {
+              NazaHealthPage.medications || NazaHealthPage.dental => 'Medicine',
+              NazaHealthPage.recovery => 'Recovery',
+              NazaHealthPage.exercise || NazaHealthPage.walking => 'Movement',
+              NazaHealthPage.meals ||
+              NazaHealthPage.mealPlan ||
+              NazaHealthPage.groceries ||
+              NazaHealthPage.foodShare => 'Food',
+              _ => 'Health',
+            },
             icon: spec.$4,
             accent: accent,
             onOpen: () => _openHealthPage(spec.$5),
@@ -20431,9 +20632,9 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         NazaHealthPage.weight => 'health-weight',
         NazaHealthPage.groceries => 'health-groceries',
         NazaHealthPage.intelligence => 'health-intelligence',
-        NazaHealthPage.workflow ||
-        NazaHealthPage.command ||
-        NazaHealthPage.foodShare => 'health',
+        NazaHealthPage.workflow => 'health-workflow',
+        NazaHealthPage.command => 'health-command',
+        NazaHealthPage.foodShare => 'health-food-share',
       };
     }
     if (_panel == NazaPanel.labs) {
@@ -20447,11 +20648,22 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
     }
     return switch (_panel) {
       NazaPanel.chat => 'chat',
-      NazaPanel.games => 'games',
+      NazaPanel.games =>
+        _gameWorkspace == 'revrecall' ? 'memory-game' : 'games',
       NazaPanel.chess => 'chess',
       NazaPanel.roadScanner => 'road-scanner',
-      NazaPanel.foodWater => 'food-scanner',
-      NazaPanel.book => 'bookforge',
+      NazaPanel.foodWater => switch (_foodWorkspace) {
+        'recipes' => 'food-recipes',
+        'shelf' => 'food-shelf',
+        'bake' => 'food-bake',
+        'safety' => 'food-safety',
+        _ => 'food-scanner',
+      },
+      NazaPanel.book => switch (_bookWorkspace) {
+        1 => 'bookforge-generate',
+        2 => 'bookforge-repository',
+        _ => 'bookforge',
+      },
       NazaPanel.labs => 'findit',
       NazaPanel.history => 'history',
       NazaPanel.settings => 'settings',
@@ -20516,7 +20728,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       case NazaPanel.chess:
         return NazaChessTab(runAgent: _runChessAgent);
       case NazaPanel.games:
-        return const NazaGamesTab();
+        return NazaGamesTab(initialGame: _gameWorkspace);
       case NazaPanel.roadScanner:
         return _RoadScannerPanel(
           actionsEnabled: !_sending,
@@ -20570,7 +20782,10 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           vault: NazaHealthVault(database: NazaSecureDatabase.instance),
         );
       case NazaPanel.book:
-        return BookForgeApp(completion: _runBookText);
+        return BookForgeApp(
+          completion: _runBookText,
+          initialPage: _bookWorkspace,
+        );
       case NazaPanel.labs:
         return NazaExplorationHub(
           runPrompt: _runExplorePrompt,
@@ -20697,7 +20912,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       case NazaPanel.book:
         return 'bookforge';
       case NazaPanel.labs:
-        return 'findit / garden / drive / predict / heart flow';
+        return _exploreSection.label;
       case NazaPanel.settings:
         return 'settings';
       case NazaPanel.history:
@@ -22587,60 +22802,10 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
           body:
               'Enter what you can observe. The local model returns Low, Medium, or High with conservative action notes.',
         ),
-        _ScannerAnalysisSurface(
-          title: 'Road chromographic safety surface',
-          icon: Icons.route_rounded,
-          loading: _loading,
-          result: _result,
-          idleBody:
-              'Run a scan to generate a separate risk classification and 0/100 safety score.',
-        ),
         _NazaTextInput(
-          label: 'Location',
-          hint: 'I-95 northbound, Main St bridge, parking lot entrance...',
+          label: 'Travel location or route',
+          hint: 'Enter the road, route, or destination to scan...',
           controller: _location,
-        ),
-        _NazaTextInput(
-          label: 'Road type',
-          hint: 'highway, city street, bridge, rural road...',
-          controller: _roadType,
-        ),
-        _NazaTextInput(
-          label: 'Weather',
-          hint: 'clear, rain, snow, fog, wind...',
-          controller: _weather,
-        ),
-        _NazaTextInput(
-          label: 'Visibility',
-          hint: 'good, low light, glare, foggy, blocked sightline...',
-          controller: _visibility,
-        ),
-        _NazaTextInput(
-          label: 'Traffic density',
-          hint: 'low, medium, high, stop-and-go, pedestrians...',
-          controller: _trafficDensity,
-        ),
-        _NazaTextInput(
-          label: 'Road surface',
-          hint: 'dry, wet, ice, potholes, debris, construction...',
-          controller: _roadSurface,
-        ),
-        _NazaTextInput(
-          label: 'Speed / flow',
-          hint: 'slow, fast, uneven merging, sudden braking...',
-          controller: _speedFlow,
-        ),
-        _NazaTextInput(
-          label: 'Nearby hazards',
-          hint: 'debris, stalled car, animals, flooding, work crew...',
-          controller: _nearbyHazards,
-          maxLines: 3,
-        ),
-        _NazaTextInput(
-          label: 'Sensor / observation notes',
-          hint: 'dashcam note, driver observation, unusual signal...',
-          controller: _sensorNotes,
-          maxLines: 3,
         ),
         const SizedBox(height: 10),
         _NazaActionButton(
@@ -22653,6 +22818,8 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
           label: Text(_loading ? 'Scanning Road...' : 'Run Road Scan'),
           minimumSize: const Size(220, 48),
         ),
+        if (_result != null || _loading)
+          _ScannerAnalysisSurface(title: 'Road chromographic safety surface', icon: Icons.route_rounded, loading: _loading, result: _result, idleBody: 'Scan complete. Risk surface is shown below.'),
         const SizedBox(height: 12),
         const _InfoRow(label: 'Defense profile', value: 'entropy + checksum'),
         const _InfoRow(label: 'Risk labels', value: 'Low / Medium / High'),
@@ -22913,24 +23080,16 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
           ],
         ),
         const SizedBox(height: 12),
-        _plannerMode
-            ? _ScannerAnalysisSurface(
-                title: 'Multi-scan readiness surface',
-                icon: Icons.playlist_add_check_rounded,
-                loading: _plannerLoading,
-                result: _plannerResult,
-                idleBody:
-                    'Plan multiple nearby scan targets and score scan-readiness on a separate 0/100 pass.',
-              )
-            : _ScannerAnalysisSurface(
-                title: 'Food / Water chromographic safety surface',
-                icon: Icons.water_drop_rounded,
-                loading: _singleLoading,
-                result: _singleResult,
-                idleBody:
-                    'Run a scan to generate source risk plus a separate 0/100 safety score.',
-              ),
         if (_plannerMode) ..._buildPlanner() else ..._buildSingleScan(),
+        if ((_plannerMode && (_plannerResult != null || _plannerLoading)) ||
+            (!_plannerMode && (_singleResult != null || _singleLoading)))
+          _ScannerAnalysisSurface(
+            title: _plannerMode ? 'Multi-scan readiness surface' : 'Food / Water chromographic safety surface',
+            icon: _plannerMode ? Icons.playlist_add_check_rounded : Icons.water_drop_rounded,
+            loading: _plannerMode ? _plannerLoading : _singleLoading,
+            result: _plannerMode ? _plannerResult : _singleResult,
+            idleBody: 'Scan results and the chromographic risk surface appear only after processing.',
+          ),
       ],
     );
   }
@@ -22938,51 +23097,10 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
   List<Widget> _buildSingleScan() {
     return [
       _NazaTextInput(
-        label: 'Location',
-        hint: 'Whole Foods, home kitchen, campsite, water fountain...',
-        controller: _location,
-      ),
-      _NazaTextInput(
-        label: 'Food or water type',
-        hint: 'bottled water, tap water, produce, deli item...',
-        controller: _foodWaterType,
-      ),
-      _NazaTextInput(
-        label: 'Weather / storage context',
-        hint: 'refrigerated, hot car, shelf stable, outdoor cooler...',
-        controller: _storageContext,
-      ),
-      _NazaTextInput(
-        label: 'Visibility / packaging clarity',
-        hint: 'sealed, cloudy, torn label, unclear origin...',
-        controller: _packagingClarity,
-      ),
-      _NazaTextInput(
-        label: 'Traffic / handling density',
-        hint: 'many handlers, crowded buffet, low contact...',
-        controller: _handlingDensity,
-      ),
-      _NazaTextInput(
-        label: 'Surface / container condition',
-        hint: 'dented can, leaking bottle, clean container...',
-        controller: _containerCondition,
-      ),
-      _NazaTextInput(
-        label: 'Flow / temperature',
-        hint: 'cold, warm, unknown, running water, stagnant...',
-        controller: _temperatureFlow,
-      ),
-      _NazaTextInput(
-        label: 'Hazards / recalls / odors',
-        hint: 'recall, mold, odor, cloudiness, cross-contamination...',
-        controller: _hazards,
-        maxLines: 3,
-      ),
-      _NazaTextInput(
-        label: 'Sensor / observation notes',
-        hint: 'what you can directly observe...',
+        label: 'Food, water, and location to scan',
+        hint: 'Describe the item/source, location, storage, temperature, packaging, odors, recalls, and anything directly observed...',
         controller: _sensorNotes,
-        maxLines: 3,
+        maxLines: 5,
       ),
       const SizedBox(height: 10),
       _NazaActionButton(
@@ -25774,6 +25892,7 @@ class _SettingsPanel extends StatefulWidget {
 
 final class _SettingsPanelState extends State<_SettingsPanel> {
   int _tab = 0;
+  NazaModelFeature _featureGroup = NazaModelFeature.chat;
 
   bool get actionsEnabled => widget.actionsEnabled;
   Future<void> Function() get onResetChat => widget.onResetChat;
@@ -25813,11 +25932,20 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
             ),
             const SizedBox(height: 14),
             if (_tab == 0) ...[
+              _FeatureSettingsGroupsCard(
+                selected: _featureGroup,
+                onSelected: (value) => setState(() => _featureGroup = value),
+              ),
+              const SizedBox(height: 14),
+              _RemoteModelSettingsCard(feature: _featureGroup),
+              if (_featureGroup == NazaModelFeature.bookForge) ...[
+                const SizedBox(height: 14),
+                const _BookForgeConnectionSettingsCard(),
+              ],
+              const SizedBox(height: 14),
               ...(advanced ? _advancedChildren() : _simpleChildren()),
             ] else
               ..._backupChildren(),
-            const SizedBox(height: 18),
-            const _WhatsNewCard(),
           ],
         );
       },
@@ -25839,7 +25967,10 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
       const SizedBox(height: 14),
       const _SettingsSectionTitle('Privacy'),
       const _InfoRow(label: 'Vault', value: 'Encrypted on this device'),
-      const _InfoRow(label: 'Network model calls', value: 'Disabled'),
+      const _InfoRow(
+        label: 'Network model calls',
+        value: 'Opt-in per feature group',
+      ),
       const SizedBox(height: 12),
       _NazaActionButton(
         onPressed: actionsEnabled ? () => unawaited(onResetChat()) : null,
@@ -25988,59 +26119,442 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
   }
 }
 
-final class _WhatsNewCard extends StatelessWidget {
-  const _WhatsNewCard();
+final class _FeatureSettingsGroupsCard extends StatelessWidget {
+  const _FeatureSettingsGroupsCard({
+    required this.selected,
+    required this.onSelected,
+  });
 
-  static const _items = <({IconData icon, String title, String body})>[
-    (
-      icon: Icons.radio_button_checked_rounded,
-      title: 'Unified feature wheel',
-      body:
-          'One responsive wheel and desktop rail now organize chat, scanners, health, games, Garden, Food, BookForge, intelligence, and settings.',
+  final NazaModelFeature selected;
+  final ValueChanged<NazaModelFeature> onSelected;
+
+  @override
+  Widget build(BuildContext context) => _NazaGlassCard(
+    padding: const EdgeInsets.all(15),
+    radius: 20,
+    active: true,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Settings by feature group',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'One settings origin for every app group.',
+          style: TextStyle(color: NazaPalette.subtext),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          '${NazaModelFeature.values.length} feature groups · selected: ${selected.label}',
+          style: TextStyle(
+            color: NazaPalette.mintSoft,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        // A wrapping grid keeps every feature discoverable on mobile and
+        // desktop. The previous horizontal strip clipped most groups.
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final group in NazaModelFeature.values)
+              SizedBox(
+                width: 178,
+                child: ChoiceChip(
+                  showCheckmark: true,
+                  selected: group == selected,
+                  onSelected: (_) => onSelected(group),
+                  avatar: Icon(_featureIcon(group), size: 17),
+                  label: Text(
+                    group.label,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
     ),
-    (
-      icon: Icons.account_tree_rounded,
-      title: 'Knowledge Vault to workflows',
-      body:
-          'Knowledge Vault, Memory Observatory, Projects, and Local Workflow Builder now connect evidence, context, boundaries, and action.',
+  );
+
+  static IconData _featureIcon(NazaModelFeature feature) => switch (feature) {
+    NazaModelFeature.chat => Icons.chat_rounded,
+    NazaModelFeature.roadScanner => Icons.route_rounded,
+    NazaModelFeature.foodScanner => Icons.document_scanner_rounded,
+    NazaModelFeature.foodRecipes => Icons.restaurant_rounded,
+    NazaModelFeature.foodShelf => Icons.inventory_2_rounded,
+    NazaModelFeature.foodBake => Icons.bakery_dining_rounded,
+    NazaModelFeature.healthToday => Icons.monitor_heart_rounded,
+    NazaModelFeature.healthMedications => Icons.medication_rounded,
+    NazaModelFeature.healthDental => Icons.health_and_safety_rounded,
+    NazaModelFeature.healthExercise => Icons.directions_run_rounded,
+    NazaModelFeature.healthRecovery => Icons.spa_rounded,
+    NazaModelFeature.healthIntelligence => Icons.insights_rounded,
+    NazaModelFeature.garden => Icons.eco_rounded,
+    NazaModelFeature.gardenPlantId => Icons.local_florist_rounded,
+    NazaModelFeature.gardenMushroomId => Icons.grass_rounded,
+    NazaModelFeature.gardenLog => Icons.menu_book_rounded,
+    NazaModelFeature.walking => Icons.directions_walk_rounded,
+    NazaModelFeature.findIt => Icons.travel_explore_rounded,
+    NazaModelFeature.drive => Icons.directions_car_rounded,
+    NazaModelFeature.predict => Icons.query_stats_rounded,
+    NazaModelFeature.heartFlow => Icons.favorite_rounded,
+    NazaModelFeature.chess => Icons.grid_4x4_rounded,
+    NazaModelFeature.bookForge => Icons.menu_book_rounded,
+    NazaModelFeature.knowledgeVault => Icons.folder_special_rounded,
+    NazaModelFeature.memoryObservatory => Icons.hub_rounded,
+    NazaModelFeature.projects => Icons.account_tree_rounded,
+    NazaModelFeature.workflowBuilder => Icons.account_tree_rounded,
+  };
+}
+
+final class _RemoteModelSettingsCard extends StatefulWidget {
+  const _RemoteModelSettingsCard({required this.feature});
+
+  final NazaModelFeature feature;
+
+  @override
+  State<_RemoteModelSettingsCard> createState() =>
+      _RemoteModelSettingsCardState();
+}
+
+final class _RemoteModelSettingsCardState
+    extends State<_RemoteModelSettingsCard> {
+  final _catalog = NazaRemoteModelCatalog();
+  final _routingStore = NazaModelRoutingStore();
+  final _model = TextEditingController(text: 'gpt-5.6-luna');
+  final _endpoint = TextEditingController(
+    text: 'https://api.openai.com/v1/chat/completions',
+  );
+  final _apiKey = TextEditingController();
+  NazaRemoteProvider _provider = NazaRemoteProvider.openAi;
+  List<NazaRemoteModelProfile> _profiles = const [];
+  NazaModelRoutingConfig _routing = const NazaModelRoutingConfig();
+  bool _loading = true;
+  bool _saving = false;
+  bool _showKey = false;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _model.dispose();
+    _endpoint.dispose();
+    _apiKey.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final profiles = await _catalog.load();
+      final routing = await _routingStore.load();
+      if (!mounted) return;
+      setState(() {
+        _profiles = profiles;
+        _routing = routing;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _message = 'Unlock the encrypted vault to manage providers: $error';
+      });
+    }
+  }
+
+  String get _profileId => 'provider-${_provider.name}';
+
+  NazaRemoteModelProfile? get _existing {
+    for (final profile in _profiles) {
+      if (profile.id == _profileId) return profile;
+    }
+    return null;
+  }
+
+  void _selectProvider(NazaRemoteProvider provider) {
+    final existing = _profiles.where((item) => item.provider == provider);
+    setState(() {
+      _provider = provider;
+      _apiKey.clear();
+      if (existing.isNotEmpty) {
+        _model.text = existing.first.model;
+        _endpoint.text = existing.first.endpoint;
+      } else {
+        final defaults = _providerDefaults(provider);
+        _model.text = defaults.$1;
+        _endpoint.text = defaults.$2;
+      }
+    });
+  }
+
+  Future<void> _saveProfile() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _message = null;
+    });
+    try {
+      final prior = _existing;
+      final profile = NazaRemoteModelProfile(
+        id: _profileId,
+        provider: _provider,
+        displayName: '${_provider.label} · ${_model.text.trim()}',
+        model: _model.text.trim(),
+        endpoint: _endpoint.text.trim(),
+        apiKey: _apiKey.text.trim().isEmpty
+            ? (prior?.apiKey ?? '')
+            : _apiKey.text.trim(),
+        allowCustomEndpoint: _provider == NazaRemoteProvider.custom,
+      );
+      if (profile.apiKey.isEmpty) {
+        throw const FormatException('Enter an API key before saving.');
+      }
+      await _catalog.upsert(profile);
+      final profiles = await _catalog.load();
+      if (!mounted) return;
+      setState(() {
+        _profiles = profiles;
+        _apiKey.clear();
+        _message = 'Saved securely in the encrypted Naza vault.';
+      });
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Provider was not saved: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _setRoute(String id) async {
+    final nextRoutes = Map<NazaModelFeature, String>.from(
+      _routing.featureProfiles,
+    );
+    nextRoutes[widget.feature] = id;
+    final next = NazaModelRoutingConfig(
+      defaultProfileId: _routing.defaultProfileId,
+      featureProfiles: nextRoutes,
+    );
+    try {
+      await _routingStore.save(next);
+      if (mounted) {
+        setState(() {
+          _routing = next;
+          _message = '${widget.feature.label} model routing saved.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Routing was not saved: $error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // A profile may have been removed from the vault since routing was saved.
+    // Always fall back to local Gemma so DropdownButton never receives a value
+    // that is missing from its item list.
+    final configured = _routing.profileFor(widget.feature);
+    final knownProfileIds = <String>{
+      NazaModelRoutingStore.localProfileId,
+      ..._profiles.map((profile) => profile.id),
+    };
+    final selected = configured != null && knownProfileIds.contains(configured)
+        ? configured
+        : NazaModelRoutingStore.localProfileId;
+    return _NazaGlassCard(
+      padding: const EdgeInsets.all(16),
+      radius: 20,
+      active: selected != NazaModelRoutingStore.localProfileId,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${widget.feature.label} model',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Choose Local Gemma or a vault-backed remote provider for this feature group.',
+            style: TextStyle(color: NazaPalette.subtext),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            key: ValueKey('route-${widget.feature.name}-$selected'),
+            initialValue: selected,
+            decoration: const InputDecoration(
+              labelText: 'Active model',
+              prefixIcon: Icon(Icons.hub_rounded),
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              const DropdownMenuItem(
+                value: NazaModelRoutingStore.localProfileId,
+                child: Text('Gemma 4 E2B · local and private'),
+              ),
+              for (final profile in _profiles)
+                DropdownMenuItem(
+                  value: profile.id,
+                  child: Text(profile.displayName),
+                ),
+            ],
+            onChanged: _loading
+                ? null
+                : (value) {
+                    if (value != null) unawaited(_setRoute(value));
+                  },
+          ),
+          const Divider(height: 28),
+          const Text(
+            'Remote provider vault',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<NazaRemoteProvider>(
+            initialValue: _provider,
+            decoration: const InputDecoration(
+              labelText: 'Provider type',
+              border: OutlineInputBorder(),
+            ),
+            items: NazaRemoteProvider.values
+                .map(
+                  (provider) => DropdownMenuItem(
+                    value: provider,
+                    child: Text(provider.label),
+                  ),
+                )
+                .toList(),
+            onChanged: _saving
+                ? null
+                : (value) {
+                    if (value != null) _selectProvider(value);
+                  },
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _model,
+            decoration: const InputDecoration(
+              labelText: 'Model identifier',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _endpoint,
+            decoration: const InputDecoration(
+              labelText: 'HTTPS endpoint',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _apiKey,
+            obscureText: !_showKey,
+            enableSuggestions: false,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: _existing == null
+                  ? 'API key'
+                  : 'API key · leave blank to keep saved key',
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                tooltip: _showKey ? 'Hide API key' : 'Show API key',
+                onPressed: () => setState(() => _showKey = !_showKey),
+                icon: Icon(_showKey ? Icons.visibility_off : Icons.visibility),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            onPressed: _saving ? null : _saveProfile,
+            icon: const Icon(Icons.lock_rounded),
+            label: Text(_saving ? 'Saving…' : 'Save provider securely'),
+          ),
+          if (_message != null) ...[
+            const SizedBox(height: 10),
+            Text(_message!, style: TextStyle(color: NazaPalette.subtext)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static (String, String) _providerDefaults(
+    NazaRemoteProvider provider,
+  ) => switch (provider) {
+    NazaRemoteProvider.openAi => (
+      'gpt-5.6-luna',
+      'https://api.openai.com/v1/chat/completions',
     ),
-    (
-      icon: Icons.auto_graph_rounded,
-      title: 'Longitudinal analytics',
-      body:
-          'Garden, Food, walking, sleep, metabolic, and other dated observations can be viewed as bounded trend charts with uncertainty labels.',
+    NazaRemoteProvider.anthropic => (
+      'claude-sonnet-4-5',
+      'https://api.anthropic.com/v1/messages',
     ),
-    (
-      icon: Icons.eco_rounded,
-      title: 'Garden intelligence',
-      body:
-          'Plant and mushroom identification, multi-image capture, growth logging, health observations, selectable history, and care experiments are available together.',
+    NazaRemoteProvider.gemini => (
+      'gemini-2.5-flash',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
     ),
-    (
-      icon: Icons.restaurant_rounded,
-      title: 'Food workspace improvements',
-      body:
-          'Fridge, Shelf, Recipes, Bake Lab, and Safety remain unified with responsive scanning controls, private history, and kitchen trend summaries.',
+    NazaRemoteProvider.digitalOcean => (
+      'llama-3.3-70b-instruct',
+      'https://inference.do-ai.run/v1/chat/completions',
     ),
-    (
-      icon: Icons.favorite_rounded,
-      title: 'HeartFlow simulation',
-      body:
-          'A transparent six-dimension local reflection model now supports a separate, practical action brief focused on human and ecological wellbeing.',
-    ),
-    (
-      icon: Icons.sports_esports_rounded,
-      title: 'Games portfolio',
-      body:
-          'Chess Agent and memory games are available from the same navigation system, with local-first state and clearer agent guidance.',
-    ),
-    (
-      icon: Icons.shield_rounded,
-      title: 'Security and recovery',
-      body:
-          'Encrypted vault workflows, post-quantum recovery defaults, bounded imports, safer backups, and release integrity checks continue to protect local data.',
-    ),
-  ];
+    NazaRemoteProvider.meta => ('', 'https://'),
+    NazaRemoteProvider.custom => ('', 'https://'),
+  };
+}
+
+final class _BookForgeConnectionSettingsCard extends StatefulWidget {
+  const _BookForgeConnectionSettingsCard();
+
+  @override
+  State<_BookForgeConnectionSettingsCard> createState() =>
+      _BookForgeConnectionSettingsCardState();
+}
+
+final class _BookForgeConnectionSettingsCardState
+    extends State<_BookForgeConnectionSettingsCard> {
+  final _token = TextEditingController();
+  bool _saving = false;
+  bool _show = false;
+  String? _message;
+
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_token.text.trim().isEmpty) {
+      setState(() => _message = 'Enter a fine-grained GitHub token.');
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      await NazaSecureDatabase.instance.writeJson(
+        'bookforge',
+        'github-token',
+        _token.text.trim(),
+      );
+      if (mounted) {
+        setState(() {
+          _token.clear();
+          _message = 'AddBooks token saved in the encrypted vault.';
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _message = 'Token was not saved: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) => _NazaGlassCard(
@@ -26050,68 +26564,43 @@ final class _WhatsNewCard extends StatelessWidget {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Icon(Icons.new_releases_rounded, color: NazaPalette.mintSoft),
-            const SizedBox(width: 9),
-            const Expanded(
-              child: Text(
-                "What's New",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-              ),
-            ),
-            Text(
-              'v1.0.11',
-              style: TextStyle(
-                color: NazaPalette.mintSoft,
-                fontWeight: FontWeight.w900,
-                fontFamily: NazaFonts.mono,
-              ),
-            ),
-          ],
+        const Text(
+          'AddBooks connection',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
         ),
-        const SizedBox(height: 5),
+        const SizedBox(height: 4),
         Text(
-          'The latest Naza One release, summarized in one place.',
-          style: TextStyle(color: NazaPalette.subtext, height: 1.35),
+          'Store the fine-grained GitHub token used by AddBooks. Repository contents permission should be limited to the intended book repositories.',
+          style: TextStyle(color: NazaPalette.subtext),
         ),
-        const SizedBox(height: 14),
-        for (final item in _items) ...[
-          _WhatsNewItem(item: item),
-          if (item != _items.last) const Divider(height: 20),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _token,
+          obscureText: !_show,
+          enableSuggestions: false,
+          autocorrect: false,
+          decoration: InputDecoration(
+            labelText: 'GitHub token · leave empty after saving',
+            border: const OutlineInputBorder(),
+            suffixIcon: IconButton(
+              tooltip: _show ? 'Hide token' : 'Show token',
+              onPressed: () => setState(() => _show = !_show),
+              icon: Icon(_show ? Icons.visibility_off : Icons.visibility),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: const Icon(Icons.lock_rounded),
+          label: Text(_saving ? 'Saving…' : 'Save AddBooks token'),
+        ),
+        if (_message != null) ...[
+          const SizedBox(height: 8),
+          Text(_message!, style: TextStyle(color: NazaPalette.subtext)),
         ],
       ],
     ),
-  );
-}
-
-final class _WhatsNewItem extends StatelessWidget {
-  final ({IconData icon, String title, String body}) item;
-  const _WhatsNewItem({required this.item});
-
-  @override
-  Widget build(BuildContext context) => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Icon(item.icon, size: 21, color: NazaPalette.mintSoft),
-      const SizedBox(width: 10),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              item.title,
-              style: const TextStyle(fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 3),
-            Text(
-              item.body,
-              style: TextStyle(color: NazaPalette.subtext, height: 1.35),
-            ),
-          ],
-        ),
-      ),
-    ],
   );
 }
 

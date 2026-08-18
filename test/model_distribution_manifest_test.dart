@@ -22,7 +22,7 @@ void main() {
       expect(manifest.modelFileName, 'gemma-4-E2B-it.litertlm');
     });
 
-    test('uses only Hugging Face and GitHub download sources', () {
+    test('uses the repository release as the model source', () {
       expect(manifest.fullSources, hasLength(1));
       expect(manifest.fullSources.single.isFullObject, isTrue);
       expect(manifest.parts, hasLength(3));
@@ -33,10 +33,10 @@ void main() {
         expect(part.name, contains('part0$index.bin'));
         expect(part.sources, hasLength(1));
         expect(
-          part.sources.single.plane,
+          part.sources.first.plane,
           NazaDistributionPlane.githubReleasePart,
         );
-        expect(part.sources.single.uri.host, 'github.com');
+        expect(part.sources.first.uri.host, 'github.com');
       }
     });
 
@@ -69,6 +69,18 @@ void main() {
           Uri.parse('https://cdn-lfs.hf.co/model'),
         ),
         isTrue,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(
+          Uri.parse('https://silver-southern-echidna-758.mypinata.cloud/model'),
+        ),
+        isTrue,
+      );
+      expect(
+        nazaIsApprovedModelTransportUri(
+          Uri.parse('https://another.mypinata.cloud/model'),
+        ),
+        isFalse,
       );
       expect(
         nazaIsApprovedModelTransportUri(Uri.parse('http://github.com/model')),

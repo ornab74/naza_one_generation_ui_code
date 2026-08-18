@@ -23,6 +23,133 @@ enum NazaRemoteProvider {
   custom,
 }
 
+enum NazaModelFeature {
+  chat,
+  roadScanner,
+  foodScanner,
+  foodRecipes,
+  foodShelf,
+  foodBake,
+  healthToday,
+  healthMedications,
+  healthDental,
+  healthExercise,
+  healthRecovery,
+  healthIntelligence,
+  garden,
+  gardenPlantId,
+  gardenMushroomId,
+  gardenLog,
+  walking,
+  findIt,
+  drive,
+  predict,
+  heartFlow,
+  chess,
+  bookForge,
+  knowledgeVault,
+  memoryObservatory,
+  projects,
+  workflowBuilder,
+}
+
+extension NazaModelFeatureX on NazaModelFeature {
+  String get label => switch (this) {
+    NazaModelFeature.chat => 'Chat',
+    NazaModelFeature.roadScanner => 'Road Scanner',
+    NazaModelFeature.foodScanner => 'Food / Water Scanner',
+    NazaModelFeature.foodRecipes => 'Food Recipes',
+    NazaModelFeature.foodShelf => 'Food Shelf',
+    NazaModelFeature.foodBake => 'Bake Lab',
+    NazaModelFeature.healthToday => 'Health Today',
+    NazaModelFeature.healthMedications => 'Medications',
+    NazaModelFeature.healthDental => 'Dental',
+    NazaModelFeature.healthExercise => 'Exercise',
+    NazaModelFeature.healthRecovery => 'Recovery',
+    NazaModelFeature.healthIntelligence => 'Health Intelligence',
+    NazaModelFeature.garden => 'Garden',
+    NazaModelFeature.gardenPlantId => 'Plant ID',
+    NazaModelFeature.gardenMushroomId => 'Mushroom ID',
+    NazaModelFeature.gardenLog => 'Garden Log',
+    NazaModelFeature.walking => 'Walking',
+    NazaModelFeature.findIt => 'Find It',
+    NazaModelFeature.drive => 'Drive',
+    NazaModelFeature.predict => 'Predict',
+    NazaModelFeature.heartFlow => 'Heart Flow',
+    NazaModelFeature.chess => 'Chess Agent',
+    NazaModelFeature.bookForge => 'BookForge',
+    NazaModelFeature.knowledgeVault => 'Knowledge Vault',
+    NazaModelFeature.memoryObservatory => 'Memory Observatory',
+    NazaModelFeature.projects => 'Projects',
+    NazaModelFeature.workflowBuilder => 'Workflow Builder',
+  };
+}
+
+final class NazaModelRoutingConfig {
+  const NazaModelRoutingConfig({
+    this.defaultProfileId,
+    this.featureProfiles = const {},
+  });
+
+  final String? defaultProfileId;
+  final Map<NazaModelFeature, String> featureProfiles;
+
+  String? profileFor(NazaModelFeature feature) =>
+      featureProfiles[feature] ?? defaultProfileId;
+}
+
+final class NazaModelRoutingStore {
+  static const String localProfileId = 'local-gemma';
+  static const String _namespace = 'remote-model-providers';
+  static const String _key = 'routing-v1';
+
+  NazaModelRoutingStore({NazaSecureDatabase? database})
+    : _database = database ?? NazaSecureDatabase.instance;
+
+  final NazaSecureDatabase _database;
+
+  Future<NazaModelRoutingConfig> load() async {
+    final raw = await _database.readJson(_namespace, _key);
+    if (raw is! Map) return const NazaModelRoutingConfig();
+    final defaultId = raw['defaultProfileId']?.toString();
+    final routes = <NazaModelFeature, String>{};
+    final storedRoutes = raw['featureProfiles'];
+    if (storedRoutes is Map) {
+      for (final feature in NazaModelFeature.values) {
+        final id = storedRoutes[feature.name]?.toString().trim();
+        if (id != null && id.isNotEmpty) routes[feature] = id;
+      }
+      // Preserve settings created by the earlier grouped routing UI.
+      const legacy = <String, NazaModelFeature>{
+        'health': NazaModelFeature.healthToday,
+        'food': NazaModelFeature.foodScanner,
+        'road': NazaModelFeature.roadScanner,
+        'games': NazaModelFeature.chess,
+        'writing': NazaModelFeature.bookForge,
+        'intelligence': NazaModelFeature.knowledgeVault,
+      };
+      for (final entry in legacy.entries) {
+        if (routes.containsKey(entry.value)) continue;
+        final id = storedRoutes[entry.key]?.toString().trim();
+        if (id != null && id.isNotEmpty) routes[entry.value] = id;
+      }
+    }
+    return NazaModelRoutingConfig(
+      defaultProfileId: defaultId?.trim().isEmpty == false ? defaultId : null,
+      featureProfiles: Map.unmodifiable(routes),
+    );
+  }
+
+  Future<void> save(NazaModelRoutingConfig config) =>
+      _database.writeJson(_namespace, _key, <String, Object?>{
+        'defaultProfileId': config.defaultProfileId,
+        'featureProfiles': <String, String>{
+          for (final entry in config.featureProfiles.entries)
+            entry.key.name: entry.value,
+        },
+      });
+}
+
 extension NazaRemoteProviderX on NazaRemoteProvider {
   String get label => switch (this) {
     NazaRemoteProvider.openAi => 'OpenAI',

@@ -473,6 +473,10 @@ Trigger: **`workflow_dispatch` only**.
 
 It prepares/verifies the Windows LiteRT-LM compatibility runtime, analyzes/tests, builds Windows, creates the Store package, validates the generated Appx manifest, and uploads the MSIX with short artifact retention.
 
+Before submission, follow the [Windows Store release checklist](RELEASE_CHECKLIST.md)
+for WACK, privacy disclosures, permissions, accessibility, and clean-install
+validation.
+
 So pushes, pull requests and tags do **not** spend Actions minutes by themselves. Run either workflow manually from the GitHub Actions tab when you actually want a build.
 
 ---

@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test('pin policy rejects unknown, duplicate, and oversized input', () {
+    final extraIds = List<String>.generate(24, (index) => 'feature-$index');
     final raw = <Object?>[
       'unknown',
       'road-scanner',
@@ -24,6 +25,7 @@ void main() {
       'history',
       'settings',
       'bookforge',
+      ...extraIds,
     ];
 
     final result = NazaFeaturePinPolicy.sanitize(raw, <String>{
@@ -35,6 +37,7 @@ void main() {
       'history',
       'settings',
       'bookforge',
+      ...extraIds,
     });
 
     expect(result.first, NazaFeaturePinPolicy.requiredId);

@@ -208,7 +208,7 @@ enum NazaExplorationSection { findIt, garden, drive, predict, heartFlow }
 
 extension NazaExplorationSectionX on NazaExplorationSection {
   String get label => switch (this) {
-    NazaExplorationSection.findIt => 'FindIt',
+    NazaExplorationSection.findIt => 'Find It',
     NazaExplorationSection.garden => 'Garden',
     NazaExplorationSection.drive => 'Drive',
     NazaExplorationSection.predict => 'Predict',

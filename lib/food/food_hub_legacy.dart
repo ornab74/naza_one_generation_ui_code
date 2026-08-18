@@ -66,6 +66,7 @@ class FoodVisionHub extends StatefulWidget {
   final Widget? foodSafetyChild;
   final FoodVisionDraftController? draftController;
   final bool openRecipes;
+  final String initialTab;
 
   const FoodVisionHub({
     super.key,
@@ -78,6 +79,7 @@ class FoodVisionHub extends StatefulWidget {
     this.foodSafetyChild,
     this.draftController,
     this.openRecipes = false,
+    this.initialTab = 'fridge',
   });
 
   @override
@@ -133,7 +135,13 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
   @override
   void initState() {
     super.initState();
-    _tab = widget.openRecipes ? _FoodHubTab.recipes : _FoodHubTab.fridge;
+    _tab = widget.openRecipes
+        ? _FoodHubTab.recipes
+        : switch (widget.initialTab) {
+            'bake' => _FoodHubTab.bake,
+            'safety' => _FoodHubTab.safety,
+            _ => _FoodHubTab.fridge,
+          };
     _ownsDraft = widget.draftController == null;
     _draft = widget.draftController ?? FoodVisionDraftController();
     widget.repository.revision.addListener(_handleRepositoryRevision);

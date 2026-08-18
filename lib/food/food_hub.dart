@@ -67,6 +67,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
       'recipes' => _WorkspaceTab.recipes,
       'shelf' => _WorkspaceTab.shelf,
       'more' => _WorkspaceTab.more,
+      'bake' || 'safety' => _WorkspaceTab.more,
       _ => _WorkspaceTab.fridge,
     };
   }
@@ -106,6 +107,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
           onCancel: widget.onCancel,
           foodSafetyChild: widget.foodSafetyChild,
           draftController: widget.draftController,
+          initialTab: widget.initialWorkspace,
         ),
       };
     });
@@ -128,7 +130,7 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
 
         // App-level navigation is owned by NazaUnifiedFeatureDrawer/Rail.
         // Food workspaces remain content modes and are opened from the global
-        // wheel (Recipes, Fridge, Shelf, and Food More), preventing a second
+        // wheel (Recipes, Fridge, Shelf, Bake Lab, and FoodQualityScanner), preventing a second
         // competing rail or bottom navigation bar from consuming the shell.
         return Scaffold(
           body: Column(
@@ -193,34 +195,49 @@ class _FoodAnalyticsStripState extends State<_FoodAnalyticsStrip> {
       if (data == null) return const SizedBox(height: 4);
       final fridge = data.fridge.reversed.toList(growable: false);
       final bake = data.bake.reversed.toList(growable: false);
-      return SizedBox(
-        height: 236,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-          child: NazaAnalyticsCard(
-            title: 'Kitchen trends',
-            subtitle:
-                '${data.fridge.length} fridge captures · ${data.bake.length} bake observations · trends are descriptive, not safety guarantees',
-            series: [
-              NazaTrendSeries(
-                name: 'Visible food items',
-                color: Colors.orangeAccent,
-                points: fridge.map(
-                  (log) => NazaTrendPoint(
-                    time: log.capturedAt,
-                    value: log.analysis.items.length.toDouble(),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        child: Card(
+          clipBehavior: Clip.antiAlias,
+          child: ExpansionTile(
+            initiallyExpanded: false,
+            leading: const Icon(Icons.auto_graph_rounded),
+            title: const Text(
+              'Kitchen trends',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+            subtitle: Text(
+              '${data.fridge.length} fridge captures · ${data.bake.length} bake observations',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+            children: [
+              NazaAnalyticsCard(
+                title: 'Kitchen trends',
+                subtitle: 'Descriptive trends, not safety guarantees',
+                series: [
+                  NazaTrendSeries(
+                    name: 'Visible food items',
+                    color: Colors.orangeAccent,
+                    points: fridge.map(
+                      (log) => NazaTrendPoint(
+                        time: log.capturedAt,
+                        value: log.analysis.items.length.toDouble(),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              NazaTrendSeries(
-                name: 'Bake estimate %',
-                color: Colors.lightBlueAccent,
-                points: bake.map(
-                  (log) => NazaTrendPoint(
-                    time: log.capturedAt,
-                    value: log.simulation.estimatedPercent,
+                  NazaTrendSeries(
+                    name: 'Bake estimate %',
+                    color: Colors.lightBlueAccent,
+                    points: bake.map(
+                      (log) => NazaTrendPoint(
+                        time: log.capturedAt,
+                        value: log.simulation.estimatedPercent,
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ],
           ),
