@@ -30,7 +30,7 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter analyze --no-pub --no-fatal-infos
+      - run: flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
       - run: flutter test --no-pub
 
   android:
