@@ -9,6 +9,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
@@ -112,6 +113,41 @@ class MainActivity : FlutterActivity() {
                             it.clearAll()
                         }
                         null
+                    }
+                }
+
+                "saveManualCapture" -> {
+                    val screenshot = call.argument<ByteArray>("screenshot")
+                    val fileName = call.argument<String>("fileName") ?: "manual-screenshot"
+                    val decisionRaw = call.argument<Map<String, Any?>>("decision")
+                    if (screenshot == null || screenshot.isEmpty() || decisionRaw == null) {
+                        result.error(
+                            "bad_args",
+                            "Manual capture requires screenshot bytes and a decision.",
+                            null,
+                        )
+                    } else {
+                        background(result) {
+                            val payload = JSONObject(
+                                mapOf(
+                                    "source" to "manual_screenshot",
+                                    "fileName" to fileName,
+                                ),
+                            ).toString()
+                            val decisionJson = JSONObject(decisionRaw).toString()
+                            SecureCaptureStore(applicationContext).use { store ->
+                                val id = store.insertCapture(
+                                    kind = "MANUAL_SCREENSHOT",
+                                    fingerprint = "manual:${System.currentTimeMillis()}:$fileName:${screenshot.size}",
+                                    payloadJson = payload,
+                                    screenshot = screenshot,
+                                    width = null,
+                                    height = null,
+                                )
+                                store.updateDecision(id, decisionJson)
+                                id
+                            }
+                        }
                     }
                 }
 
