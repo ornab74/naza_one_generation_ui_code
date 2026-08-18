@@ -20233,6 +20233,15 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         onOpen: () => _setPanel(NazaPanel.settings),
       ),
       NazaFeatureDestination(
+        id: 'whats-new',
+        label: "What's New",
+        description: 'See the latest Naza One features and improvements.',
+        category: 'System',
+        icon: Icons.new_releases_rounded,
+        accent: Color(0xFFFFD27D),
+        onOpen: () => _setPanel(NazaPanel.settings),
+      ),
+      NazaFeatureDestination(
         id: 'history',
         label: 'History',
         description: 'Browse private local conversations.',
@@ -25798,6 +25807,8 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
               ...(advanced ? _advancedChildren() : _simpleChildren()),
             ] else
               ..._backupChildren(),
+            const SizedBox(height: 18),
+            const _WhatsNewCard(),
           ],
         );
       },
@@ -25966,6 +25977,133 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
       ),
     ];
   }
+}
+
+final class _WhatsNewCard extends StatelessWidget {
+  const _WhatsNewCard();
+
+  static const _items = <({IconData icon, String title, String body})>[
+    (
+      icon: Icons.radio_button_checked_rounded,
+      title: 'Unified feature wheel',
+      body:
+          'One responsive wheel and desktop rail now organize chat, scanners, health, games, Garden, Food, BookForge, intelligence, and settings.',
+    ),
+    (
+      icon: Icons.account_tree_rounded,
+      title: 'Knowledge Vault to workflows',
+      body:
+          'Knowledge Vault, Memory Observatory, Projects, and Local Workflow Builder now connect evidence, context, boundaries, and action.',
+    ),
+    (
+      icon: Icons.auto_graph_rounded,
+      title: 'Longitudinal analytics',
+      body:
+          'Garden, Food, walking, sleep, metabolic, and other dated observations can be viewed as bounded trend charts with uncertainty labels.',
+    ),
+    (
+      icon: Icons.eco_rounded,
+      title: 'Garden intelligence',
+      body:
+          'Plant and mushroom identification, multi-image capture, growth logging, health observations, selectable history, and care experiments are available together.',
+    ),
+    (
+      icon: Icons.restaurant_rounded,
+      title: 'Food workspace improvements',
+      body:
+          'Fridge, Shelf, Recipes, Bake Lab, and Safety remain unified with responsive scanning controls, private history, and kitchen trend summaries.',
+    ),
+    (
+      icon: Icons.favorite_rounded,
+      title: 'HeartFlow simulation',
+      body:
+          'A transparent six-dimension local reflection model now supports a separate, practical action brief focused on human and ecological wellbeing.',
+    ),
+    (
+      icon: Icons.sports_esports_rounded,
+      title: 'Games portfolio',
+      body:
+          'Chess Agent and memory games are available from the same navigation system, with local-first state and clearer agent guidance.',
+    ),
+    (
+      icon: Icons.shield_rounded,
+      title: 'Security and recovery',
+      body:
+          'Encrypted vault workflows, post-quantum recovery defaults, bounded imports, safer backups, and release integrity checks continue to protect local data.',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) => _NazaGlassCard(
+    padding: const EdgeInsets.all(16),
+    radius: 20,
+    active: true,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.new_releases_rounded, color: NazaPalette.mintSoft),
+            const SizedBox(width: 9),
+            const Expanded(
+              child: Text(
+                "What's New",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+              ),
+            ),
+            Text(
+              'v1.0.11',
+              style: TextStyle(
+                color: NazaPalette.mintSoft,
+                fontWeight: FontWeight.w900,
+                fontFamily: NazaFonts.mono,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        Text(
+          'The latest Naza One release, summarized in one place.',
+          style: TextStyle(color: NazaPalette.subtext, height: 1.35),
+        ),
+        const SizedBox(height: 14),
+        for (final item in _items) ...[
+          _WhatsNewItem(item: item),
+          if (item != _items.last) const Divider(height: 20),
+        ],
+      ],
+    ),
+  );
+}
+
+final class _WhatsNewItem extends StatelessWidget {
+  final ({IconData icon, String title, String body}) item;
+  const _WhatsNewItem({required this.item});
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Icon(item.icon, size: 21, color: NazaPalette.mintSoft),
+      const SizedBox(width: 10),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              item.title,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              item.body,
+              style: TextStyle(color: NazaPalette.subtext, height: 1.35),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
 }
 
 final class _SettingsTabChip extends StatelessWidget {
