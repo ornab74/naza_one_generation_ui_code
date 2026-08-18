@@ -1,0 +1,12 @@
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#05060B</item>
+    </style>
+    <style name="NormalTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#05060B</item>
+    </style>
+</resources>
