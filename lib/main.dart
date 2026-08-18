@@ -1730,6 +1730,7 @@ class RouteEngineController extends ChangeNotifier {
   String simulatedAction = 'NONE';
   Object? lastError;
   bool busy = false;
+  bool showAnalysisLoader = false;
   bool initialized = false;
   Uint8List? testScreenshot;
   String? testScreenshotName;
@@ -1876,6 +1877,7 @@ class RouteEngineController extends ChangeNotifier {
   Future<void> analyzeCurrentOffer() async {
     if (busy) return;
     busy = true;
+    showAnalysisLoader = true;
     lastError = null;
     status = 'Acquiring live position';
     notifyListeners();
@@ -1941,6 +1943,8 @@ class RouteEngineController extends ChangeNotifier {
 
       simulatedAction = _resolveAction(decision);
       status = 'Future collapsed: ${decision.verdict.label}';
+      showAnalysisLoader = false;
+      notifyListeners();
 
       if (settings.speakDecisions) {
         await _voice.speak(
@@ -1972,6 +1976,7 @@ class RouteEngineController extends ChangeNotifier {
       status = 'Analysis failed';
     } finally {
       busy = false;
+      showAnalysisLoader = false;
       notifyListeners();
     }
   }
@@ -2127,7 +2132,7 @@ class _RouteEngineHomeState extends State<RouteEngineHome> {
           SafeArea(
             child: IndexedStack(index: index, children: pages),
           ),
-          if (controller.busy)
+          if (controller.showAnalysisLoader)
             Positioned.fill(
               child: IgnorePointer(
                 child: ColoredBox(
