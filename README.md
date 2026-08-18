@@ -6,6 +6,17 @@
 **Naza One is a private, local-first Flutter AI workstation built around on-device Gemma + LiteRT-LM.** It combines local chat, vision, road/safety scanning, food intelligence, encrypted memory, hardened local storage, hybrid post-quantum recovery, verified model delivery, and cross-platform desktop/mobile builds without requiring a cloud chat backend.
 
 > **Microsoft Store:** https://apps.microsoft.com/detail/9nm382wsvsvn
+** What's new in v1.0.11?
+> 
+v1.0.11.
+It includes:
+Unified feature wheel and desktop rail
+Knowledge Vault, Memory Observatory, Projects, and Workflow Builder
+Garden logging, image intelligence, and charts
+Food workspace and kitchen trend improvements
+HeartFlow six-dimension simulation
+Chess and memory games
+Security, encrypted backup, and post-quantum recovery improvements
 
 ![Naza One demo](./demo.png)
 
