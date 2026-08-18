@@ -1,0 +1,33 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub/
+build/
+linux/flutter/ephemeral/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android
+android/.gradle/
+android/local.properties
+relay/secrets.db
+relay/.secrets.key
+relay/__pycache__/
+android/key.properties
+*.jks
+*.keystore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Relay secrets
+.env
+relay/.env
+relay/cert.pem
+relay/key.pem
+
+# OS
+.DS_Store
+Thumbs.db
