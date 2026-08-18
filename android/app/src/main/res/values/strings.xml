@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Naza Route Engine</string>
+    <string name="accessibility_service_name">Naza Route Engine DoorDash Monitor</string>
+    <string name="accessibility_service_description">Observes user-authorized DoorDash accessibility state changes, captures qualifying offer/order screens, stores them in an encrypted local vault, and shows a small safety overlay.</string>
+</resources>
