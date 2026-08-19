@@ -1,7 +1,7 @@
 name: route_engine
 description: Naza Route Engine - online DoorDash offer capture, Luna analysis, weather radar, encrypted vault, TTS, and overlay.
 publish_to: none
-version: 0.4.2+6
+version: 7.0.77+7
 
 environment:
   sdk: ^3.9.0
