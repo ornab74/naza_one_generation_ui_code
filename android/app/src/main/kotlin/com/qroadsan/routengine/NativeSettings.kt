@@ -2,6 +2,7 @@ package com.qroadsan.routengine
 
 import android.content.Context
 import android.util.Base64
+import org.json.JSONArray
 import org.json.JSONObject
 
 class NativeSettings(context: Context) {
@@ -57,6 +58,79 @@ class NativeSettings(context: Context) {
                     .put("max_precipitation_mm", maxPrecipitationMm)
                     .put("min_visibility_km", minVisibilityKm)
                     .put("max_radar_severity", maxRadarSeverity),
+            )
+            .put(
+                "personal_pickup_policy",
+                JSONObject()
+                    .put("version", "personal_customer_fit_v2")
+                    .put("purpose", "Personal operational pickup/customer-fit prior; not a demographic judgment")
+                    .put("hard_no_go_dollar_store", true)
+                    .put("hard_no_go_pizza", true)
+                    .put("hard_go_mcdonalds", true)
+                    .put("weather_gate_remains_independent", true)
+                    .put(
+                        "dollar_store_patterns",
+                        JSONArray()
+                            .put("family dollar")
+                            .put("dollar general")
+                            .put("dollar tree"),
+                    )
+                    .put(
+                        "pizza_patterns",
+                        JSONArray()
+                            .put("pizza")
+                            .put("pizzeria")
+                            .put("domino's")
+                            .put("dominos")
+                            .put("papa johns")
+                            .put("papa john's")
+                            .put("marco's")
+                            .put("marcos")
+                            .put("mellow mushroom")
+                            .put("hungry howie's")
+                            .put("hungry howies")
+                            .put("jet's pizza")
+                            .put("jets pizza")
+                            .put("little caesars")
+                            .put("pizza hut")
+                            .put("crust and craft")
+                            .put("local crust"),
+                    )
+                    .put(
+                        "mcdonalds_patterns",
+                        JSONArray()
+                            .put("mcdonald's")
+                            .put("mcdonalds"),
+                    )
+                    .put(
+                        "priors",
+                        JSONObject()
+                            .put(
+                                "dollar_store",
+                                JSONObject()
+                                    .put("customer_quality", 0.06)
+                                    .put("delivery_integrity", 0.35)
+                                    .put("personal_health_fit", 0.20)
+                                    .put("override", "NO-GO"),
+                            )
+                            .put(
+                                "pizza",
+                                JSONObject()
+                                    .put("customer_quality", 0.30)
+                                    .put("delivery_integrity", 0.18)
+                                    .put("personal_health_fit", 0.16)
+                                    .put("override", "NO-GO"),
+                            )
+                            .put(
+                                "mcdonalds",
+                                JSONObject()
+                                    .put("customer_quality", 0.88)
+                                    .put("delivery_integrity", 0.90)
+                                    .put("personal_health_fit", 0.58)
+                                    .put("late_night_bonus", 0.12)
+                                    .put("override", "GO"),
+                            ),
+                    ),
             )
     }
 
