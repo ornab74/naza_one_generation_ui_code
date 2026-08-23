@@ -29,6 +29,12 @@ bool _sameDestinationIds(
 final class NazaFeatureDestination {
   final String id;
   final String label;
+
+  /// The editorial title shown in the expanded wheel. Keep [label] short for
+  /// compact rails and pinned icons, while [title] gives each app its own
+  /// recognizable product identity.
+  final String? title;
+  final String? subzone;
   final String description;
   final String category;
   final IconData icon;
@@ -38,12 +44,17 @@ final class NazaFeatureDestination {
   const NazaFeatureDestination({
     required this.id,
     required this.label,
+    this.title,
+    this.subzone,
     required this.description,
     required this.category,
     required this.icon,
     required this.accent,
     required this.onOpen,
   });
+
+  String get displayTitle => title ?? '$label $category Studio';
+  String get displayZone => subzone ?? category;
 }
 
 final class NazaFeaturePinPolicy {
@@ -551,7 +562,7 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
                     gridDelegate:
                         const SliverGridDelegateWithMaxCrossAxisExtent(
                           maxCrossAxisExtent: 180,
-                          mainAxisExtent: 126,
+                          mainAxisExtent: 146,
                           crossAxisSpacing: 10,
                           mainAxisSpacing: 10,
                         ),
@@ -563,7 +574,7 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
                       return Semantics(
                         button: true,
                         selected: selected,
-                        label: item.label,
+                        label: '${item.displayTitle}, ${item.displayZone}',
                         hint: pinned
                             ? 'Long press to unpin'
                             : 'Long press to pin',
@@ -619,19 +630,33 @@ class _NazaUnifiedFeatureRailState extends State<NazaUnifiedFeatureRail> {
                                   ),
                                   const Spacer(),
                                   Text(
-                                    item.label,
-                                    maxLines: 1,
+                                    item.displayTitle,
+                                    maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       color: widget.text,
                                       fontWeight: FontWeight.w900,
+                                      fontSize: 12,
                                     ),
                                   ),
                                   Text(
-                                    item.category,
+                                    item.label,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       color: widget.subtext,
-                                      fontSize: 11,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                  Text(
+                                    item.displayZone.toUpperCase(),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: item.accent,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: .7,
                                     ),
                                   ),
                                 ],
@@ -863,6 +888,8 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
         final queryMatch =
             query.isEmpty ||
             e.label.toLowerCase().contains(query) ||
+            e.displayTitle.toLowerCase().contains(query) ||
+            e.displayZone.toLowerCase().contains(query) ||
             e.category.toLowerCase().contains(query) ||
             e.description.toLowerCase().contains(query);
         return categoryMatch && queryMatch;
@@ -955,7 +982,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
                         ),
                       ),
                       Text(
-                        'Drag to explore · hold a card to pin',
+                        'Explore focused app zones · hold a card to pin',
                         style: TextStyle(color: widget.subtext, fontSize: 12),
                       ),
                     ],
@@ -1017,7 +1044,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
           ),
           const SizedBox(height: 14),
           SizedBox(
-            height: 184,
+            height: 178,
             child: PageView.builder(
               key: ValueKey<String>(_category),
               controller: _controller,
@@ -1039,7 +1066,7 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
                       child: Semantics(
                         button: true,
                         selected: item.id == widget.selectedId,
-                        label: item.label,
+                        label: '${item.displayTitle}, ${item.displayZone}',
                         hint: pinned
                             ? 'Long press to unpin'
                             : 'Long press to pin',
@@ -1065,25 +1092,48 @@ class _FeatureWheelSheetState extends State<_FeatureWheelSheet> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: <Widget>[
                                   CircleAvatar(
-                                    radius: 26,
+                                    radius: 22,
                                     backgroundColor: item.accent.withValues(
                                       alpha: 0.18,
                                     ),
                                     child: Icon(
                                       item.icon,
                                       color: item.accent,
-                                      size: 28,
+                                      size: 24,
                                     ),
                                   ),
-                                  const SizedBox(height: 10),
+                                  const SizedBox(height: 6),
                                   Text(
-                                    item.label,
+                                    item.displayTitle,
                                     textAlign: TextAlign.center,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       color: widget.text,
                                       fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                  Text(
+                                    item.label,
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: widget.subtext,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    item.displayZone.toUpperCase(),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: item.accent,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 1.1,
                                     ),
                                   ),
                                   const SizedBox(height: 5),

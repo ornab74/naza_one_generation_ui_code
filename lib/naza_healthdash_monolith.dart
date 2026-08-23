@@ -731,7 +731,7 @@ final class NazaIcsExporter {
     final lines = <String>[
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
-      'PRODID:-//Naza One//HealthDash Flutter//EN',
+      'PRODID:-//Naza One//Personal Health Flutter//EN',
       'CALSCALE:GREGORIAN',
       'METHOD:PUBLISH',
       'X-WR-CALNAME:Naza Health',
@@ -4734,13 +4734,13 @@ final class NazaHealthVault {
     final stored = await legacySecureStorage.read(key: _legacyKeyAlias);
     if (stored == null || stored.isEmpty) {
       throw StateError(
-        'Legacy HealthDash data exists but its secure-storage key is unavailable.',
+        'Legacy personal-health data exists but its secure-storage key is unavailable.',
       );
     }
     final wrapper = jsonDecode(await file.readAsString());
     if (wrapper is! Map) {
       throw const FormatException(
-        'Legacy HealthDash vault wrapper is malformed.',
+        'Legacy personal-health vault wrapper is malformed.',
       );
     }
     final data = wrapper.map((k, v) => MapEntry(k.toString(), v));
@@ -4755,7 +4755,7 @@ final class NazaHealthVault {
     );
     final decoded = jsonDecode(utf8.decode(clear));
     if (decoded is! Map) {
-      throw const FormatException('Legacy HealthDash state is malformed.');
+      throw const FormatException('Legacy personal-health state is malformed.');
     }
     return NazaHealthState.fromJson(
       decoded.map((k, v) => MapEntry(k.toString(), v)),
@@ -4773,7 +4773,7 @@ final class NazaHealthVault {
   Future<NazaHealthState> load() async {
     if (!database.isUnlocked) {
       throw StateError(
-        'NazaSecureDatabase must be unlocked before opening HealthDash. '
+        'NazaSecureDatabase must be unlocked before opening Personal Health. '
         'Pass 5 no longer creates or updates a second health database.',
       );
     }
@@ -4800,7 +4800,7 @@ final class NazaHealthVault {
       final verify = await database.readJson(_namespace, _stateKey);
       if (verify is! Map) {
         throw StateError(
-          'HealthDash migration wrote no readable Naza vault record; '
+          'Personal-health migration wrote no readable Naza vault record; '
           'the legacy file was preserved.',
         );
       }
@@ -4819,7 +4819,7 @@ final class NazaHealthVault {
   Future<void> save(NazaHealthState state) async {
     if (!database.isUnlocked) {
       throw StateError(
-        'NazaSecureDatabase locked while saving HealthDash state.',
+        'NazaSecureDatabase locked while saving personal-health state.',
       );
     }
     await database.writeJson(_namespace, _stateKey, state.toJson());
@@ -5060,7 +5060,7 @@ Return exactly:
 ${state.personality.stylePrompt}
 $baseSafety
 [task]
-Explain the next useful application workflow step from the HealthDash A-K map.
+Explain the next useful application workflow step from the personal-care A-K map.
 Do not claim that a feature step is medically necessary. Do not mark any step
 complete. The application state is authoritative:
 $payload
@@ -6217,7 +6217,7 @@ class _NazaCommandPaletteSheetState extends State<_NazaCommandPaletteSheet> {
               onChanged: (_) => setState(() {}),
               decoration: const InputDecoration(
                 prefixIcon: Icon(Icons.manage_search_rounded),
-                labelText: 'Search Naza + HealthDash commands',
+                labelText: 'Search Naza + personal-care commands',
                 hintText: 'meds, workout, fridge, settings, review…',
               ),
             ),
@@ -6279,7 +6279,7 @@ class _CommandCenterPageState extends State<_CommandCenterPage> {
         const _PageHeader(
           title: 'Universal command center',
           subtitle:
-              'One searchable development surface for HealthDash modules and existing Naza features.',
+              'One searchable development surface for personal-care modules and existing Naza features.',
         ),
         const SizedBox(height: 12),
         TextField(
@@ -6327,7 +6327,7 @@ final class _WorkflowPage extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       children: [
         _PageHeader(
-          title: 'HealthDash A–K workflow',
+          title: 'Personal-care A–K workflow',
           subtitle:
               'The original guided feature loop, translated into the Naza Flutter application.',
           action: FilledButton.tonalIcon(
@@ -6520,14 +6520,14 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
     ),
     _NazaCommandSpec(
       'A–K workflow guide',
-      'HealthDash guided care loop and feature map',
+      'Personal health guided care loop and feature map',
       Icons.route_rounded,
       const ['help', 'flow', 'guide', 'a-k', 'workflow'],
       () => setState(() => page = NazaHealthPage.workflow),
     ),
     _NazaCommandSpec(
       'Command center',
-      'Search every HealthDash and Naza surface',
+      'Search every personal-health and Naza surface',
       Icons.manage_search_rounded,
       const ['command', 'palette', 'search', 'actions'],
       () => setState(() => page = NazaHealthPage.command),
@@ -6725,7 +6725,7 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
                   const Icon(Icons.lock_rounded, size: 56),
                   const SizedBox(height: 16),
                   const Text(
-                    'Pass 5 stores HealthDash inside NazaSecureDatabase. '
+                    'Pass 5 stores personal-health data inside NazaSecureDatabase. '
                     'Unlock the Naza vault before opening the health surface.',
                     textAlign: TextAlign.center,
                   ),
@@ -6846,7 +6846,7 @@ class _NazaHealthDashMonolithState extends State<NazaHealthDashMonolith> {
   static String _pageLabel(NazaHealthPage p) => switch (p) {
     NazaHealthPage.today => 'Health command center',
     NazaHealthPage.walking => 'Walking mode & metabolic response',
-    NazaHealthPage.workflow => 'HealthDash A–K workflow',
+    NazaHealthPage.workflow => 'Personal-care A–K workflow',
     NazaHealthPage.command => 'Universal command center',
     NazaHealthPage.schedule => 'Schedule matrix',
     NazaHealthPage.medications => 'Medication workflow',
@@ -6909,7 +6909,7 @@ class _AdvancedHealthDrawerState extends State<_AdvancedHealthDrawer> {
     ),
     _DrawerEntry(
       'A–K Workflow',
-      'HealthDash guided feature loop',
+      'Personal-health guided feature loop',
       Icons.route_rounded,
       () => widget.onSelect(NazaHealthPage.workflow),
     ),
@@ -9597,7 +9597,7 @@ class _ExercisePageState extends State<_ExercisePage> {
         _PageHeader(
           title: 'Movement + Program Studio',
           subtitle:
-              'HealthDash rhythm plus an explicit user-configured weekly program. '
+              'Personal-health rhythm plus an explicit user-configured weekly program. '
               'No automatic medical exercise prescription.',
           action: FilledButton.icon(
             onPressed: _log,
@@ -9705,7 +9705,7 @@ class _ExercisePageState extends State<_ExercisePage> {
               title: 'Program disabled',
               body:
                   'Enable the program and choose training days. '
-                  'HealthDash walk/light/stretch logging continues independently.',
+                  'Personal-health walk/light/stretch logging continues independently.',
             ),
           for (final session in planned) _plannedSessionCard(session),
         ],
@@ -13015,8 +13015,8 @@ Pass 1 implemented:
 - iCalendar export with RRULE and VALARM for Android calendar import.
 - medication records, reminder times, dose logging, deterministic minimum
   interval and rolling 24-hour maximum checks.
-- HealthDash dental default rhythms: brush 12h, floss 24h, rinse 24h.
-- HealthDash movement defaults: walk 4h, light 8h, stretch 2h; daily goals
+- Personal-health dental default rhythms: brush 12h, floss 24h, rinse 24h.
+- Personal-health movement defaults: walk 4h, light 8h, stretch 2h; daily goals
   30/20/10 minutes.
 - Recovery state for clean date, relapse/reset, points, mood, craving,
   motivation, coping plan and history.
@@ -13026,7 +13026,7 @@ Pass 1 implemented:
 - advanced searchable mode-aware application drawer with pin, density,
   tap/swipe/hold topology interactions.
 - three original agent personalities: Orbit, Mira, Rook.
-- pure-Dart state-vector port of the HealthDash PennyLane RGB circuit.
+- pure-Dart state-vector port of the personal-health RGB circuit.
 - AES-GCM standalone health vault with key material in secure storage.
 
 Pass 6+ parity targets:
@@ -13041,12 +13041,12 @@ Pass 6+ parity targets:
 // -----------------------------------------------------------------------------
 const String nazaHealthDashPass2Summary = r'''
 Pass 2 medication parity:
-- HealthDash named dose presets: Breakfast 08:00, Daytime 10:00,
+- Personal-health named dose presets: Breakfast 08:00, Daytime 10:00,
   Mid day 12:00, Lunch 13:00, Dinner 18:00, Nighttime 21:00.
 - Custom named/clock slots, schedule-text inference and interval-generated slots.
 - Stable date/time/label slot keys and scheduled timestamps on dose logs.
 - Date-aware checklist: upcoming, due, missed, taken.
-- HealthDash-derived due-lead, miss-grace and slot-match-tolerance bounds.
+- Personal-health-derived due-lead, miss-grace and slot-match-tolerance bounds.
 - 90-second re-log guard and rolling-24-hour amount checks.
 - Archive/restore while preserving full dose history.
 - Focused medication and all-med integration reviews persisted in encrypted state.
@@ -13062,16 +13062,16 @@ const String nazaHealthDashPass3Summary = r'''
 Pass 3 dental + recovery parity:
 - Dental state now preserves hygiene photo review history (20) and dental
   recovery photo journal history (30).
-- Hygiene review mirrors HealthDash score/rating/visible-signs/coaching,
+- Hygiene review mirrors personal-health score/rating/visible-signs/coaching,
   confidence and Low/Medium/High follow-up risk fields.
-- HealthDash rating thresholds: Excellent >=88, Good >=72, Needs polish >=55.
+- Personal-health rating thresholds: Excellent >=88, Good >=72, Needs polish >=55.
 - Hygiene score trend compares the last two reviews with a 2-point steady band.
 - Dental recovery stores procedure type/date, symptom notes, care notes,
   day-numbered photo reviews, conservative aftercare and warning flags.
 - AM/PM brush + floss + rinse events can be synchronized into the app's ICS
   calendar export surface.
-- Recovery clean-day semantics now match HealthDash: the anchor date is day 1.
-- Exact HealthDash milestone ladder: days 1/3/7/14/30/60/90/180/365 with
+- Recovery clean-day semantics use a day-one anchor.
+- Exact personal-health milestone ladder: days 1/3/7/14/30/60/90/180/365 with
   +10/+15/+25/+40/+75/+120/+180/+320/+700 points.
 - Milestones are cycle-scoped and stored as history events; daily check-ins are
   +2 points at most once per local day.
@@ -13125,15 +13125,15 @@ Pass 4 food + body feedback loop:
 // -----------------------------------------------------------------------------
 const String nazaHealthDashPass5Summary = r'''
 Pass 5 application intelligence + persistence convergence:
-- Exact HealthDash A-K help flow is represented in Dart with the original
+- Exact personal-care A-K help flow is represented in Dart with the original
   module/action/description labels and a guided progress surface.
 - A-H steps can derive completion from encrypted app evidence; I-K remain
   explicit user actions unless manually marked.
-- Universal command palette searches HealthDash pages and the preserved Naza
+- Universal command palette searches personal-health pages and the preserved Naza
   Chat, Road Scanner, Food Vision, History and Settings surfaces.
 - Command center includes explicit Daily+Weekly review and shared-vault
   integrity-check actions.
-- Exercise keeps HealthDash walk/light/stretch defaults but adds a separate
+- Exercise keeps personal-health walk/light/stretch defaults but adds a separate
   opt-in user-configured weekly program with focus, weekdays, duration,
   sessions/week, perceived-effort target, progression cap, equipment and notes.
 - Planned exercise sessions use stable IDs; completion requires an explicit
@@ -13141,7 +13141,7 @@ Pass 5 application intelligence + persistence convergence:
 - Program advancement is user-approved and never silently increases settings.
 - Body goals now include a 90-day raw-weight + moving-average chart and optional
   target line; 7-day and 28-day trend metrics remain descriptive only.
-- NazaSecureDatabase is now the primary HealthDash persistence boundary using
+- NazaSecureDatabase is now the primary personal-health persistence boundary using
   namespace `healthdash` / key `state-v5`.
 - The old standalone AES-GCM file is read only as a one-time migration source.
   Migration writes state + metadata transactionally, reads the shared record

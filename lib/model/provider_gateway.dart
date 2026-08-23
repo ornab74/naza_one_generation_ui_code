@@ -51,6 +51,7 @@ enum NazaModelFeature {
   memoryObservatory,
   projects,
   workflowBuilder,
+  agenticCoding,
 }
 
 extension NazaModelFeatureX on NazaModelFeature {
@@ -82,6 +83,69 @@ extension NazaModelFeatureX on NazaModelFeature {
     NazaModelFeature.memoryObservatory => 'Memory Observatory',
     NazaModelFeature.projects => 'Projects',
     NazaModelFeature.workflowBuilder => 'Workflow Builder',
+    NazaModelFeature.agenticCoding => 'Code Foundry',
+  };
+
+  String get editorialTitle => switch (this) {
+    NazaModelFeature.chat => 'Private Conversation Atelier',
+    NazaModelFeature.roadScanner => 'Roadway Risk Observatory',
+    NazaModelFeature.foodScanner => 'Kitchen Provenance Scanner',
+    NazaModelFeature.foodRecipes => 'Pantry-to-Plate Atelier',
+    NazaModelFeature.foodShelf => 'Pantry Inventory Ledger',
+    NazaModelFeature.foodBake => 'Thermal Craft Bench',
+    NazaModelFeature.healthToday => 'Personal Health Studio',
+    NazaModelFeature.healthMedications => 'Medication Stewardship Desk',
+    NazaModelFeature.healthDental => 'Oral Wellness Studio',
+    NazaModelFeature.healthExercise => 'Adaptive Movement Lab',
+    NazaModelFeature.healthRecovery => 'Resilience & Recovery Studio',
+    NazaModelFeature.healthIntelligence => 'Care Signal Synthesis Lab',
+    NazaModelFeature.garden => 'Living Garden Observatory',
+    NazaModelFeature.gardenPlantId => 'Botanical Signal Desk',
+    NazaModelFeature.gardenMushroomId => 'Fungal Safety Atlas',
+    NazaModelFeature.gardenLog => 'Living Systems Field Log',
+    NazaModelFeature.walking => 'Walking Rhythm Observatory',
+    NazaModelFeature.findIt => 'Local Discovery Atlas',
+    NazaModelFeature.drive => 'Route & Stop Strategy Desk',
+    NazaModelFeature.predict => 'Scenario Forecasting Studio',
+    NazaModelFeature.heartFlow => 'Recovery & Readiness Compass',
+    NazaModelFeature.chess => 'Tactical Boardroom',
+    NazaModelFeature.bookForge => 'Long-Form Narrative Foundry',
+    NazaModelFeature.knowledgeVault => 'Evidence Provenance Vault',
+    NazaModelFeature.memoryObservatory => 'Context Allocation Observatory',
+    NazaModelFeature.projects => 'Project Constellation Studio',
+    NazaModelFeature.workflowBuilder => 'Approval Logic Foundry',
+    NazaModelFeature.agenticCoding => 'Agentic Code Foundry',
+  };
+
+  String get zone => switch (this) {
+    NazaModelFeature.chat => 'Core Intelligence',
+    NazaModelFeature.roadScanner ||
+    NazaModelFeature.drive => 'Mobility Intelligence',
+    NazaModelFeature.foodScanner ||
+    NazaModelFeature.foodRecipes ||
+    NazaModelFeature.foodShelf ||
+    NazaModelFeature.foodBake => 'Food Intelligence',
+    NazaModelFeature.healthToday ||
+    NazaModelFeature.healthMedications ||
+    NazaModelFeature.healthDental ||
+    NazaModelFeature.healthIntelligence => 'Care Intelligence',
+    NazaModelFeature.healthExercise ||
+    NazaModelFeature.walking => 'Movement Intelligence',
+    NazaModelFeature.healthRecovery ||
+    NazaModelFeature.heartFlow => 'Recovery Intelligence',
+    NazaModelFeature.garden ||
+    NazaModelFeature.gardenPlantId ||
+    NazaModelFeature.gardenMushroomId ||
+    NazaModelFeature.gardenLog => 'Nature Intelligence',
+    NazaModelFeature.findIt => 'Place Intelligence',
+    NazaModelFeature.predict => 'Futures Intelligence',
+    NazaModelFeature.chess => 'Game Intelligence',
+    NazaModelFeature.bookForge => 'Literary Intelligence',
+    NazaModelFeature.knowledgeVault => 'Knowledge Intelligence',
+    NazaModelFeature.memoryObservatory => 'Memory Intelligence',
+    NazaModelFeature.projects => 'Work Intelligence',
+    NazaModelFeature.workflowBuilder => 'Workflow Intelligence',
+    NazaModelFeature.agenticCoding => 'Execution Intelligence',
   };
 }
 
@@ -111,7 +175,7 @@ final class NazaModelRoutingStore {
   Future<NazaModelRoutingConfig> load() async {
     final raw = await _database.readJson(_namespace, _key);
     if (raw is! Map) return const NazaModelRoutingConfig();
-    final defaultId = raw['defaultProfileId']?.toString();
+    final defaultId = raw['defaultProfileId']?.toString().trim();
     final routes = <NazaModelFeature, String>{};
     final storedRoutes = raw['featureProfiles'];
     if (storedRoutes is Map) {
@@ -135,7 +199,7 @@ final class NazaModelRoutingStore {
       }
     }
     return NazaModelRoutingConfig(
-      defaultProfileId: defaultId?.trim().isEmpty == false ? defaultId : null,
+      defaultProfileId: defaultId?.isNotEmpty == true ? defaultId : null,
       featureProfiles: Map.unmodifiable(routes),
     );
   }
@@ -155,12 +219,101 @@ extension NazaRemoteProviderX on NazaRemoteProvider {
     NazaRemoteProvider.openAi => 'OpenAI',
     NazaRemoteProvider.anthropic => 'Anthropic',
     NazaRemoteProvider.gemini => 'Google Gemini',
-    NazaRemoteProvider.meta => 'Meta',
+    NazaRemoteProvider.meta => 'Meta Muse',
     NazaRemoteProvider.digitalOcean => 'DigitalOcean Gradient',
     NazaRemoteProvider.custom => 'Custom OpenAI-compatible',
   };
 
   String get wireName => name;
+}
+
+/// Curated model identifiers surfaced by the settings picker. Availability is
+/// still account/region dependent, so users can always enter a custom model
+/// identifier and the provider remains the final authority.
+final class NazaProviderModelCatalog {
+  const NazaProviderModelCatalog._();
+
+  static const Map<NazaRemoteProvider, List<String>> _models =
+      <NazaRemoteProvider, List<String>>{
+        NazaRemoteProvider.openAi: <String>[
+          'gpt-5.6-sol',
+          'gpt-5.6-terra',
+          'gpt-5.6-luna',
+          'gpt-5.2',
+          'gpt-5.1',
+          'gpt-5',
+          'gpt-5-mini',
+          'gpt-5-nano',
+          'gpt-5.1-codex',
+          'gpt-5.1-codex-max',
+          'gpt-5-codex',
+          'gpt-5.1-codex-mini',
+          'o3',
+          'o3-pro',
+          'o4-mini',
+          'o3-deep-research',
+          'o4-mini-deep-research',
+          'gpt-4.1',
+          'gpt-4.1-mini',
+          'gpt-4.1-nano',
+          'gpt-realtime',
+          'gpt-realtime-mini',
+          'gpt-audio',
+          'gpt-audio-mini',
+          'gpt-image-1',
+          'gpt-oss-120b',
+          'gpt-oss-20b',
+        ],
+        NazaRemoteProvider.anthropic: <String>[
+          'claude-opus-4-1',
+          'claude-opus-4-0',
+          'claude-sonnet-4-0',
+          'claude-3-7-sonnet-latest',
+          'claude-3-5-sonnet-latest',
+          'claude-3-5-haiku-latest',
+          'claude-3-haiku-20240307',
+        ],
+        NazaRemoteProvider.gemini: <String>[
+          'gemini-3.7-flash',
+          'gemini-3.6-flash',
+          'gemini-3.5-flash',
+          'gemini-3.5-flash-lite',
+          'gemini-3.1-flash-lite',
+          'gemini-3.1-pro-preview',
+          'gemini-3-flash-preview',
+          'gemini-2.5-pro',
+          'gemini-2.5-flash',
+          'gemini-2.5-flash-lite',
+          'gemini-3.1-flash-image',
+          'gemini-3-pro-image',
+          'gemini-2.5-flash-native-audio-preview-12-2025',
+          'gemini-2.5-flash-preview-tts',
+          'veo-3.1-generate-preview',
+          'deep-research-preview-04-2026',
+          'gemini-embedding-2-preview',
+          'gemini-embedding-001',
+        ],
+        NazaRemoteProvider.meta: <String>[
+          'muse-spark-1.2',
+          'muse-spark-1.1',
+          'llama-4-maverick',
+          'llama-4-scout',
+        ],
+        NazaRemoteProvider.digitalOcean: <String>[
+          'kimi-k3',
+          'kimi-k2.6',
+          'kimi-k2.5',
+          'llama-3.3-70b-instruct',
+          'llama-3.1-70b-instruct',
+          'qwen2.5-72b-instruct',
+          'deepseek-r1',
+          'deepseek-v4-pro',
+        ],
+        NazaRemoteProvider.custom: <String>[],
+      };
+
+  static List<String> forProvider(NazaRemoteProvider provider) =>
+      List<String>.unmodifiable(_models[provider] ?? const <String>[]);
 }
 
 final class NazaRemoteModelProfile {
@@ -294,6 +447,9 @@ final class NazaRemoteModelCatalog {
         profile.model.length > maxModelIdLength) {
       throw const FormatException('Invalid remote model identifier.');
     }
+    if (profile.apiKey.trim().isEmpty) {
+      throw const FormatException('Remote model profile has no API key.');
+    }
     NazaProviderGateway.validateEndpoint(
       provider: profile.provider,
       endpoint: profile.endpoint,
@@ -382,6 +538,11 @@ final class NazaProviderGateway {
     required String endpoint,
     required bool allowCustomEndpoint,
   }) {
+    if (allowCustomEndpoint && provider != NazaRemoteProvider.custom) {
+      throw const FormatException(
+        'Only the Custom provider may use a custom endpoint.',
+      );
+    }
     final uri = Uri.tryParse(endpoint.trim());
     if (uri == null ||
         uri.scheme != 'https' ||
@@ -402,7 +563,7 @@ final class NazaProviderGateway {
         'inference.do-ai.run',
         'api.digitalocean.com',
       },
-      NazaRemoteProvider.meta => <String>{},
+      NazaRemoteProvider.meta => <String>{'api.meta.ai'},
       NazaRemoteProvider.custom => <String>{},
     };
     if (!allowCustomEndpoint && !allowed.contains(uri.host.toLowerCase())) {
@@ -413,11 +574,6 @@ final class NazaProviderGateway {
     if (!allowCustomEndpoint && uri.hasPort && uri.port != 443) {
       throw const FormatException(
         'Official provider endpoints must use HTTPS port 443.',
-      );
-    }
-    if (provider == NazaRemoteProvider.meta && !allowCustomEndpoint) {
-      throw const FormatException(
-        'Meta requires an explicitly approved custom HTTPS endpoint.',
       );
     }
   }

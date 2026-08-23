@@ -31,6 +31,8 @@ import 'food/prompts.dart';
 import 'food/repository.dart';
 import 'navigation/unified_feature_drawer.dart';
 import 'model/provider_gateway.dart';
+import 'model/model_assembly.dart';
+import 'model/embedding_runtime.dart';
 import 'chat/history_metadata_repository.dart';
 import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
@@ -44,6 +46,8 @@ import 'naza_exploration_hub.dart';
 import 'chess/chess_tab.dart';
 import 'games/games_tab.dart';
 import 'intelligence/intelligence_hub.dart';
+import 'agentic/agentic_coding_surface.dart';
+import 'agentic/agentic_runtime.dart';
 
 bool _environmentFlag(String name) {
   final value = Platform.environment[name]?.trim().toLowerCase();
@@ -281,6 +285,8 @@ final class NazaSettingsModeStore {
   static final ValueNotifier<bool> advanced = ValueNotifier<bool>(false);
   static bool _loaded = false;
   static Future<void>? _loadFuture;
+  static Future<void> _persistFuture = Future<void>.value();
+  static int _changeRevision = 0;
 
   static Future<void> load() {
     if (_loaded) return Future<void>.value();
@@ -289,11 +295,14 @@ final class NazaSettingsModeStore {
   }
 
   static Future<void> _loadInner() async {
+    final revisionAtStart = _changeRevision;
     try {
       final database = NazaSecureDatabase.instance;
       if (!database.isUnlocked) return;
       final raw = await database.readJson(namespace, key);
-      advanced.value = raw is Map && raw['advanced'] == true;
+      if (_changeRevision == revisionAtStart) {
+        advanced.value = raw is Map && raw['advanced'] == true;
+      }
       _loaded = true;
     } catch (_) {
       // Simple settings remain the safe default when the preference is absent
@@ -303,21 +312,25 @@ final class NazaSettingsModeStore {
     }
   }
 
-  static Future<void> setAdvanced(bool value) async {
+  static Future<void> setAdvanced(bool value) {
     advanced.value = value;
     _loaded = true;
+    _changeRevision++;
     final database = NazaSecureDatabase.instance;
-    if (!database.isUnlocked) return;
-    try {
-      await database.writeJson(namespace, key, <String, Object?>{
-        'format': 'naza-settings-mode-v1',
-        'advanced': value,
-        'updatedAt': DateTime.now().toUtc().toIso8601String(),
-      });
-    } catch (_) {
-      // Keep the live choice. The encrypted preference can be retried on a
-      // later settings change without blocking normal app use.
-    }
+    if (!database.isUnlocked) return Future<void>.value();
+    _persistFuture = _persistFuture.then<void>((_) async {
+      try {
+        await database.writeJson(namespace, key, <String, Object?>{
+          'format': 'naza-settings-mode-v1',
+          'advanced': value,
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+      } catch (_) {
+        // Keep the live choice. The encrypted preference can be retried on a
+        // later settings change without blocking normal app use.
+      }
+    });
+    return _persistFuture;
   }
 }
 
@@ -16728,7 +16741,11 @@ final class NazaVectorMemory {
       // Relevance is anchored in the current words. Route/mode metadata is a
       // small secondary feature below; embedding it repeatedly made generic
       // recent turns look semantically related to unrelated new tasks.
-      final queryEmbedding = _embed(userText);
+      final queryEmbedding = await NazaEmbeddingRuntime.instance.embed(
+        text: userText,
+        localEmbed: _embed,
+        purpose: NazaEmbeddingPurpose.query,
+      );
       final queryTokens = _tokenSet(userText);
       final focus = actionProfile.retrievalFocus
           .map((item) => item.toLowerCase())
@@ -16876,22 +16893,22 @@ final class NazaVectorMemory {
       final createdAt = DateTime.now();
       final assistantMemory = _assistantMemoryText(assistant);
       final additions = <NazaMemoryChunk>[
-        ..._chunksForMessage(
+        ...(await _chunksForMessage(
           turnId: memoryTurnId,
           role: 'user',
           text: user,
           route: route,
           routeScore: score,
           createdAt: createdAt,
-        ),
-        ..._chunksForMessage(
+        )),
+        ...(await _chunksForMessage(
           turnId: memoryTurnId,
           role: 'assistant',
           text: assistantMemory,
           route: route,
           routeScore: score,
           createdAt: createdAt,
-        ),
+        )),
       ];
       final next = chunks.toList(growable: true);
       for (final addition in additions) {
@@ -17232,14 +17249,14 @@ final class NazaVectorMemory {
         .toList(growable: false);
   }
 
-  List<NazaMemoryChunk> _chunksForMessage({
+  Future<List<NazaMemoryChunk>> _chunksForMessage({
     required String turnId,
     required String role,
     required String text,
     required String route,
     required double routeScore,
     required DateTime createdAt,
-  }) {
+  }) async {
     final parts = _chunkText(text);
     final chunks = <NazaMemoryChunk>[];
     for (var i = 0; i < parts.length; i++) {
@@ -17256,6 +17273,10 @@ final class NazaVectorMemory {
         route: route,
         text: parts[i],
         keywords: keywords,
+      );
+      final embedding = await NazaEmbeddingRuntime.instance.embed(
+        text: '$role\n$route\n$summary\n${keywords.join(' ')}\n${parts[i]}',
+        localEmbed: _embed,
       );
       chunks.add(
         NazaMemoryChunk(
@@ -17282,9 +17303,7 @@ final class NazaVectorMemory {
           createdAt: createdAt,
           accessCount: 0,
           lastAccessedAt: createdAt,
-          embedding: _embed(
-            '$role\n$route\n$summary\n${keywords.join(' ')}\n${parts[i]}',
-          ),
+          embedding: embedding,
         ),
       );
     }
@@ -18673,6 +18692,7 @@ enum NazaPanel {
   settings,
   history,
   intelligence,
+  agenticCoding,
 }
 
 class _NazaThemeSurface extends StatelessWidget {
@@ -19858,13 +19878,46 @@ class _NazaStableHomeState extends State<NazaStableHome>
       return null;
     }
     final profiles = await NazaRemoteModelCatalog().load();
+    final assembly = await NazaModelAssemblyStore().load();
+    if (assembly.mode == NazaAssemblyMode.shardedAssembly &&
+        assembly.profileIds.length > 1) {
+      final selectedProfiles = profiles
+          .where(
+            (profile) =>
+                assembly.profileIds.contains(profile.id) &&
+                profile.enabled &&
+                profile.apiKey.trim().isNotEmpty,
+          )
+          .toList(growable: false);
+      if (selectedProfiles.length < 2) return null;
+      final coordinator = NazaShardedModelCoordinator();
+      try {
+        final assembled = await coordinator.assemble(
+          profiles: selectedProfiles,
+          config: assembly,
+          prompt: prompt,
+          systemInstruction: systemInstruction,
+        );
+        return NazaRemoteModelResponse(
+          text: assembled.text,
+          provider: assembled.provider,
+          model: assembled.model,
+        );
+      } finally {
+        coordinator.close();
+      }
+    }
     final matches = profiles.where(
-      (profile) => profile.id == profileId && profile.enabled,
+      (profile) =>
+          profile.id == profileId &&
+          profile.enabled &&
+          profile.apiKey.trim().isNotEmpty,
     );
     if (matches.isEmpty) {
-      throw StateError(
-        'The selected ${feature.label} remote model is unavailable. Open Settings and choose another model.',
-      );
+      // A deleted or unavailable vault profile must never turn a stale
+      // persisted route into a hard failure. Local Gemma remains the safe
+      // application-wide fallback until the route is repaired in Settings.
+      return null;
     }
     final gateway = NazaProviderGateway();
     try {
@@ -19876,6 +19929,267 @@ class _NazaStableHomeState extends State<NazaStableHome>
     } finally {
       gateway.close();
     }
+  }
+
+  Future<NazaAgenticRunResult> _runAgenticTask(
+    NazaAgenticTaskRequest request,
+  ) async {
+    if (_sending) {
+      throw StateError('Another model task is already active.');
+    }
+    if (mounted) {
+      setState(() {
+        _sending = true;
+        _stopping = false;
+        _status = 'agentic synthesis';
+      });
+    }
+    try {
+      return await _runAgenticTaskNow(request);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _stopping = false;
+          _status = _labelForPanel(_panel);
+        });
+      }
+    }
+  }
+
+  Future<NazaAgenticRunResult> _runAgenticTaskNow(
+    NazaAgenticTaskRequest request,
+  ) async {
+    if (request.modality == NazaAgenticModality.vision) {
+      return _runLocalAgenticTask(
+        request,
+        fallbackReason: request.modelMode == NazaAgenticModelMode.localGemma
+            ? null
+            : 'Visual evidence stayed on the local Gemma vision boundary.',
+      );
+    }
+    if (request.modelMode == NazaAgenticModelMode.localGemma) {
+      return _runLocalAgenticTask(request);
+    }
+
+    final prompt = request.buildPrompt();
+    final routing = await NazaModelRoutingStore().load();
+    final profiles = await NazaRemoteModelCatalog().load();
+    if (request.modelMode == NazaAgenticModelMode.routedProvider) {
+      final profileId = routing.profileFor(NazaModelFeature.agenticCoding);
+      final matches = profiles.where(
+        (profile) =>
+            profile.id == profileId &&
+            profile.enabled &&
+            profile.apiKey.trim().isNotEmpty,
+      );
+      if (profileId == null ||
+          profileId == NazaModelRoutingStore.localProfileId ||
+          matches.isEmpty) {
+        return _runLocalAgenticTask(
+          request,
+          fallbackReason:
+              'No enabled Code Foundry provider route was available; local Gemma handled the run.',
+        );
+      }
+      final gateway = NazaProviderGateway();
+      try {
+        final remote = await gateway.send(
+          profile: matches.first,
+          prompt: prompt,
+          systemInstruction: request.systemInstruction,
+        );
+        return _runLocalAgenticTask(
+          request,
+          upstream: <NazaAgenticContribution>[
+            NazaAgenticContribution(
+              text: remote.text,
+              provider: remote.provider,
+              model: remote.model,
+              trustWeight: 0.78,
+            ),
+          ],
+        );
+      } catch (_) {
+        return _runLocalAgenticTask(
+          request,
+          fallbackReason:
+              'The routed provider failed closed; local Gemma handled the run without remote evidence.',
+        );
+      } finally {
+        gateway.close();
+      }
+    }
+
+    final assembly = await NazaModelAssemblyStore().load();
+    final selectedProfiles = profiles
+        .where(
+          (profile) =>
+              assembly.profileIds.contains(profile.id) &&
+              profile.enabled &&
+              profile.apiKey.trim().isNotEmpty,
+        )
+        .take(assembly.maxShards)
+        .toList(growable: false);
+    if (selectedProfiles.length < 2) {
+      return _runLocalAgenticTask(
+        request,
+        fallbackReason:
+            'Sharded fabric requires at least two enabled encrypted provider profiles; local Gemma handled the run.',
+      );
+    }
+    final remotePrompt = prompt.length <= 240000
+        ? prompt
+        : '${prompt.substring(0, 240000)}\n[remote context bound reached]';
+    final targetChunkSize = math.max(
+      assembly.chunkCharacters,
+      (remotePrompt.length / 6).ceil(),
+    );
+    final coordinator = NazaShardedModelCoordinator();
+    try {
+      final assembled = await coordinator.assemble(
+        profiles: selectedProfiles,
+        config: assembly.copyWith(
+          mode: NazaAssemblyMode.shardedAssembly,
+          chunkCharacters: targetChunkSize,
+        ),
+        prompt: remotePrompt,
+        systemInstruction: request.systemInstruction,
+      );
+      final contributions = assembled.shards
+          .map(
+            (shard) => NazaAgenticContribution(
+              text: shard.text,
+              provider: shard.provider,
+              model: shard.model,
+              trustWeight: 0.72,
+            ),
+          )
+          .toList(growable: false);
+      return _runLocalAgenticTask(request, upstream: contributions);
+    } catch (_) {
+      return _runLocalAgenticTask(
+        request,
+        fallbackReason:
+            'The remote shard assembly failed closed; local Gemma handled the run without remote evidence.',
+      );
+    } finally {
+      coordinator.close();
+    }
+  }
+
+  Future<NazaAgenticRunResult> _runLocalAgenticTask(
+    NazaAgenticTaskRequest request, {
+    List<NazaAgenticContribution> upstream = const <NazaAgenticContribution>[],
+    String? fallbackReason,
+  }) async {
+    final upstreamEvidence = _boundedAgenticEvidence(upstream);
+    final prompt = upstream.isEmpty
+        ? request.buildPrompt()
+        : '''${request.buildPrompt()}
+
+[untrusted_model_contributions]
+$upstreamEvidence
+[/untrusted_model_contributions]
+
+Perform the final local synthesis. Reconcile disagreements explicitly, preserve provider provenance, and do not treat agreement as proof.''';
+    final attachment = request.attachment;
+    final response = await NazaLocalGemma.instance.send(
+      prompt,
+      historyUserText: request.task,
+      visionImage: attachment == null
+          ? null
+          : NazaVisionImage(
+              bytes: attachment.bytes,
+              name: attachment.name,
+              width: attachment.width,
+              height: attachment.height,
+            ),
+      useMemory: request.memoryEnabled,
+      persistTurn: false,
+      maxContinuationsOverride: 1,
+      origin: NazaGenerationOrigin.chat,
+      routeOverride: 'agentic-code-foundry',
+      systemInstructionOverride: request.systemInstruction,
+    );
+    const failedRoutes = <String>{
+      'empty',
+      'model-warming',
+      'model-stopping',
+      'model-busy',
+      'model-warmup-cancelled',
+      'model-unavailable',
+      'vision-invalid-image',
+    };
+    if (response.cancelled ||
+        failedRoutes.contains(response.route) ||
+        response.text.startsWith('Local Gemma error:')) {
+      throw StateError('Local Gemma could not complete this coding run.');
+    }
+    final local = NazaAgenticContribution(
+      text: response.text,
+      provider: 'Local runtime',
+      model: 'Gemma 4 E2B',
+      trustWeight: 1,
+    );
+    var indexed = false;
+    if (request.memoryEnabled && !response.cancelled) {
+      try {
+        await NazaVectorMemory.instance.rememberMessagePair(
+          user: request.task,
+          assistant: response.text,
+          route: 'agentic-code-foundry',
+          score: 0.9,
+        );
+        indexed = true;
+      } catch (_) {
+        // A completed synthesis remains visible if encrypted memory storage is
+        // unavailable. The UI reports that it was not indexed.
+      }
+    }
+    return NazaAgenticRunResult.fromContributions(
+      text: response.text,
+      contributions: <NazaAgenticContribution>[...upstream, local],
+      taskSeed: request.task,
+      memoryIndexed: indexed,
+      fallbackReason: fallbackReason,
+    );
+  }
+
+  String _boundedAgenticEvidence(List<NazaAgenticContribution> values) {
+    const maxCharacters = 80000;
+    final buffer = StringBuffer();
+    for (var index = 0; index < values.length; index++) {
+      final value = values[index];
+      final header =
+          '\n[contribution ${index + 1} · ${value.provider} · ${value.model}]\n';
+      if (buffer.length + header.length >= maxCharacters) break;
+      buffer.write(header);
+      final remaining = maxCharacters - buffer.length;
+      if (value.text.length <= remaining) {
+        buffer.write(value.text);
+      } else {
+        buffer.write(value.text.substring(0, remaining));
+        buffer.write('\n[evidence bound reached]');
+        break;
+      }
+    }
+    return buffer.toString();
+  }
+
+  Future<NazaAgenticAttachment?> _pickAgenticImage() async {
+    final result =
+        await (widget.visionPicker ?? NazaVisionPicker.instance.pick)();
+    final image = result.image;
+    if (result.outcome != NazaVisionPickOutcome.selected || image == null) {
+      return null;
+    }
+    return NazaAgenticAttachment(
+      name: image.name,
+      bytes: image.bytes,
+      width: image.width,
+      height: image.height,
+    );
   }
 
   Future<String> _runChessAgent(String prompt) async {
@@ -19918,7 +20232,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
     if (remote != null) return remote.text;
     final response = await NazaLocalGemma.instance.send(
       prompt,
-      historyUserText: 'Private Naza HealthDash workflow',
+      historyUserText: 'Private personal health workflow',
       useMemory: false,
       persistTurn: false,
       maxContinuationsOverride: 0,
@@ -20041,10 +20355,10 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
   }) async {
     final response = await NazaLocalGemma.instance.send(
       prompt,
-      historyUserText: 'Private Naza HealthDash vision workflow',
+      historyUserText: 'Private personal health vision workflow',
       visionImage: NazaVisionImage(
         bytes: imageBytes,
-        name: 'healthdash-image.jpg',
+        name: 'personal-health-image.jpg',
         width: 1,
         height: 1,
       ),
@@ -20179,17 +20493,35 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
     final destinations = <NazaFeatureDestination>[
       NazaFeatureDestination(
         id: 'chat',
-        label: 'Chatbot',
-        description: 'Your private, local assistant.',
+        label: 'Chat',
+        title: 'Private Conversation Atelier',
+        subzone: 'Core Intelligence',
+        description:
+            'A private local space for thinking, planning, and creating.',
         category: 'Core',
         icon: Icons.auto_awesome_rounded,
         accent: Color(0xFFB69CFF),
         onOpen: () => _setPanel(NazaPanel.chat),
       ),
       NazaFeatureDestination(
+        id: 'agentic-coding',
+        label: 'Code Foundry',
+        title: 'Agentic Code Foundry',
+        subzone: 'Execution Intelligence',
+        description:
+            'Orchestrate local, routed, and sharded coding plans over bounded evidence.',
+        category: 'Core',
+        icon: Icons.architecture_rounded,
+        accent: Color(0xFFAA93FF),
+        onOpen: () => _setPanel(NazaPanel.agenticCoding),
+      ),
+      NazaFeatureDestination(
         id: 'road-scanner',
         label: 'Road',
-        description: 'Inspect road conditions and visible hazards.',
+        title: 'Roadway Risk Observatory',
+        subzone: 'Mobility Intelligence',
+        description:
+            'Inspect road conditions, route context, and visible hazards.',
         category: 'Road',
         icon: Icons.route_rounded,
         accent: Color(0xFF65DDF3),
@@ -20198,6 +20530,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'chess',
         label: 'Chess Agent',
+        title: 'Tactical Boardroom',
+        subzone: 'Game Intelligence',
         description: 'Deterministic local chess with agent guidance.',
         category: 'Games',
         icon: Icons.grid_4x4_rounded,
@@ -20207,6 +20541,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'games',
         label: 'Games',
+        title: 'Arcade Systems Lab',
+        subzone: 'Play Intelligence',
         description: 'Your local game portfolio and memory.',
         category: 'Games',
         icon: Icons.sports_esports_rounded,
@@ -20215,8 +20551,10 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       ),
       NazaFeatureDestination(
         id: 'food-scanner',
-        label: 'Fridge Scanner',
-        description: 'Scan food, water, shelves, and your kitchen.',
+        label: 'Food',
+        title: 'Kitchen Provenance Scanner',
+        subzone: 'Food Intelligence',
+        description: 'Scan food, water, shelves, and kitchen evidence.',
         category: 'Food',
         icon: Icons.restaurant_rounded,
         accent: Color(0xFFFFA56B),
@@ -20225,6 +20563,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'food-recipes',
         label: 'Recipes',
+        title: 'Pantry-to-Plate Atelier',
+        subzone: 'Food Intelligence',
         description: 'Generate recipes from your saved food context.',
         category: 'Food',
         icon: Icons.menu_book_rounded,
@@ -20234,6 +20574,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'food-shelf',
         label: 'Shelf',
+        title: 'Pantry Inventory Ledger',
+        subzone: 'Food Intelligence',
         description: 'Review pantry and shelf items with focused scans.',
         category: 'Food',
         icon: Icons.inventory_2_rounded,
@@ -20243,6 +20585,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'food-bake',
         label: 'Bake Lab',
+        title: 'Thermal Craft Bench',
+        subzone: 'Food Intelligence',
         description: 'Track bake timing, visible cues, and estimates.',
         category: 'Food',
         icon: Icons.bakery_dining_rounded,
@@ -20252,6 +20596,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'food-safety',
         label: 'FoodQualityScanner',
+        title: 'Food Integrity Sentinel',
+        subzone: 'Safety Intelligence',
         description: 'Scan food and water quality with conservative guidance.',
         category: 'Food',
         icon: Icons.health_and_safety_rounded,
@@ -20261,6 +20607,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'knowledge-vault',
         label: 'Knowledge Vault',
+        title: 'Evidence Provenance Vault',
+        subzone: 'Knowledge Intelligence',
         description: 'Import and inspect bounded local evidence by project.',
         category: 'Intelligence',
         icon: Icons.folder_special_rounded,
@@ -20271,6 +20619,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'memory-observatory',
         label: 'Memory Observatory',
+        title: 'Context Allocation Observatory',
+        subzone: 'Memory Intelligence',
         description: 'Review context provenance, boundaries, and local memory.',
         category: 'Intelligence',
         icon: Icons.hub_rounded,
@@ -20281,6 +20631,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'projects',
         label: 'Projects',
+        title: 'Project Constellation Studio',
+        subzone: 'Work Intelligence',
         description: 'Create isolated local intelligence workspaces.',
         category: 'Intelligence',
         icon: Icons.workspaces_rounded,
@@ -20291,6 +20643,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'workflow-builder',
         label: 'Workflow Builder',
+        title: 'Approval Logic Foundry',
+        subzone: 'Workflow Intelligence',
         description: 'Draft approval-gated actions over project evidence.',
         category: 'Intelligence',
         icon: Icons.account_tree_rounded,
@@ -20301,7 +20655,10 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'health',
         label: 'Health',
-        description: 'Open your private health command center.',
+        title: 'Personal Health Studio',
+        subzone: 'Care Intelligence',
+        description:
+            'A private home for daily signals, routines, and care planning.',
         category: 'Health',
         icon: Icons.monitor_heart_rounded,
         accent: healthAccent,
@@ -20310,7 +20667,9 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'walking',
         label: 'Walking',
-        description: 'Track walking and metabolic response.',
+        title: 'Walking Rhythm Observatory',
+        subzone: 'Movement Intelligence',
+        description: 'Track walking patterns, effort, and metabolic response.',
         category: 'Health',
         icon: Icons.directions_walk_rounded,
         accent: Color(0xFF8CE7D3),
@@ -20319,6 +20678,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'memory-game',
         label: 'Memory',
+        title: 'Recall Pattern Arena',
+        subzone: 'Cognitive Play',
         description: 'Play REV//RECALL and build local memory skills.',
         category: 'Games',
         icon: Icons.psychology_alt_rounded,
@@ -20329,6 +20690,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'garden-plant-id',
         label: 'Plant ID',
+        title: 'Botanical Signal Desk',
+        subzone: 'Nature Intelligence',
         description: 'Identify plants and review health signals from images.',
         category: 'Garden',
         icon: Icons.local_florist_rounded,
@@ -20338,6 +20701,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'garden-mushroom-id',
         label: 'Mushroom ID',
+        title: 'Fungal Safety Atlas',
+        subzone: 'Nature Intelligence',
         description:
             'Inspect mushroom images with conservative safety guidance.',
         category: 'Garden',
@@ -20348,6 +20713,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'garden-log',
         label: 'Garden Log',
+        title: 'Living Systems Field Log',
+        subzone: 'Nature Intelligence',
         description: 'Track growth, size estimates, health, and observations.',
         category: 'Garden',
         icon: Icons.auto_graph_rounded,
@@ -20357,6 +20724,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'bookforge',
         label: 'Read',
+        title: 'Private Reading Observatory',
+        subzone: 'Literary Intelligence',
         description: 'Open and read your private BookForge library.',
         category: 'Create',
         icon: Icons.menu_book_rounded,
@@ -20366,6 +20735,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'bookforge-generate',
         label: 'CreateBooks',
+        title: 'Long-Form Narrative Foundry',
+        subzone: 'Literary Intelligence',
         description: 'Generate structured long-form drafts locally.',
         category: 'Create',
         icon: Icons.auto_awesome_rounded,
@@ -20375,6 +20746,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'bookforge-repository',
         label: 'AddBooks',
+        title: 'Manuscript Provenance Library',
+        subzone: 'Literary Intelligence',
         description: 'Review and synchronize your writing repository.',
         category: 'Create',
         icon: Icons.cloud_outlined,
@@ -20385,6 +20758,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'model-providers',
         label: 'Models',
+        title: 'Model Orchestration Console',
+        subzone: 'System Intelligence',
         description: 'Configure local and approved model providers.',
         category: 'System',
         icon: Icons.hub_rounded,
@@ -20394,6 +20769,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'personalities',
         label: 'Personalities',
+        title: 'Assistant Persona Atelier',
+        subzone: 'System Intelligence',
         description: 'Tune Mira, Rook, Orbit, and assistant behavior.',
         category: 'System',
         icon: Icons.face_retouching_natural_rounded,
@@ -20403,6 +20780,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'memory-settings',
         label: 'Memory Settings',
+        title: 'Memory Fabric Control Room',
+        subzone: 'System Intelligence',
         description: 'Review local memory, retrieval, and retention controls.',
         category: 'System',
         icon: Icons.psychology_rounded,
@@ -20412,6 +20791,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'backup-recovery',
         label: 'Backup & Recovery',
+        title: 'Vault Continuity Chamber',
+        subzone: 'Security Intelligence',
         description: 'Protect and restore the encrypted Naza data store.',
         category: 'System',
         icon: Icons.backup_rounded,
@@ -20421,6 +20802,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'history',
         label: 'History',
+        title: 'Conversation Provenance Ledger',
+        subzone: 'System Intelligence',
         description: 'Browse private local conversations.',
         category: 'System',
         icon: Icons.history_rounded,
@@ -20430,6 +20813,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaFeatureDestination(
         id: 'settings',
         label: 'Settings',
+        title: 'Naza Control Plane',
+        subzone: 'System Intelligence',
         description: 'Control models, memory, privacy, and appearance.',
         category: 'System',
         icon: Icons.settings_rounded,
@@ -20442,10 +20827,23 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
 
   List<NazaFeatureDestination> _explorationDestinations() {
     const specs =
-        <(String, String, String, IconData, Color, NazaExplorationSection)>[
+        <
+          (
+            String,
+            String,
+            String,
+            String,
+            String,
+            IconData,
+            Color,
+            NazaExplorationSection,
+          )
+        >[
           (
             'findit',
             'Find It',
+            'Local Discovery Atlas',
+            'Place Intelligence',
             'Location-grounded place and service discovery.',
             Icons.travel_explore_rounded,
             Color(0xFF65DDF3),
@@ -20454,6 +20852,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           (
             'garden',
             'Garden',
+            'Living Garden Observatory',
+            'Nature Intelligence',
             'Camera-assisted plant and garden intelligence.',
             Icons.eco_rounded,
             Color(0xFF72E59A),
@@ -20462,6 +20862,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           (
             'drive',
             'Drive',
+            'Route & Stop Strategy Desk',
+            'Mobility Intelligence',
             'Route, stop, and delivery-area planning.',
             Icons.directions_car_rounded,
             Color(0xFF87C7FF),
@@ -20470,6 +20872,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           (
             'predict',
             'Predict',
+            'Scenario Forecasting Studio',
+            'Futures Intelligence',
             'Location-aware scenario forecasting.',
             Icons.query_stats_rounded,
             Color(0xFFFFCB73),
@@ -20478,6 +20882,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           (
             'heart-flow',
             'Heart Flow',
+            'Recovery & Readiness Compass',
+            'Care Intelligence',
             'Personalized recovery and readiness reflection.',
             Icons.favorite_rounded,
             Color(0xFFFF7F9F),
@@ -20489,117 +20895,148 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           (spec) => NazaFeatureDestination(
             id: spec.$1,
             label: spec.$2,
-            description: spec.$3,
+            title: spec.$3,
+            subzone: spec.$4,
+            description: spec.$5,
             category: 'Intelligence',
-            icon: spec.$4,
-            accent: spec.$5,
-            onOpen: () => _openExplorationSection(spec.$6),
+            icon: spec.$6,
+            accent: spec.$7,
+            onOpen: () => _openExplorationSection(spec.$8),
           ),
         )
         .toList(growable: false);
   }
 
   List<NazaFeatureDestination> _healthDrawerDestinations(Color accent) {
-    const specs = <(String, String, String, IconData, NazaHealthPage)>[
-      (
-        'health-schedule',
-        'Schedule',
-        'Daily and weekly care schedule.',
-        Icons.calendar_month_rounded,
-        NazaHealthPage.schedule,
-      ),
-      (
-        'health-medications',
-        'Medications',
-        'Medication planner, logs, and safety.',
-        Icons.medication_rounded,
-        NazaHealthPage.medications,
-      ),
-      (
-        'health-dental',
-        'Dental',
-        'Dental routines and recovery.',
-        Icons.health_and_safety_rounded,
-        NazaHealthPage.dental,
-      ),
-      (
-        'health-exercise',
-        'Exercise',
-        'Movement goals and adaptive sessions.',
-        Icons.directions_run_rounded,
-        NazaHealthPage.exercise,
-      ),
-      (
-        'health-recovery',
-        'Recovery',
-        'Check-ins, streaks, and coping plans.',
-        Icons.spa_rounded,
-        NazaHealthPage.recovery,
-      ),
-      (
-        'health-meals',
-        'Meals',
-        'Private text and photo nutrition log.',
-        Icons.lunch_dining_rounded,
-        NazaHealthPage.meals,
-      ),
-      (
-        'health-meal-plan',
-        'Meal Plan',
-        'Seven-day pantry-aware planning.',
-        Icons.calendar_view_week_rounded,
-        NazaHealthPage.mealPlan,
-      ),
-      (
-        'health-weight',
-        'Body Goals',
-        'Weight trends and body goals.',
-        Icons.monitor_weight_rounded,
-        NazaHealthPage.weight,
-      ),
-      (
-        'health-groceries',
-        'Groceries',
-        'Plan-derived grocery list and ledger.',
-        Icons.shopping_cart_rounded,
-        NazaHealthPage.groceries,
-      ),
-      (
-        'health-intelligence',
-        'Insights',
-        'Daily and weekly health intelligence.',
-        Icons.insights_rounded,
-        NazaHealthPage.intelligence,
-      ),
-      (
-        'health-workflow',
-        'Care Workflow',
-        'Guided A–K health workflow.',
-        Icons.account_tree_rounded,
-        NazaHealthPage.workflow,
-      ),
-      (
-        'health-command',
-        'Health Commands',
-        'All HealthDash actions in one command center.',
-        Icons.dashboard_customize_rounded,
-        NazaHealthPage.command,
-      ),
-      (
-        'health-food-share',
-        'Food Sharing',
-        'Private, explicitly scoped food sharing.',
-        Icons.ios_share_rounded,
-        NazaHealthPage.foodShare,
-      ),
-    ];
+    const specs =
+        <(String, String, String, String, String, IconData, NazaHealthPage)>[
+          (
+            'health-schedule',
+            'Schedule',
+            'Care Rhythm Scheduler',
+            'Care Intelligence',
+            'Daily and weekly care schedule.',
+            Icons.calendar_month_rounded,
+            NazaHealthPage.schedule,
+          ),
+          (
+            'health-medications',
+            'Medications',
+            'Medication Stewardship Desk',
+            'Care Intelligence',
+            'Medication planner, logs, and safety.',
+            Icons.medication_rounded,
+            NazaHealthPage.medications,
+          ),
+          (
+            'health-dental',
+            'Dental',
+            'Oral Wellness Studio',
+            'Care Intelligence',
+            'Dental routines and recovery.',
+            Icons.health_and_safety_rounded,
+            NazaHealthPage.dental,
+          ),
+          (
+            'health-exercise',
+            'Exercise',
+            'Adaptive Movement Lab',
+            'Movement Intelligence',
+            'Movement goals and adaptive sessions.',
+            Icons.directions_run_rounded,
+            NazaHealthPage.exercise,
+          ),
+          (
+            'health-recovery',
+            'Recovery',
+            'Resilience & Recovery Studio',
+            'Recovery Intelligence',
+            'Check-ins, streaks, and coping plans.',
+            Icons.spa_rounded,
+            NazaHealthPage.recovery,
+          ),
+          (
+            'health-meals',
+            'Meals',
+            'Personal Nutrition Ledger',
+            'Food Intelligence',
+            'Private text and photo nutrition log.',
+            Icons.lunch_dining_rounded,
+            NazaHealthPage.meals,
+          ),
+          (
+            'health-meal-plan',
+            'Meal Plan',
+            'Seven-Day Nutrition Architect',
+            'Food Intelligence',
+            'Seven-day pantry-aware planning.',
+            Icons.calendar_view_week_rounded,
+            NazaHealthPage.mealPlan,
+          ),
+          (
+            'health-weight',
+            'Body Goals',
+            'Body Signal Observatory',
+            'Care Intelligence',
+            'Weight trends and body goals.',
+            Icons.monitor_weight_rounded,
+            NazaHealthPage.weight,
+          ),
+          (
+            'health-groceries',
+            'Groceries',
+            'Provisioning Strategy Desk',
+            'Food Intelligence',
+            'Plan-derived grocery list and ledger.',
+            Icons.shopping_cart_rounded,
+            NazaHealthPage.groceries,
+          ),
+          (
+            'health-intelligence',
+            'Insights',
+            'Care Signal Synthesis Lab',
+            'Care Intelligence',
+            'Daily and weekly health intelligence.',
+            Icons.insights_rounded,
+            NazaHealthPage.intelligence,
+          ),
+          (
+            'health-workflow',
+            'Care Workflow',
+            'Care Protocol Workbench',
+            'Care Intelligence',
+            'Guided A–K health workflow.',
+            Icons.account_tree_rounded,
+            NazaHealthPage.workflow,
+          ),
+          (
+            'health-command',
+            'Health Commands',
+            'Personal Care Command Plane',
+            'Care Intelligence',
+            'A focused command center for personal health actions.',
+            Icons.dashboard_customize_rounded,
+            NazaHealthPage.command,
+          ),
+          (
+            'health-food-share',
+            'Food Sharing',
+            'Scoped Meal Exchange',
+            'Food Intelligence',
+            'Private, explicitly scoped food sharing.',
+            Icons.ios_share_rounded,
+            NazaHealthPage.foodShare,
+          ),
+        ];
     return specs
         .map(
           (spec) => NazaFeatureDestination(
             id: spec.$1,
             label: spec.$2,
-            description: spec.$3,
-            category: switch (spec.$5) {
+            title: spec.$3,
+            subzone: spec.$4,
+            description: spec.$5,
+            category: switch (spec.$7) {
               NazaHealthPage.medications || NazaHealthPage.dental => 'Medicine',
               NazaHealthPage.recovery => 'Recovery',
               NazaHealthPage.exercise || NazaHealthPage.walking => 'Movement',
@@ -20609,9 +21046,9 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
               NazaHealthPage.foodShare => 'Food',
               _ => 'Health',
             },
-            icon: spec.$4,
+            icon: spec.$6,
             accent: accent,
-            onOpen: () => _openHealthPage(spec.$5),
+            onOpen: () => _openHealthPage(spec.$7),
           ),
         )
         .toList(growable: false);
@@ -20674,6 +21111,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         NazaIntelligenceWorkspace.projects => 'projects',
         NazaIntelligenceWorkspace.workflows => 'workflow-builder',
       },
+      NazaPanel.agenticCoding => 'agentic-coding',
     };
   }
 
@@ -20839,6 +21277,11 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
                 turnId: 'knowledge-$projectId-${documentName.hashCode}',
               ),
         );
+      case NazaPanel.agenticCoding:
+        return NazaAgenticCodingSurface(
+          runTask: _runAgenticTask,
+          pickImage: _pickAgenticImage,
+        );
     }
   }
 
@@ -20861,6 +21304,10 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       _tickerPanel(
         NazaPanel.intelligence,
         _panelForStack(NazaPanel.intelligence),
+      ),
+      _tickerPanel(
+        NazaPanel.agenticCoding,
+        _panelForStack(NazaPanel.agenticCoding),
       ),
     ];
     return IndexedStack(index: activeIndex, children: children);
@@ -20892,6 +21339,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaPanel.settings => 8,
       NazaPanel.history => 9,
       NazaPanel.intelligence => 10,
+      NazaPanel.agenticCoding => 11,
     };
   }
 
@@ -20908,7 +21356,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       case NazaPanel.foodWater:
         return 'food / water scanner';
       case NazaPanel.health:
-        return 'healthdash';
+        return 'personal health studio';
       case NazaPanel.book:
         return 'bookforge';
       case NazaPanel.labs:
@@ -20919,6 +21367,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         return 'history';
       case NazaPanel.intelligence:
         return 'intelligence';
+      case NazaPanel.agenticCoding:
+        return 'agentic code foundry';
     }
   }
 }
@@ -21233,17 +21683,19 @@ class _TopBar extends StatelessWidget {
       case NazaPanel.foodWater:
         return 'Food / Water Scanner';
       case NazaPanel.health:
-        return 'HealthDash';
+        return 'Personal Health Studio';
       case NazaPanel.book:
         return 'BookForge';
       case NazaPanel.labs:
-        return 'FindIt + Garden + Drive + Predict + Heart Flow';
+        return 'Exploration Studio';
       case NazaPanel.settings:
         return 'Settings';
       case NazaPanel.history:
         return 'History';
       case NazaPanel.intelligence:
         return 'Naza Intelligence';
+      case NazaPanel.agenticCoding:
+        return 'Agentic Code Foundry';
     }
   }
 }
@@ -22819,7 +23271,13 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
           minimumSize: const Size(220, 48),
         ),
         if (_result != null || _loading)
-          _ScannerAnalysisSurface(title: 'Road chromographic safety surface', icon: Icons.route_rounded, loading: _loading, result: _result, idleBody: 'Scan complete. Risk surface is shown below.'),
+          _ScannerAnalysisSurface(
+            title: 'Road chromographic safety surface',
+            icon: Icons.route_rounded,
+            loading: _loading,
+            result: _result,
+            idleBody: 'Scan complete. Risk surface is shown below.',
+          ),
         const SizedBox(height: 12),
         const _InfoRow(label: 'Defense profile', value: 'entropy + checksum'),
         const _InfoRow(label: 'Risk labels', value: 'Low / Medium / High'),
@@ -23084,11 +23542,16 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
         if ((_plannerMode && (_plannerResult != null || _plannerLoading)) ||
             (!_plannerMode && (_singleResult != null || _singleLoading)))
           _ScannerAnalysisSurface(
-            title: _plannerMode ? 'Multi-scan readiness surface' : 'Food / Water chromographic safety surface',
-            icon: _plannerMode ? Icons.playlist_add_check_rounded : Icons.water_drop_rounded,
+            title: _plannerMode
+                ? 'Multi-scan readiness surface'
+                : 'Food / Water chromographic safety surface',
+            icon: _plannerMode
+                ? Icons.playlist_add_check_rounded
+                : Icons.water_drop_rounded,
             loading: _plannerMode ? _plannerLoading : _singleLoading,
             result: _plannerMode ? _plannerResult : _singleResult,
-            idleBody: 'Scan results and the chromographic risk surface appear only after processing.',
+            idleBody:
+                'Scan results and the chromographic risk surface appear only after processing.',
           ),
       ],
     );
@@ -23098,7 +23561,8 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
     return [
       _NazaTextInput(
         label: 'Food, water, and location to scan',
-        hint: 'Describe the item/source, location, storage, temperature, packaging, odors, recalls, and anything directly observed...',
+        hint:
+            'Describe the item/source, location, storage, temperature, packaging, odors, recalls, and anything directly observed...',
         controller: _sensorNotes,
         maxLines: 5,
       ),
@@ -24411,6 +24875,229 @@ class _VectorMemorySettingsCardState extends State<_VectorMemorySettingsCard> {
   }
 }
 
+class _EmbeddingRuntimeSettingsCard extends StatefulWidget {
+  const _EmbeddingRuntimeSettingsCard();
+
+  @override
+  State<_EmbeddingRuntimeSettingsCard> createState() =>
+      _EmbeddingRuntimeSettingsCardState();
+}
+
+class _EmbeddingRuntimeSettingsCardState
+    extends State<_EmbeddingRuntimeSettingsCard> {
+  NazaEmbeddingRuntimeConfig _config = const NazaEmbeddingRuntimeConfig();
+  List<NazaRemoteModelProfile> _profiles = const [];
+  Map<String, String> _selectedModels = <String, String>{};
+  bool _loading = true;
+  bool _saving = false;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    try {
+      final config = await NazaEmbeddingRuntime.instance.loadConfig();
+      final profiles = await NazaRemoteModelCatalog().load();
+      if (!mounted) return;
+      setState(() {
+        _config = config;
+        _profiles = profiles;
+        _selectedModels = <String, String>{
+          for (final target in config.targets) target.profileId: target.model,
+        };
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _message = 'Unlock the encrypted vault to manage embeddings: $error';
+      });
+    }
+  }
+
+  List<NazaRemoteModelProfile> get _embeddingProfiles => _profiles
+      .where(
+        (profile) =>
+            profile.provider != NazaRemoteProvider.anthropic &&
+            profile.provider != NazaRemoteProvider.meta,
+      )
+      .toList(growable: false);
+
+  List<String> _modelsFor(NazaRemoteModelProfile profile) {
+    final curated = NazaEmbeddingModelCatalog.forProvider(profile.provider);
+    final values = <String>{...curated, profile.model.trim()};
+    values.removeWhere((model) => model.isEmpty);
+    return values.toList(growable: false);
+  }
+
+  void _setTarget(String profileId, String? model) {
+    final next = Map<String, String>.from(_selectedModels);
+    if (model == null || model.isEmpty) {
+      next.remove(profileId);
+    } else {
+      next[profileId] = model;
+    }
+    setState(() {
+      _selectedModels = next;
+      _config = _config.copyWith(
+        targets: next.entries.map(
+          (entry) =>
+              NazaEmbeddingTarget(profileId: entry.key, model: entry.value),
+        ),
+      );
+    });
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _message = null;
+    });
+    try {
+      await NazaEmbeddingRuntime.instance.saveConfig(_config);
+      if (!mounted) return;
+      setState(() {
+        _message = _config.mode == NazaEmbeddingMode.localOnly
+            ? 'Local embedding default saved in the encrypted vault.'
+            : 'Embedding ensemble saved; remote calls remain opt-in.';
+      });
+    } catch (error) {
+      if (mounted)
+        setState(() => _message = 'Embedding policy was not saved: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _NazaGlassCard(
+    padding: const EdgeInsets.all(16),
+    radius: 20,
+    active: _config.mode != NazaEmbeddingMode.localOnly,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Embedding fabric / encrypted memory',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 5),
+        Text(
+          'The in-house encrypted vector index stays the memory system. Local Gemma-compatible hashing is the strict default; remote embedding models may be added as bounded ensemble participants.',
+          style: TextStyle(color: NazaPalette.subtext, height: 1.35),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final mode in NazaEmbeddingMode.values)
+              ChoiceChip(
+                label: Text(switch (mode) {
+                  NazaEmbeddingMode.localOnly => 'Local only · default',
+                  NazaEmbeddingMode.remoteOnly =>
+                    'Remote ensemble · local fallback',
+                  NazaEmbeddingMode.hybridEnsemble => 'Local + remote hybrid',
+                }),
+                selected: _config.mode == mode,
+                onSelected: _loading
+                    ? null
+                    : (_) => setState(
+                        () => _config = _config.copyWith(mode: mode),
+                      ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        const _InfoRow(
+          label: 'Local index model',
+          value: 'naza-local-hybrid-embedding-v3',
+        ),
+        const _InfoRow(
+          label: 'Index dimensions',
+          value: '128 fixed for stored-vector compatibility',
+        ),
+        if (_config.mode == NazaEmbeddingMode.hybridEnsemble)
+          _MemorySliderRow(
+            label: 'Remote blend weight',
+            value: _config.remoteBlend,
+            min: 0,
+            max: 1,
+            divisions: 20,
+            suffix: '${(_config.remoteBlend * 100).round()}%',
+            onChangeEnd: (value) =>
+                setState(() => _config = _config.copyWith(remoteBlend: value)),
+          ),
+        const SizedBox(height: 8),
+        Text(
+          'Remote embedding participants',
+          style: TextStyle(
+            color: NazaPalette.mintSoft,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'OpenAI, Gemini, DigitalOcean, and custom OpenAI-compatible embedding endpoints are supported. Anthropic and Meta profiles remain chat-only until an embedding endpoint is configured.',
+          style: TextStyle(
+            color: NazaPalette.subtext,
+            fontSize: 11,
+            height: 1.3,
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (_embeddingProfiles.isEmpty)
+          Text(
+            'Add a provider profile above to choose an embedding model.',
+            style: TextStyle(color: NazaPalette.muted),
+          )
+        else
+          for (final profile in _embeddingProfiles) ...[
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              key: ValueKey(
+                'embedding-${profile.id}-${_selectedModels[profile.id]}',
+              ),
+              initialValue: _selectedModels[profile.id] ?? '',
+              decoration: InputDecoration(
+                labelText: '${profile.displayName} · embedding model',
+                prefixIcon: const Icon(Icons.auto_awesome_rounded),
+                border: const OutlineInputBorder(),
+              ),
+              items: [
+                const DropdownMenuItem(
+                  value: '',
+                  child: Text('Off · keep this provider out of memory'),
+                ),
+                for (final model in _modelsFor(profile))
+                  DropdownMenuItem(value: model, child: Text(model)),
+              ],
+              onChanged: _loading
+                  ? null
+                  : (value) => _setTarget(profile.id, value),
+            ),
+          ],
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: const Icon(Icons.lock_rounded),
+          label: Text(_saving ? 'Saving…' : 'Save embedding fabric'),
+        ),
+        if (_message != null) ...[
+          const SizedBox(height: 8),
+          Text(_message!, style: TextStyle(color: NazaPalette.subtext)),
+        ],
+      ],
+    ),
+  );
+}
+
 class _MemorySliderRow extends StatefulWidget {
   final String label;
   final double value;
@@ -25029,7 +25716,7 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
               const SizedBox(width: 9),
               Expanded(
                 child: Text(
-                  'Default hybrid post-quantum recovery',
+                  'Strict hybrid post-quantum recovery',
                   style: TextStyle(
                     color: NazaPalette.text,
                     fontWeight: FontWeight.w900,
@@ -25041,15 +25728,19 @@ class _VaultSecurityCardState extends State<_VaultSecurityCard> {
           ),
           const SizedBox(height: 7),
           Text(
-            'The live vault remains AES-256-GCM encrypted. Recovery uses a separate ML-KEM/X25519 identity so the private key kit can be kept offline from encrypted backups. Nothing is uploaded.',
+            'Strict maximum-hybrid policy is enabled by default. The live vault remains AES-256-GCM encrypted; recovery uses a separate ML-KEM-1024 (Kyber-1024 lineage) / X25519 identity so the private key kit can stay offline from encrypted backups. Nothing is uploaded.',
             style: TextStyle(color: NazaPalette.subtext, height: 1.4),
           ),
           const SizedBox(height: 9),
           _InfoRow(label: 'Recovery status', value: pqStatus),
           const _InfoRow(
+            label: 'Policy mode',
+            value: 'strict maximum hybrid; downgrade rejected',
+          ),
+          const _InfoRow(
             label: 'Recovery suite',
             value:
-                'ML-KEM-1024 + X25519 + ML-DSA-87 + HKDF-SHA512 + AES-256-GCM',
+                'ML-KEM-1024 (Kyber-1024 lineage) + X25519 + ML-DSA-87 + HKDF-SHA512 + AES-256-GCM',
           ),
           const _InfoRow(
             label: 'Recovery-key KDF',
@@ -25932,18 +26623,26 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
             ),
             const SizedBox(height: 14),
             if (_tab == 0) ...[
+              if (!advanced) ...[
+                ..._simpleChildren(),
+                const SizedBox(height: 18),
+              ],
               _FeatureSettingsGroupsCard(
                 selected: _featureGroup,
                 onSelected: (value) => setState(() => _featureGroup = value),
               ),
               const SizedBox(height: 14),
               _RemoteModelSettingsCard(feature: _featureGroup),
+              const SizedBox(height: 14),
+              const _ModelAssemblySettingsCard(),
               if (_featureGroup == NazaModelFeature.bookForge) ...[
                 const SizedBox(height: 14),
                 const _BookForgeConnectionSettingsCard(),
               ],
-              const SizedBox(height: 14),
-              ...(advanced ? _advancedChildren() : _simpleChildren()),
+              if (advanced) ...[
+                const SizedBox(height: 14),
+                ..._advancedChildren(),
+              ],
             ] else
               ..._backupChildren(),
           ],
@@ -26009,6 +26708,8 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
       const SizedBox(height: 14),
       const _SettingsSectionTitle('Vector memory / long context'),
       const _VectorMemorySettingsCard(),
+      const SizedBox(height: 14),
+      const _EmbeddingRuntimeSettingsCard(),
       const SizedBox(height: 14),
       const _SettingsSectionTitle('Model status'),
       const _ModelStatusSection(),
@@ -26147,7 +26848,7 @@ final class _FeatureSettingsGroupsCard extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          '${NazaModelFeature.values.length} feature groups · selected: ${selected.label}',
+          '${NazaModelFeature.values.length} app zones · selected: ${selected.editorialTitle} · ${selected.zone}',
           style: TextStyle(
             color: NazaPalette.mintSoft,
             fontWeight: FontWeight.w700,
@@ -26169,7 +26870,7 @@ final class _FeatureSettingsGroupsCard extends StatelessWidget {
                   onSelected: (_) => onSelected(group),
                   avatar: Icon(_featureIcon(group), size: 17),
                   label: Text(
-                    group.label,
+                    group.editorialTitle,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -26209,7 +26910,233 @@ final class _FeatureSettingsGroupsCard extends StatelessWidget {
     NazaModelFeature.memoryObservatory => Icons.hub_rounded,
     NazaModelFeature.projects => Icons.account_tree_rounded,
     NazaModelFeature.workflowBuilder => Icons.account_tree_rounded,
+    NazaModelFeature.agenticCoding => Icons.architecture_rounded,
   };
+}
+
+final class _ModelAssemblySettingsCard extends StatefulWidget {
+  const _ModelAssemblySettingsCard();
+
+  @override
+  State<_ModelAssemblySettingsCard> createState() =>
+      _ModelAssemblySettingsCardState();
+}
+
+final class _ModelAssemblySettingsCardState
+    extends State<_ModelAssemblySettingsCard> {
+  final _store = NazaModelAssemblyStore();
+  final _chunk = TextEditingController(text: '12000');
+  final _shards = TextEditingController(text: '3');
+  final _threshold = TextEditingController(text: '0.35');
+  NazaModelAssemblyConfig _config = const NazaModelAssemblyConfig();
+  List<NazaRemoteModelProfile> _profiles = const [];
+  Set<String> _selectedProfiles = <String>{};
+  bool _loading = true;
+  bool _saving = false;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _chunk.dispose();
+    _shards.dispose();
+    _threshold.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final config = await _store.load();
+      final profiles = await NazaRemoteModelCatalog().load();
+      if (!mounted) return;
+      setState(() {
+        _config = config;
+        _profiles = profiles;
+        _selectedProfiles = config.profileIds.toSet();
+        _chunk.text = config.chunkCharacters.toString();
+        _shards.text = config.maxShards.toString();
+        _threshold.text = config.entropyThreshold.toStringAsFixed(2);
+        _loading = false;
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _message = 'Unlock the encrypted vault to manage assembly: $error';
+        });
+      }
+    }
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    final config = _config.copyWith(
+      profileIds: _selectedProfiles,
+      chunkCharacters: int.tryParse(_chunk.text.trim()) ?? 12000,
+      maxShards: int.tryParse(_shards.text.trim()) ?? 3,
+      entropyThreshold: double.tryParse(_threshold.text.trim()) ?? 0.35,
+    );
+    setState(() => _saving = true);
+    try {
+      await _store.save(config);
+      if (mounted) {
+        setState(() {
+          _config = config;
+          _message = 'Assembly policy saved in the encrypted vault.';
+        });
+      }
+    } catch (error) {
+      if (mounted)
+        setState(() => _message = 'Assembly policy was not saved: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _NazaGlassCard(
+    padding: const EdgeInsets.all(16),
+    radius: 20,
+    active: _config.mode == NazaAssemblyMode.shardedAssembly,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Chunked provider assembly',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Gemma 4 E2B local is always the default. Assembly is opt-in per feature route and keeps provider keys in the encrypted vault.',
+          style: TextStyle(color: NazaPalette.subtext, height: 1.35),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final mode in NazaAssemblyMode.values)
+              ChoiceChip(
+                label: Text(switch (mode) {
+                  NazaAssemblyMode.localOnly => 'Local Gemma only',
+                  NazaAssemblyMode.singleRemote => 'One remote profile',
+                  NazaAssemblyMode.shardedAssembly => 'Multi-provider shards',
+                }),
+                selected: _config.mode == mode,
+                onSelected: _loading
+                    ? null
+                    : (_) => setState(
+                        () => _config = _config.copyWith(mode: mode),
+                      ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (_profiles.isEmpty)
+          Text(
+            'Add at least two saved provider profiles above to enable sharded assembly.',
+            style: TextStyle(color: NazaPalette.muted),
+          )
+        else ...[
+          Text(
+            'Shard participants',
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              color: NazaPalette.text,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final profile in _profiles)
+                FilterChip(
+                  label: Text(profile.displayName),
+                  selected: _selectedProfiles.contains(profile.id),
+                  onSelected: (selected) => setState(() {
+                    if (selected) {
+                      _selectedProfiles.add(profile.id);
+                    } else {
+                      _selectedProfiles.remove(profile.id);
+                    }
+                  }),
+                ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            SizedBox(
+              width: 150,
+              child: TextField(
+                controller: _chunk,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Chunk characters',
+                  helperText: '2k–40k',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 130,
+              child: TextField(
+                controller: _shards,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Max shards',
+                  helperText: '1–8',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 150,
+              child: TextField(
+                controller: _threshold,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'Entropy threshold',
+                  helperText: '0.00–1.00',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Entropy surface measures normalized vocabulary disagreement between shard results. It is a review signal, not a truth score.',
+          style: TextStyle(
+            color: NazaPalette.subtext,
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: const Icon(Icons.hub_rounded),
+          label: Text(_saving ? 'Saving…' : 'Save assembly policy'),
+        ),
+        if (_message != null) ...[
+          const SizedBox(height: 8),
+          Text(_message!, style: TextStyle(color: NazaPalette.subtext)),
+        ],
+      ],
+    ),
+  );
 }
 
 final class _RemoteModelSettingsCard extends StatefulWidget {
@@ -26226,6 +27153,7 @@ final class _RemoteModelSettingsCardState
     extends State<_RemoteModelSettingsCard> {
   final _catalog = NazaRemoteModelCatalog();
   final _routingStore = NazaModelRoutingStore();
+  final _profileIdController = TextEditingController(text: 'provider-openAi-1');
   final _model = TextEditingController(text: 'gpt-5.6-luna');
   final _endpoint = TextEditingController(
     text: 'https://api.openai.com/v1/chat/completions',
@@ -26247,6 +27175,7 @@ final class _RemoteModelSettingsCardState
 
   @override
   void dispose() {
+    _profileIdController.dispose();
     _model.dispose();
     _endpoint.dispose();
     _apiKey.dispose();
@@ -26258,9 +27187,19 @@ final class _RemoteModelSettingsCardState
       final profiles = await _catalog.load();
       final routing = await _routingStore.load();
       if (!mounted) return;
+      final firstOpenAi = profiles.where(
+        (profile) => profile.provider == NazaRemoteProvider.openAi,
+      );
       setState(() {
         _profiles = profiles;
         _routing = routing;
+        if (firstOpenAi.isNotEmpty) {
+          final profile = firstOpenAi.first;
+          _provider = profile.provider;
+          _profileIdController.text = profile.id;
+          _model.text = profile.model;
+          _endpoint.text = profile.endpoint;
+        }
         _loading = false;
       });
     } catch (error) {
@@ -26272,7 +27211,7 @@ final class _RemoteModelSettingsCardState
     }
   }
 
-  String get _profileId => 'provider-${_provider.name}';
+  String get _profileId => _profileIdController.text.trim();
 
   NazaRemoteModelProfile? get _existing {
     for (final profile in _profiles) {
@@ -26287,12 +27226,39 @@ final class _RemoteModelSettingsCardState
       _provider = provider;
       _apiKey.clear();
       if (existing.isNotEmpty) {
+        _profileIdController.text = existing.first.id;
         _model.text = existing.first.model;
         _endpoint.text = existing.first.endpoint;
       } else {
+        _profileIdController.text = 'provider-${provider.name}-1';
         final defaults = _providerDefaults(provider);
         _model.text = defaults.$1;
         _endpoint.text = defaults.$2;
+      }
+    });
+  }
+
+  void _loadProfile(String id) {
+    final profile = _profiles.where((item) => item.id == id);
+    if (profile.isEmpty) return;
+    final selected = profile.first;
+    setState(() {
+      _provider = selected.provider;
+      _profileIdController.text = selected.id;
+      _model.text = selected.model;
+      _endpoint.text = selected.endpoint;
+      _apiKey.clear();
+      _message =
+          'Loaded ${selected.displayName}. Enter a new key only if it changed.';
+    });
+  }
+
+  void _selectCatalogModel(String model) {
+    setState(() {
+      _model.text = model;
+      if (_provider == NazaRemoteProvider.gemini) {
+        _endpoint.text =
+            'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent';
       }
     });
   }
@@ -26305,6 +27271,11 @@ final class _RemoteModelSettingsCardState
     });
     try {
       final prior = _existing;
+      if (_profileId.isEmpty || _profileId.length > 100) {
+        throw const FormatException(
+          'Enter a short profile name or identifier.',
+        );
+      }
       final profile = NazaRemoteModelProfile(
         id: _profileId,
         provider: _provider,
@@ -26356,6 +27327,27 @@ final class _RemoteModelSettingsCardState
     }
   }
 
+  Future<void> _setDefaultRoute(String id) async {
+    final next = NazaModelRoutingConfig(
+      defaultProfileId: id == NazaModelRoutingStore.localProfileId ? null : id,
+      featureProfiles: _routing.featureProfiles,
+    );
+    try {
+      await _routingStore.save(next);
+      if (mounted) {
+        setState(() {
+          _routing = next;
+          _message = id == NazaModelRoutingStore.localProfileId
+              ? 'Local Gemma restored as the global default.'
+              : 'Global provider fallback saved for apps without an override.';
+        });
+      }
+    } catch (error) {
+      if (mounted)
+        setState(() => _message = 'Global route was not saved: $error');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // A profile may have been removed from the vault since routing was saved.
@@ -26369,6 +27361,11 @@ final class _RemoteModelSettingsCardState
     final selected = configured != null && knownProfileIds.contains(configured)
         ? configured
         : NazaModelRoutingStore.localProfileId;
+    final globalDefault =
+        _routing.defaultProfileId != null &&
+            knownProfileIds.contains(_routing.defaultProfileId)
+        ? _routing.defaultProfileId!
+        : NazaModelRoutingStore.localProfileId;
     return _NazaGlassCard(
       padding: const EdgeInsets.all(16),
       radius: 20,
@@ -26377,7 +27374,7 @@ final class _RemoteModelSettingsCardState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${widget.feature.label} model',
+            '${widget.feature.editorialTitle} model',
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 4),
@@ -26411,10 +27408,71 @@ final class _RemoteModelSettingsCardState
                     if (value != null) unawaited(_setRoute(value));
                   },
           ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            key: ValueKey('default-route-$globalDefault'),
+            initialValue: globalDefault,
+            decoration: const InputDecoration(
+              labelText: 'Global default for all apps',
+              helperText:
+                  'Local Gemma stays selected until you explicitly change this.',
+              prefixIcon: Icon(Icons.public_rounded),
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              const DropdownMenuItem(
+                value: NazaModelRoutingStore.localProfileId,
+                child: Text('Gemma 4 E2B · local and private'),
+              ),
+              for (final profile in _profiles)
+                DropdownMenuItem(
+                  value: profile.id,
+                  child: Text(profile.displayName),
+                ),
+            ],
+            onChanged: _loading
+                ? null
+                : (value) {
+                    if (value != null) unawaited(_setDefaultRoute(value));
+                  },
+          ),
           const Divider(height: 28),
           const Text(
             'Remote provider vault',
             style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            initialValue: _profiles.any((profile) => profile.id == _profileId)
+                ? _profileId
+                : null,
+            decoration: const InputDecoration(
+              labelText: 'Saved provider profile',
+              helperText:
+                  'Create multiple profiles to use multiple keys from one provider.',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              for (final profile in _profiles)
+                DropdownMenuItem(
+                  value: profile.id,
+                  child: Text('${profile.displayName} · ${profile.id}'),
+                ),
+            ],
+            onChanged: _saving
+                ? null
+                : (value) {
+                    if (value != null) _loadProfile(value);
+                  },
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _profileIdController,
+            decoration: const InputDecoration(
+              labelText: 'Profile name / ID',
+              helperText: 'Use a distinct ID for every API key or shard.',
+              border: OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 10),
           DropdownButtonFormField<NazaRemoteProvider>(
@@ -26445,6 +27503,27 @@ final class _RemoteModelSettingsCardState
               border: OutlineInputBorder(),
             ),
           ),
+          if (NazaProviderModelCatalog.forProvider(_provider).isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Provider model catalog · tap to use',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final model in NazaProviderModelCatalog.forProvider(
+                  _provider,
+                ))
+                  ActionChip(
+                    label: Text(model),
+                    onPressed: () => _selectCatalogModel(model),
+                  ),
+              ],
+            ),
+          ],
           const SizedBox(height: 10),
           TextField(
             controller: _endpoint,
@@ -26494,7 +27573,7 @@ final class _RemoteModelSettingsCardState
       'https://api.openai.com/v1/chat/completions',
     ),
     NazaRemoteProvider.anthropic => (
-      'claude-sonnet-4-5',
+      'claude-sonnet-4-0',
       'https://api.anthropic.com/v1/messages',
     ),
     NazaRemoteProvider.gemini => (
@@ -26505,7 +27584,10 @@ final class _RemoteModelSettingsCardState
       'llama-3.3-70b-instruct',
       'https://inference.do-ai.run/v1/chat/completions',
     ),
-    NazaRemoteProvider.meta => ('', 'https://'),
+    NazaRemoteProvider.meta => (
+      'muse-spark-1.2',
+      'https://api.meta.ai/v1/chat/completions',
+    ),
     NazaRemoteProvider.custom => ('', 'https://'),
   };
 }

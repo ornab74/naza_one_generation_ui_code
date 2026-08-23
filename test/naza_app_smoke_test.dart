@@ -341,7 +341,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('Food More workspace inherits the selected app theme', (
+  testWidgets('Bake Lab workspace inherits the selected app theme', (
     tester,
   ) async {
     final previousTheme = NazaThemeStore.selectedId.value;
@@ -354,7 +354,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byTooltip('View and configure all features'));
     await tester.pump();
-    await tester.tap(find.text('Food More'));
+    await tester.tap(find.text('Bake Lab'));
     await tester.pump(const Duration(milliseconds: 300));
 
     final kitchenContext = tester.element(find.byType(Scaffold).last);
