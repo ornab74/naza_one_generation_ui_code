@@ -1046,7 +1046,8 @@ final class NazaAgenticPolicyEngine {
         request.permissions.any(
           (permission) => permission.requiresNetworkApproval,
         ) ||
-        request.node.kind == NazaExecutionTargetKind.remoteSsh;
+        request.node.kind == NazaExecutionTargetKind.remoteSsh ||
+        request.modelMode != NazaAgenticModelMode.localGemma;
     if (mutationRequested && !request.mutationApproved) {
       approvals.add('Approve patch/check capabilities for this run.');
     }

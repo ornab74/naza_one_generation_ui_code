@@ -15,7 +15,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import '../model/sentinel_model_runtime.dart';
+import '../security/probabilistic_harm_filter.dart';
 import 'agentic_runtime.dart';
+import 'code_workbench.dart';
+import 'collaboration_queue.dart';
+import 'ipfs_chatrooms.dart';
+import 'remote_operations.dart';
 
 typedef NazaAgenticTaskRunner =
     Future<NazaAgenticRunResult> Function(NazaAgenticTaskRequest request);
@@ -27,6 +33,11 @@ class NazaAgenticCodingSurface extends StatefulWidget {
     required this.runTask,
     this.pickImage,
     this.store,
+    this.operationsStore,
+    this.collaborationStore,
+    this.chatRoomStore,
+    this.kuboSettingsStore,
+    this.harmGate,
     this.collector = const NazaRepositoryContextCollector(),
     this.initialConfig,
     this.persistState = true,
@@ -35,6 +46,11 @@ class NazaAgenticCodingSurface extends StatefulWidget {
   final NazaAgenticTaskRunner runTask;
   final NazaAgenticImagePicker? pickImage;
   final NazaAgenticWorkspaceStore? store;
+  final NazaRemoteOperationsStore? operationsStore;
+  final NazaCollaborationQueueStore? collaborationStore;
+  final NazaIpfsChatRoomStore? chatRoomStore;
+  final NazaKuboSettingsStore? kuboSettingsStore;
+  final NazaHarmGate? harmGate;
   final NazaRepositoryContextCollector collector;
   final NazaAgenticWorkspaceConfig? initialConfig;
   final bool persistState;
@@ -57,6 +73,11 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
   static const Color _subtext = Color(0xFFA8BDB5);
 
   late final NazaAgenticWorkspaceStore _store;
+  late final NazaRemoteOperationsStore _operationsStore;
+  late final NazaCollaborationQueueStore _collaborationStore;
+  late final NazaIpfsChatRoomStore _chatRoomStore;
+  late final NazaKuboSettingsStore _kuboSettingsStore;
+  late final NazaHarmGate _harmGate;
   late NazaAgenticWorkspaceConfig _config;
   final TextEditingController _taskController = TextEditingController(
     text:
@@ -77,17 +98,139 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
   String _status = 'Initializing the secure workbench';
   String? _error;
   NazaAgenticPolicyDecision? _lastPolicy;
+  final Map<String, String> _nodeStates = <String, String>{};
+  List<NazaRemoteOperationRequest> _operations =
+      const <NazaRemoteOperationRequest>[];
+  List<NazaCollaborationPool> _collaborationPools =
+      const <NazaCollaborationPool>[];
+  List<NazaQueuedEdit> _queuedEdits = const <NazaQueuedEdit>[];
+  List<NazaAgentEnvelope> _agentEnvelopes = const <NazaAgentEnvelope>[];
+  List<NazaChatRoom> _chatRooms = const <NazaChatRoom>[];
+  final Map<String, NazaChatRoomMonitorSnapshot> _chatMonitors =
+      <String, NazaChatRoomMonitorSnapshot>{};
+  final Map<String, List<NazaChatMessageEnvelope>> _chatMessages =
+      <String, List<NazaChatMessageEnvelope>>{};
+  NazaKuboNodeSettings _kuboSettings = NazaKuboNodeSettings.defaults;
 
   @override
   void initState() {
     super.initState();
+    _harmGate = widget.harmGate ?? NazaSentinelGuard.instance.gate;
     _store = widget.store ?? NazaAgenticWorkspaceStore();
+    _operationsStore =
+        widget.operationsStore ??
+        NazaRemoteOperationsStore(harmGate: _harmGate);
+    _collaborationStore =
+        widget.collaborationStore ?? NazaCollaborationQueueStore();
+    _chatRoomStore = widget.chatRoomStore ?? NazaIpfsChatRoomStore();
+    _kuboSettingsStore = widget.kuboSettingsStore ?? NazaKuboSettingsStore();
     _config = widget.initialConfig ?? const NazaAgenticWorkspaceConfig();
     if (widget.persistState) {
       unawaited(_loadConfig());
+      unawaited(_loadOperations());
+      unawaited(_loadCollaboration());
+      unawaited(_loadChatRooms());
+      unawaited(_loadKuboSettings());
     } else {
       _loading = false;
       _status = 'Local planning boundary ready';
+    }
+  }
+
+  Future<void> _loadOperations() async {
+    try {
+      final loaded = await _operationsStore.load();
+      if (!mounted) return;
+      setState(() => _operations = loaded);
+    } catch (_) {
+      // A locked vault must not prevent the visual workbench from opening.
+      // The UI will label new requests as ephemeral if persistence fails.
+    }
+  }
+
+  Future<void> _loadCollaboration() async {
+    try {
+      final pools = await _collaborationStore.loadPools();
+      final active = pools.where(
+        (pool) => pool.state == NazaCollaborationPoolState.active,
+      );
+      final pool = active.isEmpty ? null : active.first;
+      final edits = pool == null
+          ? const <NazaQueuedEdit>[]
+          : await _collaborationStore.loadEdits(pool.id);
+      final envelopes = pool == null
+          ? const <NazaAgentEnvelope>[]
+          : await _collaborationStore.loadEnvelopes(pool.id);
+      if (!mounted) return;
+      setState(() {
+        _collaborationPools = pools;
+        _queuedEdits = edits;
+        _agentEnvelopes = envelopes;
+      });
+    } catch (_) {
+      // A locked vault does not prevent local planning; the panel reports the
+      // persistence boundary when a new queue request is staged.
+    }
+  }
+
+  Future<void> _loadChatRooms() async {
+    try {
+      final rooms = await _chatRoomStore.loadRooms();
+      final monitors = <String, NazaChatRoomMonitorSnapshot>{};
+      final messages = <String, List<NazaChatMessageEnvelope>>{};
+      for (final room in rooms) {
+        final monitor = await _chatRoomStore.loadMonitor(room.id);
+        final roomMessages = await _chatRoomStore.loadMessages(room.id);
+        if (monitor != null) monitors[room.id] = monitor;
+        messages[room.id] = roomMessages;
+      }
+      if (!mounted) return;
+      setState(() {
+        _chatRooms = rooms;
+        _chatMonitors
+          ..clear()
+          ..addAll(monitors);
+        _chatMessages
+          ..clear()
+          ..addAll(messages);
+      });
+    } catch (_) {
+      // The surface remains usable while the encrypted vault is locked.
+    }
+  }
+
+  Future<void> _loadKuboSettings() async {
+    try {
+      final settings = await _kuboSettingsStore.load();
+      if (!mounted) return;
+      setState(() => _kuboSettings = settings);
+    } catch (_) {
+      // Disabled defaults remain safe if the vault is unavailable.
+    }
+  }
+
+  Future<void> _appendRemoteOperation(
+    NazaRemoteOperationRequest request,
+  ) async {
+    final next = <NazaRemoteOperationRequest>[..._operations, request];
+    setState(() {
+      _operations = next.length <= NazaRemoteOperationsStore.maxRequests
+          ? List<NazaRemoteOperationRequest>.unmodifiable(next)
+          : List<NazaRemoteOperationRequest>.unmodifiable(
+              next.sublist(next.length - NazaRemoteOperationsStore.maxRequests),
+            );
+      _error = null;
+      _status = '${request.kind.label} request sealed · awaiting approval';
+    });
+    if (!widget.persistState) return;
+    try {
+      await _operationsStore.append(request);
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _status =
+            '${request.kind.label} request staged locally · unlock vault to persist',
+      );
     }
   }
 
@@ -544,6 +687,7 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
     );
     if (confirmed != true) return;
     try {
+      await _requestNodeAction(node, 'delete');
       if (node.hasCredential) await _store.deleteSshPrivateKey(node.id);
       if (!mounted) return;
       _updateConfig(
@@ -554,6 +698,1719 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
       );
     } catch (error) {
       if (mounted) setState(() => _error = 'Could not remove node: $error');
+    }
+  }
+
+  Future<void> _requestNodeAction(
+    NazaAgenticNodeProfile node,
+    String action,
+  ) async {
+    if (_running) return;
+    final kind = switch (action) {
+      'start' => NazaRemoteOperationKind.nodeStart,
+      'stop' => NazaRemoteOperationKind.nodeStop,
+      'delete' => NazaRemoteOperationKind.nodeDelete,
+      _ => null,
+    };
+    if (kind == null) return;
+    final request = NazaRemoteOperationRequest.nodeAction(
+      id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+      nodeId: node.id,
+      kind: kind,
+      label: node.name,
+    );
+    setState(() {
+      _nodeStates[node.id] = '$action requested · approval boundary';
+    });
+    await _appendRemoteOperation(request);
+  }
+
+  Future<void> _requestEnvironment() async {
+    final provider = TextEditingController(text: 'DigitalOcean');
+    final name = TextEditingController(text: 'naza-agentic-sandbox');
+    final region = TextEditingController(text: 'nyc3');
+    final size = TextEditingController(text: 's-1vcpu-2gb');
+    final image = TextEditingController(text: 'ubuntu-24-04-x64');
+    final sshKeys = TextEditingController();
+    final tags = TextEditingController(text: 'naza-agentic,ephemeral');
+    final host = TextEditingController();
+    var backups = false;
+    var publicNetworking = false;
+    final request = await showDialog<(NazaDigitalOceanDropletPlan, String?)?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel,
+        title: const Text(
+          'Request agentic environment',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+        ),
+        content: StatefulBuilder(
+          builder: (context, setDialogState) => SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _dialogField(provider, 'Provider adapter (DigitalOcean)'),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(child: _dialogField(name, 'Droplet name')),
+                      const SizedBox(width: 10),
+                      Expanded(child: _dialogField(region, 'Region slug')),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(child: _dialogField(size, 'Size slug')),
+                      const SizedBox(width: 10),
+                      Expanded(child: _dialogField(image, 'Image slug / ID')),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(
+                    sshKeys,
+                    'SSH key IDs / fingerprints (comma-separated)',
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(tags, 'Tags (comma-separated)'),
+                  const SizedBox(height: 10),
+                  _dialogField(
+                    host,
+                    'IP / hostname (optional until provisioned)',
+                  ),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Automated backups',
+                      style: TextStyle(color: _text),
+                    ),
+                    value: backups,
+                    activeTrackColor: _mint,
+                    onChanged: (value) => setDialogState(() => backups = value),
+                  ),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Public networking',
+                      style: TextStyle(color: _text),
+                    ),
+                    subtitle: const Text(
+                      'Off by default; turn on only for an approved adapter that needs public ingress/egress.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: publicNetworking,
+                    activeTrackColor: _rose,
+                    onChanged: (value) =>
+                        setDialogState(() => publicNetworking = value),
+                  ),
+                  const Text(
+                    'This creates a sealed DigitalOcean plan only. The API token is resolved by a separate adapter and a fresh approval is required before POST /v2/droplets.',
+                    style: TextStyle(color: _subtext, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (provider.text.trim().toLowerCase() != 'digitalocean') {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Only the DigitalOcean adapter is enabled in this control plane.',
+                    ),
+                  ),
+                );
+                return;
+              }
+              try {
+                final plan = NazaDigitalOceanDropletPlan(
+                  name: name.text,
+                  region: region.text,
+                  size: size.text,
+                  image: image.text,
+                  sshKeyRefs: sshKeys.text
+                      .split(',')
+                      .map((value) => value.trim())
+                      .where((value) => value.isNotEmpty)
+                      .toList(growable: false),
+                  tags: tags.text
+                      .split(',')
+                      .map((value) => value.trim())
+                      .where((value) => value.isNotEmpty)
+                      .toList(growable: false),
+                  backups: backups,
+                  publicNetworking: publicNetworking,
+                );
+                final errors = plan.validate();
+                if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+                Navigator.pop(dialogContext, (plan, host.text));
+              } catch (error) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(error.toString())));
+              }
+            },
+            child: const Text('Seal request'),
+          ),
+        ],
+      ),
+    );
+    provider.dispose();
+    name.dispose();
+    region.dispose();
+    size.dispose();
+    sshKeys.dispose();
+    tags.dispose();
+    host.dispose();
+    image.dispose();
+    if (request == null || !mounted) return;
+    final operation = NazaRemoteOperationRequest.digitalOcean(
+      id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+      plan: request.$1,
+      host: request.$2,
+    );
+    await _appendRemoteOperation(operation);
+  }
+
+  Future<void> _requestChromiumScrape() async {
+    final url = TextEditingController(text: 'https://example.org');
+    final domains = TextEditingController(text: 'example.org');
+    final workerNode = TextEditingController();
+    final image = TextEditingController(
+      text: 'ghcr.io/ornab74/scraper-chrome-docker@sha256:',
+    );
+    final pages = TextEditingController(text: '10');
+    final output = TextEditingController(text: 'jsonl');
+    final request = await showDialog<NazaChromiumScrapePlan?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel,
+        title: const Text(
+          'Request Chromium scrape worker',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+        ),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _dialogField(url, 'HTTPS target URL'),
+                const SizedBox(height: 10),
+                _dialogField(
+                  domains,
+                  'Allowed domains (comma-separated; no wildcards)',
+                ),
+                const SizedBox(height: 10),
+                _dialogField(
+                  workerNode,
+                  'DigitalOcean scraper droplet node ID (optional until assigned)',
+                ),
+                const SizedBox(height: 10),
+                _dialogField(
+                  image,
+                  'Pinned Chromium image@sha256:<64 hex>',
+                  monospace: true,
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(child: _dialogField(pages, 'Max pages')),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: output.text,
+                        dropdownColor: _panel,
+                        style: const TextStyle(color: _text),
+                        decoration: const InputDecoration(
+                          labelText: 'Output format',
+                          labelStyle: TextStyle(color: _subtext),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'jsonl',
+                            child: Text('JSONL'),
+                          ),
+                          DropdownMenuItem(value: 'json', child: Text('JSON')),
+                          DropdownMenuItem(
+                            value: 'markdown',
+                            child: Text('Markdown'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'text',
+                            child: Text('Plain text'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) output.text = value;
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'The worker receives an explicit HTTPS/domain allowlist and robots-respect policy. Cookies and arbitrary commands are excluded. Network capability still requires approval before dispatch.',
+                  style: TextStyle(color: _subtext, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              try {
+                final plan = NazaChromiumScrapePlan(
+                  targetUrl: url.text,
+                  allowedDomains: domains.text
+                      .split(',')
+                      .map((value) => value.trim().toLowerCase())
+                      .where((value) => value.isNotEmpty)
+                      .toList(growable: false),
+                  workerNodeId: workerNode.text.trim().isEmpty
+                      ? null
+                      : workerNode.text.trim(),
+                  image: image.text,
+                  maxPages: int.tryParse(pages.text) ?? 0,
+                  outputFormat: output.text.trim().toLowerCase(),
+                );
+                final errors = plan.validate();
+                if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+                Navigator.pop(dialogContext, plan);
+              } catch (error) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(error.toString())));
+              }
+            },
+            child: const Text('Seal scrape request'),
+          ),
+        ],
+      ),
+    );
+    url.dispose();
+    domains.dispose();
+    workerNode.dispose();
+    image.dispose();
+    pages.dispose();
+    output.dispose();
+    if (request == null || !mounted) return;
+    await _appendRemoteOperation(
+      NazaRemoteOperationRequest.chromiumScrape(
+        id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+        plan: request,
+      ),
+    );
+  }
+
+  Future<void> _requestIpfsPublish() async {
+    final cid = TextEditingController();
+    final label = TextEditingController(
+      text: 'Agentic public-information bundle',
+    );
+    final peers = TextEditingController();
+    var publiclyDiscoverable = false;
+    var publicExposureApproved = false;
+    var encryptedPayload = true;
+    final request = await showDialog<NazaIpfsPublicationPlan?>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: _panel,
+          title: const Text(
+            'Request IPFS publication',
+            style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+          ),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _dialogField(
+                    cid,
+                    'Existing CID (content is never copied into history)',
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(label, 'Publication label'),
+                  const SizedBox(height: 10),
+                  _dialogField(peers, 'Trusted peer IDs (comma-separated)'),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Encrypted payload',
+                      style: TextStyle(color: _text),
+                    ),
+                    value: encryptedPayload,
+                    activeTrackColor: _mint,
+                    onChanged: (value) =>
+                        setDialogState(() => encryptedPayload = value),
+                  ),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Publicly discoverable',
+                      style: TextStyle(color: _text),
+                    ),
+                    subtitle: const Text(
+                      'Off by default; public exposure cannot be implied by an agent.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: publiclyDiscoverable,
+                    activeTrackColor: _rose,
+                    onChanged: (value) =>
+                        setDialogState(() => publiclyDiscoverable = value),
+                  ),
+                  if (publiclyDiscoverable)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        'I approve public IPFS exposure for this CID',
+                        style: TextStyle(color: _text, fontSize: 13),
+                      ),
+                      value: publicExposureApproved,
+                      activeColor: _rose,
+                      onChanged: (value) => setDialogState(
+                        () => publicExposureApproved = value == true,
+                      ),
+                    ),
+                  const Text(
+                    'This is a pin/publication request, not an upload. A trusted IPFS adapter must verify the CID and peer policy before any network action.',
+                    style: TextStyle(color: _subtext, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                try {
+                  final plan = NazaIpfsPublicationPlan(
+                    contentCid: cid.text,
+                    label: label.text,
+                    peerIds: peers.text
+                        .split(',')
+                        .map((value) => value.trim())
+                        .where((value) => value.isNotEmpty)
+                        .toList(growable: false),
+                    publiclyDiscoverable: publiclyDiscoverable,
+                    publicExposureApproved: publicExposureApproved,
+                    encryptedPayload: encryptedPayload,
+                  );
+                  final errors = plan.validate();
+                  if (errors.isNotEmpty)
+                    throw FormatException(errors.join(' '));
+                  Navigator.pop(dialogContext, plan);
+                } catch (error) {
+                  ScaffoldMessenger.of(
+                    this.context,
+                  ).showSnackBar(SnackBar(content: Text(error.toString())));
+                }
+              },
+              child: const Text('Seal IPFS request'),
+            ),
+          ],
+        ),
+      ),
+    );
+    cid.dispose();
+    label.dispose();
+    peers.dispose();
+    if (request == null || !mounted) return;
+    await _appendRemoteOperation(
+      NazaRemoteOperationRequest.ipfsPublish(
+        id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+        plan: request,
+      ),
+    );
+  }
+
+  Future<void> _requestScrapeExport() async {
+    final source = TextEditingController();
+    final relay = TextEditingController(text: 'do-ipfs-relay-1');
+    final format = TextEditingController(text: 'jsonl');
+    final maxBytes = TextEditingController(text: '${64 * 1024 * 1024}');
+    var destination = NazaScrapeExportDestination.localIpfs;
+    var publiclyDiscoverable = false;
+    var publicExposureApproved = false;
+    final values =
+        await showDialog<
+          (
+            String,
+            NazaScrapeExportDestination,
+            String,
+            String,
+            String,
+            bool,
+            bool,
+          )?
+        >(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+              backgroundColor: _panel,
+              title: const Text(
+                'Export scrape result to encrypted IPFS',
+                style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+              ),
+              content: SizedBox(
+                width: 580,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _dialogField(
+                        source,
+                        'Chromium scrape request ID (for example op-...)',
+                        monospace: true,
+                      ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<NazaScrapeExportDestination>(
+                        initialValue: destination,
+                        dropdownColor: _panel,
+                        style: const TextStyle(color: _text),
+                        decoration: const InputDecoration(
+                          labelText: 'IPFS destination',
+                          labelStyle: TextStyle(color: _subtext),
+                        ),
+                        items: [
+                          for (final item in NazaScrapeExportDestination.values)
+                            DropdownMenuItem(
+                              value: item,
+                              child: Text(item.label),
+                            ),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() => destination = value);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      if (destination ==
+                          NazaScrapeExportDestination.digitalOceanIpfs) ...[
+                        _dialogField(
+                          relay,
+                          'DigitalOcean IPFS relay node ID',
+                          monospace: true,
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _dialogField(
+                              format,
+                              'Format: jsonl/json/markdown/text',
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _dialogField(
+                              maxBytes,
+                              'Max bytes',
+                              monospace: true,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      const ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(Icons.lock_rounded, color: _mint),
+                        title: Text(
+                          'Encrypted payload is mandatory',
+                          style: TextStyle(color: _text, fontSize: 13),
+                        ),
+                        subtitle: Text(
+                          'Only the encrypted result CID and adapter references enter the operation history.',
+                          style: TextStyle(color: _subtext, fontSize: 11),
+                        ),
+                      ),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text(
+                          'Public CID discovery',
+                          style: TextStyle(color: _text),
+                        ),
+                        subtitle: const Text(
+                          'Off by default. Public discovery never makes the scraped payload public, but it does expose the encrypted CID.',
+                          style: TextStyle(color: _subtext, fontSize: 11),
+                        ),
+                        value: publiclyDiscoverable,
+                        activeTrackColor: _rose,
+                        onChanged: (value) =>
+                            setDialogState(() => publiclyDiscoverable = value),
+                      ),
+                      if (publiclyDiscoverable)
+                        CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text(
+                            'I approve public CID discovery',
+                            style: TextStyle(color: _text, fontSize: 13),
+                          ),
+                          value: publicExposureApproved,
+                          activeColor: _rose,
+                          onChanged: (value) => setDialogState(
+                            () => publicExposureApproved = value == true,
+                          ),
+                        ),
+                      const Text(
+                        'The export adapter must read the approved scrape artifact, encrypt it, enforce the byte limit, pin it to local Kubo or the selected DigitalOcean relay, and return a CID. No page content is copied into this UI queue.',
+                        style: TextStyle(color: _subtext, height: 1.4),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    try {
+                      final plan = NazaScrapeExportPlan(
+                        scrapeRequestId: source.text,
+                        destination: destination,
+                        format: format.text.trim().toLowerCase(),
+                        relayNodeId:
+                            destination ==
+                                NazaScrapeExportDestination.digitalOceanIpfs
+                            ? relay.text.trim()
+                            : null,
+                        publiclyDiscoverable: publiclyDiscoverable,
+                        publicExposureApproved: publicExposureApproved,
+                        maxBytes: int.tryParse(maxBytes.text) ?? 0,
+                      );
+                      final errors = plan.validate();
+                      if (errors.isNotEmpty)
+                        throw FormatException(errors.join(' '));
+                      Navigator.pop(dialogContext, (
+                        source.text,
+                        destination,
+                        format.text.trim().toLowerCase(),
+                        destination ==
+                                NazaScrapeExportDestination.digitalOceanIpfs
+                            ? relay.text.trim()
+                            : '',
+                        maxBytes.text,
+                        publiclyDiscoverable,
+                        publicExposureApproved,
+                      ));
+                    } catch (error) {
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text(error.toString())));
+                    }
+                  },
+                  child: const Text('Seal export request'),
+                ),
+              ],
+            ),
+          ),
+        );
+    source.dispose();
+    relay.dispose();
+    format.dispose();
+    maxBytes.dispose();
+    if (values == null || !mounted) return;
+    final sourceExists = _operations.any(
+      (operation) =>
+          operation.id == values.$1 &&
+          operation.kind == NazaRemoteOperationKind.chromiumScrape,
+    );
+    if (!sourceExists) {
+      setState(
+        () => _error =
+            'Export source must be an existing Chromium scrape request in this queue.',
+      );
+      return;
+    }
+    final plan = NazaScrapeExportPlan(
+      scrapeRequestId: values.$1,
+      destination: values.$2,
+      format: values.$3,
+      relayNodeId: values.$4.trim().isEmpty ? null : values.$4,
+      maxBytes: int.tryParse(values.$5) ?? 0,
+      publiclyDiscoverable: values.$6,
+      publicExposureApproved: values.$7,
+    );
+    await _appendRemoteOperation(
+      NazaRemoteOperationRequest.scrapeExport(
+        id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+        plan: plan,
+      ),
+    );
+  }
+
+  Future<void> _requestDigitalOceanAction() async {
+    final dropletId = TextEditingController();
+    final label = TextEditingController(
+      text: 'DigitalOcean scraper / IPFS node',
+    );
+    var action = NazaRemoteOperationKind.digitalOceanDropletStart;
+    var deleteConfirmed = false;
+    final values = await showDialog<(String, String, NazaRemoteOperationKind, bool)?>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: _panel,
+          title: const Text(
+            'Manage DigitalOcean droplet node',
+            style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+          ),
+          content: SizedBox(
+            width: 560,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _dialogField(dropletId, 'Droplet ID', monospace: true),
+                const SizedBox(height: 10),
+                _dialogField(label, 'Node label'),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<NazaRemoteOperationKind>(
+                  initialValue: action,
+                  dropdownColor: _panel,
+                  style: const TextStyle(color: _text),
+                  decoration: const InputDecoration(
+                    labelText: 'Approved action',
+                    labelStyle: TextStyle(color: _subtext),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: NazaRemoteOperationKind.digitalOceanDropletStart,
+                      child: Text('Start node'),
+                    ),
+                    DropdownMenuItem(
+                      value: NazaRemoteOperationKind.digitalOceanDropletStop,
+                      child: Text('Stop node'),
+                    ),
+                    DropdownMenuItem(
+                      value: NazaRemoteOperationKind.digitalOceanDropletDelete,
+                      child: Text('Delete node'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setDialogState(() => action = value);
+                  },
+                ),
+                if (action == NazaRemoteOperationKind.digitalOceanDropletDelete)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'I understand deletion is irreversible',
+                      style: TextStyle(color: _text, fontSize: 13),
+                    ),
+                    subtitle: const Text(
+                      'The queue will require a second approval boundary; no DELETE request is made by this UI.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: deleteConfirmed,
+                    activeColor: _rose,
+                    onChanged: (value) =>
+                        setDialogState(() => deleteConfirmed = value == true),
+                  ),
+                const SizedBox(height: 10),
+                const Text(
+                  'The operation stores only the droplet reference. Provider credentials and SSH material remain in the encrypted credential boundary and are resolved only by an attested adapter after approval.',
+                  style: TextStyle(color: _subtext, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor:
+                    action == NazaRemoteOperationKind.digitalOceanDropletDelete
+                    ? _rose
+                    : _cyan,
+              ),
+              onPressed: () {
+                if (action ==
+                        NazaRemoteOperationKind.digitalOceanDropletDelete &&
+                    !deleteConfirmed) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Confirm irreversible deletion first.'),
+                    ),
+                  );
+                  return;
+                }
+                try {
+                  _validNodeReferenceForDialog(dropletId.text);
+                  if (label.text.trim().isEmpty) {
+                    throw const FormatException('Node label is required.');
+                  }
+                  Navigator.pop(dialogContext, (
+                    dropletId.text.trim(),
+                    label.text.trim(),
+                    action,
+                    deleteConfirmed,
+                  ));
+                } catch (error) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text(error.toString())));
+                }
+              },
+              child: Text(
+                action == NazaRemoteOperationKind.digitalOceanDropletDelete
+                    ? 'Queue delete'
+                    : 'Queue action',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    dropletId.dispose();
+    label.dispose();
+    if (values == null || !mounted) return;
+    await _appendRemoteOperation(
+      NazaRemoteOperationRequest.digitalOceanAction(
+        id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+        dropletId: values.$1,
+        action: values.$3,
+        label: values.$2,
+      ),
+    );
+  }
+
+  Future<void> _cancelRemoteOperation(
+    NazaRemoteOperationRequest operation,
+  ) async {
+    final cancelled = operation.copyWith(
+      state: NazaRemoteOperationState.cancelled,
+    );
+    setState(() {
+      _operations = List<NazaRemoteOperationRequest>.unmodifiable(
+        _operations.map((item) => item.id == operation.id ? cancelled : item),
+      );
+      _status = '${operation.kind.label} request cancelled locally';
+    });
+    if (widget.persistState) {
+      try {
+        await _operationsStore.update(cancelled);
+      } catch (_) {
+        if (mounted) {
+          setState(
+            () => _status = 'Cancellation staged locally · vault unavailable',
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _approveRemoteOperation(
+    NazaRemoteOperationRequest operation,
+  ) async {
+    final approved = operation.copyWith(
+      state: NazaRemoteOperationState.approved,
+    );
+    try {
+      if (widget.persistState) {
+        await _operationsStore.update(approved);
+      } else {
+        await _harmGate.requireAllowed(operation.kind.sentinelCommandName);
+      }
+      if (!mounted) return;
+      setState(() {
+        _operations = List<NazaRemoteOperationRequest>.unmodifiable(
+          _operations.map((item) => item.id == operation.id ? approved : item),
+        );
+        _error = null;
+        _status =
+            '${operation.kind.label} passed harm filter · trusted adapter still required';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error is NazaHarmDeniedException
+            ? '${operation.kind.label} denied by the core safety sentinel (${error.decision.risk.label}).'
+            : '${operation.kind.label} approval failed closed: $error';
+        _status = 'Remote operation remains awaiting approval';
+      });
+    }
+  }
+
+  NazaCollaborationPool? get _activeCollaborationPool {
+    for (final pool in _collaborationPools) {
+      if (pool.state == NazaCollaborationPoolState.active) return pool;
+    }
+    return null;
+  }
+
+  Future<void> _createCollaborationPool() async {
+    final name = TextEditingController(text: 'MMO coding pool');
+    final fingerprint = TextEditingController(
+      text: _repository?.fingerprint ?? '',
+    );
+    final peers = TextEditingController(text: 'local-only');
+    final concurrency = TextEditingController(text: '4');
+    final values = await showDialog<(String, String, String, int)?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel,
+        title: const Text(
+          'Create cooperative edit pool',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+        ),
+        content: SizedBox(
+          width: 560,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _dialogField(name, 'Pool name'),
+              const SizedBox(height: 10),
+              _dialogField(
+                fingerprint,
+                'Workspace base fingerprint (sha256:…)',
+                monospace: true,
+              ),
+              const SizedBox(height: 10),
+              _dialogField(peers, 'IPFS / node peer group label'),
+              const SizedBox(height: 10),
+              _dialogField(concurrency, 'Max concurrent edit claims'),
+              const SizedBox(height: 10),
+              const Text(
+                'Agents claim relative file sectors against this immutable base. Only encrypted CID references and signed-receipt references move between nodes.',
+                style: TextStyle(color: _subtext, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, (
+              name.text,
+              fingerprint.text,
+              peers.text,
+              int.tryParse(concurrency.text) ?? 0,
+            )),
+            child: const Text('Seal pool'),
+          ),
+        ],
+      ),
+    );
+    name.dispose();
+    fingerprint.dispose();
+    peers.dispose();
+    concurrency.dispose();
+    if (values == null || !mounted) return;
+    try {
+      final pool = NazaCollaborationPool(
+        id: 'pool-${DateTime.now().microsecondsSinceEpoch}',
+        name: values.$1,
+        workspaceFingerprint: values.$2,
+        peerGroup: values.$3,
+        maxConcurrentEdits: values.$4,
+        createdAt: DateTime.now().toUtc(),
+      );
+      final errors = pool.validate();
+      if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+      if (widget.persistState) await _collaborationStore.savePool(pool);
+      setState(() {
+        _collaborationPools = <NazaCollaborationPool>[
+          ..._collaborationPools,
+          pool,
+        ];
+        _status = 'Cooperative pool sealed · ${pool.bondSuite}';
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not seal edit pool: $error');
+    }
+  }
+
+  Future<void> _enqueueCollaborativeEdit() async {
+    final pool = _activeCollaborationPool;
+    if (pool == null) {
+      setState(() => _status = 'Create an active cooperative pool first');
+      return;
+    }
+    final path = TextEditingController();
+    final sector = TextEditingController(text: 'whole-file');
+    final goal = TextEditingController();
+    final base = TextEditingController(text: pool.workspaceFingerprint);
+    final dependencies = TextEditingController();
+    final values = await showDialog<(String, String, String, String, String)?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel,
+        title: const Text(
+          'Queue a cooperative edit',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+        ),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _dialogField(
+                  path,
+                  'Relative file path (no .. or absolute paths)',
+                  monospace: true,
+                ),
+                const SizedBox(height: 10),
+                _dialogField(sector, 'File sector / symbol zone'),
+                const SizedBox(height: 10),
+                _dialogField(goal, 'Bounded edit goal'),
+                const SizedBox(height: 10),
+                _dialogField(base, 'Base fingerprint', monospace: true),
+                const SizedBox(height: 10),
+                _dialogField(
+                  dependencies,
+                  'Dependency edit IDs (comma-separated)',
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'This queues intent, not source text. The claiming agent must re-check the base fingerprint, produce a signed receipt, and enter review before merge.',
+                  style: TextStyle(color: _subtext, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, (
+              path.text,
+              sector.text,
+              goal.text,
+              base.text,
+              dependencies.text,
+            )),
+            child: const Text('Queue edit'),
+          ),
+        ],
+      ),
+    );
+    path.dispose();
+    sector.dispose();
+    goal.dispose();
+    base.dispose();
+    dependencies.dispose();
+    if (values == null || !mounted) return;
+    try {
+      final edit = NazaQueuedEdit(
+        id: 'edit-${DateTime.now().microsecondsSinceEpoch}',
+        poolId: pool.id,
+        relativePath: values.$1,
+        sector: values.$2,
+        goal: values.$3,
+        baseFingerprint: values.$4,
+        dependencies: values.$5
+            .split(',')
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toList(growable: false),
+        createdAt: DateTime.now().toUtc(),
+      );
+      final errors = edit.validate();
+      if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+      if (widget.persistState) await _collaborationStore.enqueueEdit(edit);
+      setState(() {
+        _queuedEdits = <NazaQueuedEdit>[..._queuedEdits, edit];
+        _status = 'Edit queued · waiting for an agent claim';
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not queue edit: $error');
+    }
+  }
+
+  Future<void> _postAgentEnvelope() async {
+    final pool = _activeCollaborationPool;
+    if (pool == null) {
+      setState(() => _status = 'Create an active cooperative pool first');
+      return;
+    }
+    final cid = TextEditingController();
+    final sender = TextEditingController();
+    final signature = TextEditingController();
+    final recipient = TextEditingController();
+    final editId = TextEditingController();
+    final values = await showDialog<(String, String, String, String, String)?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel,
+        title: const Text(
+          'Queue encrypted agent handoff',
+          style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+        ),
+        content: SizedBox(
+          width: 560,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _dialogField(
+                cid,
+                'Ciphertext CID (message body never stored here)',
+              ),
+              const SizedBox(height: 10),
+              _dialogField(sender, 'Sender bond public-key ID'),
+              const SizedBox(height: 10),
+              _dialogField(signature, 'Signature public-key ID'),
+              const SizedBox(height: 10),
+              _dialogField(
+                recipient,
+                'Recipient bond public-key ID (optional)',
+              ),
+              const SizedBox(height: 10),
+              _dialogField(editId, 'Edit ID (optional)'),
+              const SizedBox(height: 10),
+              const Text(
+                'The node adapter must perform ML-KEM/X25519 envelope encryption and ML-DSA receipt verification. This queue only coordinates references.',
+                style: TextStyle(color: _subtext, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, (
+              cid.text,
+              sender.text,
+              signature.text,
+              recipient.text,
+              editId.text,
+            )),
+            child: const Text('Queue handoff'),
+          ),
+        ],
+      ),
+    );
+    cid.dispose();
+    sender.dispose();
+    signature.dispose();
+    recipient.dispose();
+    editId.dispose();
+    if (values == null || !mounted) return;
+    try {
+      final envelope = NazaAgentEnvelope(
+        id: 'msg-${DateTime.now().microsecondsSinceEpoch}',
+        poolId: pool.id,
+        kind: NazaAgentEnvelopeKind.handoff,
+        senderBondKeyId: values.$2,
+        ciphertextCid: values.$1,
+        signatureKeyId: values.$3,
+        recipientBondKeyId: values.$4.trim().isEmpty ? null : values.$4,
+        editId: values.$5.trim().isEmpty ? null : values.$5,
+        sequence: _agentEnvelopes.length,
+        createdAt: DateTime.now().toUtc(),
+      );
+      final errors = envelope.validate();
+      if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+      if (widget.persistState) await _collaborationStore.postEnvelope(envelope);
+      setState(() {
+        _agentEnvelopes = <NazaAgentEnvelope>[..._agentEnvelopes, envelope];
+        _status = 'Encrypted handoff reference queued · ${pool.peerGroup}';
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not queue handoff: $error');
+    }
+  }
+
+  NazaChatRoom? get _activeChatRoom {
+    for (final room in _chatRooms) {
+      if (room.state == NazaChatRoomState.active) return room;
+    }
+    return null;
+  }
+
+  Future<void> _createChatRoom() async {
+    final name = TextEditingController(text: 'Encrypted human room');
+    final topic = TextEditingController(text: 'naza-chat/v1/human-room');
+    final peers = TextEditingController(text: 'local-only');
+    final relay = TextEditingController();
+    var kind = NazaChatRoomKind.human;
+    var publicDiscovery = false;
+    var publicExposureApproved = false;
+    final room = await showDialog<NazaChatRoom?>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: _panel,
+          title: const Text(
+            'Create encrypted IPFS chatroom',
+            style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+          ),
+          content: SizedBox(
+            width: 580,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SegmentedButton<NazaChatRoomKind>(
+                    segments: const [
+                      ButtonSegment(
+                        value: NazaChatRoomKind.human,
+                        label: Text('Human room'),
+                        icon: Icon(Icons.people_alt_rounded),
+                      ),
+                      ButtonSegment(
+                        value: NazaChatRoomKind.agent,
+                        label: Text('Agent room'),
+                        icon: Icon(Icons.smart_toy_rounded),
+                      ),
+                    ],
+                    selected: <NazaChatRoomKind>{kind},
+                    onSelectionChanged: (value) =>
+                        setDialogState(() => kind = value.first),
+                  ),
+                  const SizedBox(height: 12),
+                  _dialogField(name, 'Room name'),
+                  const SizedBox(height: 10),
+                  _dialogField(topic, 'IPFS PubSub topic', monospace: true),
+                  const SizedBox(height: 10),
+                  _dialogField(peers, 'Trusted peer group'),
+                  const SizedBox(height: 10),
+                  _dialogField(relay, 'DigitalOcean relay node ID (optional)'),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Publicly discoverable room',
+                      style: TextStyle(color: _text),
+                    ),
+                    subtitle: const Text(
+                      'Off by default; private rooms still use encrypted IPFS envelopes.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: publicDiscovery,
+                    activeTrackColor: _rose,
+                    onChanged: (value) => setDialogState(() {
+                      publicDiscovery = value;
+                      if (!value) publicExposureApproved = false;
+                    }),
+                  ),
+                  if (publicDiscovery)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        'I approve public room discovery',
+                        style: TextStyle(color: _text, fontSize: 13),
+                      ),
+                      value: publicExposureApproved,
+                      activeColor: _rose,
+                      onChanged: (value) => setDialogState(
+                        () => publicExposureApproved = value == true,
+                      ),
+                    ),
+                  const Text(
+                    'Kubo PubSub is transport only: messages are encrypted before publishing, and the Kubo RPC port must remain private to the adapter. IPFS PubSub is not treated as durable history; encrypted CIDs provide replayable history.',
+                    style: TextStyle(color: _subtext, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                try {
+                  final next = NazaChatRoom(
+                    id: 'room-${DateTime.now().microsecondsSinceEpoch}',
+                    name: name.text,
+                    kind: kind,
+                    topic: topic.text,
+                    peerGroup: peers.text,
+                    relayNodeId: relay.text.trim().isEmpty ? null : relay.text,
+                    publicDiscovery: publicDiscovery,
+                    publicExposureApproved: publicExposureApproved,
+                    createdAt: DateTime.now().toUtc(),
+                  );
+                  final errors = next.validate();
+                  if (errors.isNotEmpty)
+                    throw FormatException(errors.join(' '));
+                  Navigator.pop(dialogContext, next);
+                } catch (error) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text(error.toString())));
+                }
+              },
+              child: const Text('Seal chatroom'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    topic.dispose();
+    peers.dispose();
+    relay.dispose();
+    if (room == null || !mounted) return;
+    try {
+      final monitor = NazaChatRoomMonitorSnapshot(
+        roomId: room.id,
+        linkState: NazaIpfsChatLinkState.offline,
+        observedAt: DateTime.now().toUtc(),
+        lastError: 'No IPFS adapter attached; no network probe performed.',
+      );
+      if (widget.persistState) {
+        await _chatRoomStore.saveRoom(room);
+        await _chatRoomStore.saveMonitor(monitor);
+      }
+      setState(() {
+        _chatRooms = <NazaChatRoom>[..._chatRooms, room];
+        _chatMonitors[room.id] = monitor;
+        _chatMessages[room.id] = const <NazaChatMessageEnvelope>[];
+        _status = '${room.kind.label} sealed · IPFS adapter pending';
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not save chatroom: $error');
+    }
+  }
+
+  Future<void> _queueChatEnvelope() async {
+    final room = _activeChatRoom;
+    if (room == null) {
+      setState(() => _status = 'Create an active human or agent room first');
+      return;
+    }
+    final cid = TextEditingController();
+    final sender = TextEditingController();
+    final aad = TextEditingController();
+    final signature = TextEditingController();
+    final replyTo = TextEditingController();
+    final attachments = TextEditingController();
+    final values =
+        await showDialog<(String, String, String, String, String, String)?>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: _panel,
+            title: Text(
+              'Queue sealed ${room.kind.label.toLowerCase()} envelope',
+              style: const TextStyle(color: _text, fontWeight: FontWeight.w800),
+            ),
+            content: SizedBox(
+              width: 580,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _dialogField(cid, 'Encrypted message CID'),
+                    const SizedBox(height: 10),
+                    _dialogField(
+                      sender,
+                      'Sender identity / bond public-key ID',
+                    ),
+                    const SizedBox(height: 10),
+                    _dialogField(
+                      aad,
+                      'AAD digest sha256:<hex>',
+                      monospace: true,
+                    ),
+                    const SizedBox(height: 10),
+                    _dialogField(signature, 'Signature public-key ID'),
+                    const SizedBox(height: 10),
+                    _dialogField(replyTo, 'Reply envelope ID (optional)'),
+                    const SizedBox(height: 10),
+                    _dialogField(
+                      attachments,
+                      'Encrypted attachment CIDs (comma-separated)',
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Plaintext is intentionally absent from this form. A PQ chat adapter seals the message and pins the ciphertext before this envelope is admitted to room history.',
+                      style: TextStyle(color: _subtext, height: 1.4),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, (
+                  cid.text,
+                  sender.text,
+                  aad.text,
+                  signature.text,
+                  replyTo.text,
+                  attachments.text,
+                )),
+                child: const Text('Queue envelope'),
+              ),
+            ],
+          ),
+        );
+    cid.dispose();
+    sender.dispose();
+    aad.dispose();
+    signature.dispose();
+    replyTo.dispose();
+    attachments.dispose();
+    if (values == null || !mounted) return;
+    try {
+      final envelope = NazaChatMessageEnvelope(
+        id: 'chat-${DateTime.now().microsecondsSinceEpoch}',
+        roomId: room.id,
+        senderId: values.$2,
+        senderKind: room.kind,
+        ciphertextCid: values.$1,
+        aadDigest: values.$3,
+        signatureKeyId: values.$4,
+        sequence: _chatMessages[room.id]?.length ?? 0,
+        replyTo: values.$5.trim().isEmpty ? null : values.$5,
+        attachmentCids: values.$6
+            .split(',')
+            .map((value) => value.trim())
+            .where((value) => value.isNotEmpty)
+            .toList(growable: false),
+        createdAt: DateTime.now().toUtc(),
+      );
+      final errors = envelope.validate();
+      if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+      if (widget.persistState) await _chatRoomStore.appendMessage(envelope);
+      setState(() {
+        final current =
+            _chatMessages[room.id] ?? const <NazaChatMessageEnvelope>[];
+        _chatMessages[room.id] = <NazaChatMessageEnvelope>[
+          ...current,
+          envelope,
+        ];
+        _status = '${room.kind.label} envelope queued · ciphertext only';
+      });
+    } catch (error) {
+      if (mounted)
+        setState(() => _error = 'Could not queue chat envelope: $error');
+    }
+  }
+
+  Future<void> _recordChatMonitorBoundary(NazaChatRoom room) async {
+    final monitor = NazaChatRoomMonitorSnapshot(
+      roomId: room.id,
+      linkState: NazaIpfsChatLinkState.offline,
+      connectedPeers: 0,
+      subscribed: false,
+      backlog: _chatMessages[room.id]?.length ?? 0,
+      relayNodeId: room.relayNodeId,
+      observedAt: DateTime.now().toUtc(),
+      lastError: 'Adapter probe not installed; no Kubo RPC call was made.',
+    );
+    if (widget.persistState) {
+      try {
+        await _chatRoomStore.saveMonitor(monitor);
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    setState(() {
+      _chatMonitors[room.id] = monitor;
+      _status = '${room.name}: monitor boundary recorded';
+    });
+  }
+
+  Future<void> _requestIpfsRelay() async {
+    final name = TextEditingController(text: 'naza-ipfs-chat-relay');
+    final region = TextEditingController(text: 'nyc3');
+    final size = TextEditingController(text: 's-2vcpu-4gb');
+    final image = TextEditingController(text: 'ubuntu-24-04-x64');
+    final peerGroup = TextEditingController(text: 'agentic-mesh');
+    var publicNetworking = false;
+    final values = await showDialog<(String, String, String, String, String, bool)?>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: _panel,
+          title: const Text(
+            'Request DigitalOcean IPFS relay',
+            style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+          ),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _dialogField(name, 'Droplet name'),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(child: _dialogField(region, 'Region')),
+                      const SizedBox(width: 10),
+                      Expanded(child: _dialogField(size, 'Size')),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(image, 'Base image slug / ID'),
+                  const SizedBox(height: 10),
+                  _dialogField(peerGroup, 'IPFS peer group tag'),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Public swarm networking',
+                      style: TextStyle(color: _text),
+                    ),
+                    subtitle: const Text(
+                      'Off by default. A relay adapter must expose only the swarm path it needs; Kubo RPC stays private.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: publicNetworking,
+                    activeTrackColor: _rose,
+                    onChanged: (value) =>
+                        setDialogState(() => publicNetworking = value),
+                  ),
+                  const Text(
+                    'This queues a DigitalOcean droplet plan with IPFS relay intent. Kubo installation, firewalling, key exchange, and health probes require a separately attested adapter.',
+                    style: TextStyle(color: _subtext, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, (
+                name.text,
+                region.text,
+                size.text,
+                image.text,
+                peerGroup.text,
+                publicNetworking,
+              )),
+              child: const Text('Seal relay request'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    region.dispose();
+    size.dispose();
+    image.dispose();
+    peerGroup.dispose();
+    if (values == null || !mounted) return;
+    try {
+      final plan = NazaDigitalOceanDropletPlan(
+        name: values.$1,
+        region: values.$2,
+        size: values.$3,
+        image: values.$4,
+        publicNetworking: values.$6,
+        tags: <String>['naza-ipfs-relay', values.$5],
+        workspacePurpose: 'ipfs-relay',
+      );
+      final errors = plan.validate();
+      if (errors.isNotEmpty) throw FormatException(errors.join(' '));
+      await _appendRemoteOperation(
+        NazaRemoteOperationRequest.digitalOcean(
+          id: 'op-${DateTime.now().microsecondsSinceEpoch}',
+          plan: plan,
+        ),
+      );
+    } catch (error) {
+      if (mounted)
+        setState(() => _error = 'Could not queue IPFS relay: $error');
+    }
+  }
+
+  Future<void> _setKuboEnabled(bool enabled) async {
+    final next = _kuboSettings.copyWith(enabled: enabled);
+    final errors = next.validate();
+    if (errors.isNotEmpty) {
+      setState(() => _error = errors.join(' '));
+      return;
+    }
+    if (widget.persistState) {
+      try {
+        await _kuboSettingsStore.save(next);
+      } catch (error) {
+        if (mounted)
+          setState(() => _error = 'Could not persist Kubo setting: $error');
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _kuboSettings = next;
+      _status = enabled
+          ? 'Kubo backend enabled · client starts only on explicit room dispatch'
+          : 'Kubo backend disabled · no client or socket loaded';
+    });
+  }
+
+  Future<void> _configureKubo() async {
+    final api = TextEditingController(text: _kuboSettings.apiBaseUrl);
+    final gateway = TextEditingController(text: _kuboSettings.gatewayBaseUrl);
+    final binary = TextEditingController(text: _kuboSettings.binaryPath);
+    final remote = TextEditingController(
+      text: _kuboSettings.remoteNodeId ?? '',
+    );
+    var serverProfile = _kuboSettings.serverProfile;
+    var pubSubEnabled = _kuboSettings.pubSubEnabled;
+    final values = await showDialog<(String, String, String, String, bool, bool)?>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: _panel,
+          title: const Text(
+            'Configure Dart / Kubo backend',
+            style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+          ),
+          content: SizedBox(
+            width: 580,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _dialogField(
+                    api,
+                    'Kubo RPC endpoint (loopback/tunnel only)',
+                    monospace: true,
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(
+                    gateway,
+                    'Kubo gateway endpoint (loopback/tunnel only)',
+                    monospace: true,
+                  ),
+                  const SizedBox(height: 10),
+                  _dialogField(binary, 'Go/Kubo binary path', monospace: true),
+                  const SizedBox(height: 10),
+                  _dialogField(remote, 'Remote node ID (optional)'),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Use Kubo server profile',
+                      style: TextStyle(color: _text),
+                    ),
+                    subtitle: const Text(
+                      'Recommended for cloud/VPS nodes; the app does not start the daemon.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: serverProfile,
+                    activeTrackColor: _mint,
+                    onChanged: (value) =>
+                        setDialogState(() => serverProfile = value),
+                  ),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Enable Kubo PubSub transport',
+                      style: TextStyle(color: _text),
+                    ),
+                    subtitle: const Text(
+                      'PubSub is experimental; durable history remains encrypted CID storage.',
+                      style: TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                    value: pubSubEnabled,
+                    activeTrackColor: _cyan,
+                    onChanged: (value) =>
+                        setDialogState(() => pubSubEnabled = value),
+                  ),
+                  const Text(
+                    'Strict boundary: Kubo RPC is an administrative API and must not be exposed publicly. Use a loopback endpoint or a separately secured SSH tunnel to a DigitalOcean relay.',
+                    style: TextStyle(color: _subtext, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, (
+                api.text,
+                gateway.text,
+                binary.text,
+                remote.text,
+                serverProfile,
+                pubSubEnabled,
+              )),
+              child: const Text('Save Kubo settings'),
+            ),
+          ],
+        ),
+      ),
+    );
+    api.dispose();
+    gateway.dispose();
+    binary.dispose();
+    remote.dispose();
+    if (values == null || !mounted) return;
+    final next = _kuboSettings.copyWith(
+      apiBaseUrl: values.$1,
+      gatewayBaseUrl: values.$2,
+      binaryPath: values.$3,
+      remoteNodeId: values.$4.trim().isEmpty ? null : values.$4,
+      clearRemoteNodeId: values.$4.trim().isEmpty,
+      serverProfile: values.$5,
+      pubSubEnabled: values.$6,
+    );
+    final errors = next.validate();
+    if (errors.isNotEmpty) {
+      setState(() => _error = errors.join(' '));
+      return;
+    }
+    try {
+      if (widget.persistState) await _kuboSettingsStore.save(next);
+      if (!mounted) return;
+      setState(() {
+        _kuboSettings = next;
+        _status = 'Kubo settings sealed · enabled remains ${next.enabled}';
+      });
+    } catch (error) {
+      if (mounted)
+        setState(() => _error = 'Could not save Kubo settings: $error');
+    }
+  }
+
+  void _validNodeReferenceForDialog(String value) {
+    if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{1,95}$').hasMatch(value.trim())) {
+      throw const FormatException('Enter a valid droplet or node ID.');
     }
   }
 
@@ -664,6 +2521,7 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
                     color: _rose,
                     title: 'Policy / runtime notice',
                     message: _error!,
+                    onDismiss: () => setState(() => _error = null),
                   ),
                 ],
                 if (_lastPolicy?.warnings.isNotEmpty == true) ...[
@@ -678,7 +2536,15 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
                 if (_result != null) ...[
                   const SizedBox(height: 18),
                   _buildResult(_result!),
+                  const SizedBox(height: 18),
+                  const NazaCodeWorkbench(),
                 ],
+                const SizedBox(height: 18),
+                _buildRemoteOperations(),
+                const SizedBox(height: 18),
+                _buildCollaborationQueues(),
+                const SizedBox(height: 18),
+                _buildIpfsChatrooms(),
               ],
             ),
           ),
@@ -827,6 +2693,14 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
       ),
       child: Column(
         children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: _running ? null : _requestEnvironment,
+              icon: const Icon(Icons.rocket_launch_rounded, size: 17),
+              label: const Text('Request environment'),
+            ),
+          ),
           for (final node in _config.nodes)
             _NodeTile(
               node: node,
@@ -840,6 +2714,9 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
               onRemove: node.kind == NazaExecutionTargetKind.remoteSsh
                   ? () => _removeRemoteNode(node)
                   : null,
+              state: _nodeStates[node.id],
+              onStart: () => _requestNodeAction(node, 'start'),
+              onStop: () => _requestNodeAction(node, 'stop'),
             ),
         ],
       ),
@@ -930,6 +2807,409 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
                 : (value) =>
                       _updateConfig(_config.copyWith(memoryEnabled: value)),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRemoteOperations() {
+    final recent = _operations.reversed.take(6).toList(growable: false);
+    final awaiting = _operations
+        .where(
+          (operation) =>
+              operation.state == NazaRemoteOperationState.awaitingApproval,
+        )
+        .length;
+    final approved = _operations
+        .where(
+          (operation) => operation.state == NazaRemoteOperationState.approved,
+        )
+        .length;
+    final failed = _operations
+        .where(
+          (operation) => operation.state == NazaRemoteOperationState.failed,
+        )
+        .length;
+    return _FoundrySection(
+      icon: Icons.public_rounded,
+      title: 'Remote operations control plane',
+      subtitle:
+          'Compose bounded DigitalOcean, Chromium, and IPFS intents. Every network or mutation action stays queued until a trusted adapter and fresh approval exist.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              _StatusBadge('AWAITING $awaiting', _amber),
+              _StatusBadge('APPROVED $approved', _mint),
+              _StatusBadge('FAILED $failed', failed == 0 ? _subtext : _rose),
+            ],
+          ),
+          const SizedBox(height: 11),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const ValueKey<String>('request-digitalocean-environment'),
+                onPressed: _running ? null : _requestEnvironment,
+                icon: const Icon(Icons.cloud_queue_rounded, size: 17),
+                label: const Text('DigitalOcean droplet'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('request-chromium-scrape'),
+                onPressed: _running ? null : _requestChromiumScrape,
+                icon: const Icon(Icons.travel_explore_rounded, size: 17),
+                label: const Text('Chromium scrape'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('request-ipfs-publish'),
+                onPressed: _running ? null : _requestIpfsPublish,
+                icon: const Icon(Icons.hub_outlined, size: 17),
+                label: const Text('IPFS publish'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('request-scrape-ipfs-export'),
+                onPressed: _running ? null : _requestScrapeExport,
+                icon: const Icon(Icons.output_rounded, size: 17),
+                label: const Text('Scrape → IPFS'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('manage-digitalocean-droplet'),
+                onPressed: _running ? null : _requestDigitalOceanAction,
+                icon: const Icon(Icons.settings_ethernet_rounded, size: 17),
+                label: const Text('Manage DO droplet'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (recent.isEmpty)
+            const _EvidenceAction(
+              icon: Icons.lock_clock_rounded,
+              color: _cyan,
+              title: 'No remote requests sealed',
+              subtitle:
+                  'The queue is empty. Operation history stores plans and references only—not tokens, keys, cookies, commands, or scraped content.',
+              actionLabel: 'SEALED',
+            )
+          else ...[
+            const _MicroLabel('RECENT REQUEST QUEUE'),
+            const SizedBox(height: 8),
+            for (final operation in recent)
+              _RemoteOperationTile(
+                operation: operation,
+                onApprove:
+                    operation.state == NazaRemoteOperationState.awaitingApproval
+                    ? () => _approveRemoteOperation(operation)
+                    : null,
+                onCancel:
+                    operation.state ==
+                            NazaRemoteOperationState.awaitingApproval ||
+                        operation.state == NazaRemoteOperationState.approved
+                    ? () => _cancelRemoteOperation(operation)
+                    : null,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollaborationQueues() {
+    final pool = _activeCollaborationPool;
+    final edits = _queuedEdits.reversed.take(5).toList(growable: false);
+    return _FoundrySection(
+      icon: Icons.groups_2_rounded,
+      title: 'MMO coding collaboration queues',
+      subtitle:
+          'Turn a large goal into non-overlapping file-sector claims. Agents exchange encrypted handoff references through the selected node/IPFS peer group and return signed receipts for review.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const ValueKey<String>('create-collaboration-pool'),
+                onPressed: _running ? null : _createCollaborationPool,
+                icon: const Icon(Icons.add_chart_rounded, size: 17),
+                label: const Text('Create pool'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('queue-collaborative-edit'),
+                onPressed: _running ? null : _enqueueCollaborativeEdit,
+                icon: const Icon(Icons.playlist_add_rounded, size: 17),
+                label: const Text('Queue edit'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('queue-agent-handoff'),
+                onPressed: _running ? null : _postAgentEnvelope,
+                icon: const Icon(Icons.swap_horiz_rounded, size: 17),
+                label: const Text('Agent handoff'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (pool == null)
+            const _EvidenceAction(
+              icon: Icons.account_tree_outlined,
+              color: _violet,
+              title: 'No active collaboration pool',
+              subtitle:
+                  'Create a pool with a workspace fingerprint before agents can claim edits or exchange envelopes.',
+              actionLabel: 'WAITING',
+            )
+          else ...[
+            Container(
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: _ink.withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(13),
+                border: Border.all(color: _violet.withValues(alpha: 0.42)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.hub_rounded, color: _violet, size: 20),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      '${pool.name} · ${pool.peerGroup} · max ${pool.maxConcurrentEdits} claims · ${pool.bondSuite}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: _subtext, fontSize: 11),
+                    ),
+                  ),
+                  _TinyState(pool.state.label, _mint),
+                ],
+              ),
+            ),
+            const SizedBox(height: 9),
+            if (edits.isEmpty)
+              const Text(
+                'No edit claims yet. Queue the first bounded file-sector task.',
+                style: TextStyle(color: _subtext, fontSize: 11),
+              )
+            else
+              for (final edit in edits)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 9),
+                    tileColor: _ink.withValues(alpha: 0.68),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(11),
+                      side: const BorderSide(color: _border),
+                    ),
+                    leading: const Icon(
+                      Icons.code_rounded,
+                      color: _cyan,
+                      size: 19,
+                    ),
+                    title: Text(
+                      '${edit.relativePath} · ${edit.sector}',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _text,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      edit.goal,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: _subtext, fontSize: 10),
+                    ),
+                    trailing: _TinyState(edit.state.label, _cyan),
+                  ),
+                ),
+            Text(
+              '${_agentEnvelopes.length} encrypted handoff reference${_agentEnvelopes.length == 1 ? '' : 's'} queued · source payloads remain outside the queue',
+              style: const TextStyle(color: _subtext, fontSize: 10.5),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIpfsChatrooms() {
+    final activeRoom = _activeChatRoom;
+    return _FoundrySection(
+      icon: Icons.forum_rounded,
+      title: 'Encrypted IPFS chatroom monitor',
+      subtitle:
+          'Human and agent rooms use separate room identities, encrypted CID envelopes, PQ bond references, and observational peer health.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(11),
+            decoration: BoxDecoration(
+              color: _ink.withValues(alpha: 0.72),
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(
+                color: _kuboSettings.enabled ? _mint : _border,
+              ),
+            ),
+            child: Column(
+              children: [
+                SwitchListTile.adaptive(
+                  key: const ValueKey<String>('enable-kubo-backend'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text(
+                    'Enable Dart / Go Kubo backend',
+                    style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: Text(
+                    _kuboSettings.enabled
+                        ? 'Enabled · client is created only when an approved room dispatches.'
+                        : 'Disabled by default · no Kubo client, process, socket, or RPC call is loaded.',
+                    style: const TextStyle(color: _subtext, fontSize: 11),
+                  ),
+                  value: _kuboSettings.enabled,
+                  activeTrackColor: _mint,
+                  onChanged: _running ? null : _setKuboEnabled,
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${_kuboSettings.apiBaseUrl} · ${_kuboSettings.pubSubEnabled ? 'PubSub configured' : 'PubSub off'}',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _subtext,
+                          fontSize: 10,
+                          fontFamily: 'JetBrainsMono',
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _running ? null : _configureKubo,
+                      icon: const Icon(Icons.tune_rounded, size: 16),
+                      label: const Text('Configure'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 11),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const ValueKey<String>('create-ipfs-chatroom'),
+                onPressed: _running ? null : _createChatRoom,
+                icon: const Icon(Icons.forum_outlined, size: 17),
+                label: const Text('Create room'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('queue-ipfs-envelope'),
+                onPressed: _running ? null : _queueChatEnvelope,
+                icon: const Icon(Icons.lock_rounded, size: 17),
+                label: const Text('Queue sealed message'),
+              ),
+              OutlinedButton.icon(
+                key: const ValueKey<String>('request-ipfs-relay'),
+                onPressed: _running ? null : _requestIpfsRelay,
+                icon: const Icon(Icons.cloud_sync_rounded, size: 17),
+                label: const Text('DO relay'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 11),
+          if (_chatRooms.isEmpty)
+            const _EvidenceAction(
+              icon: Icons.forum_outlined,
+              color: _cyan,
+              title: 'No chatrooms sealed',
+              subtitle:
+                  'Create a human or agent room. The monitor begins offline and only an approved Kubo adapter can move it online.',
+              actionLabel: 'PRIVATE',
+            )
+          else
+            for (final room in _chatRooms)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 7),
+                child: Container(
+                  padding: const EdgeInsets.all(11),
+                  decoration: BoxDecoration(
+                    color: _ink.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(color: _border),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        room.kind == NazaChatRoomKind.human
+                            ? Icons.people_alt_rounded
+                            : Icons.smart_toy_rounded,
+                        color: room.kind == NazaChatRoomKind.human
+                            ? _cyan
+                            : _violet,
+                        size: 19,
+                      ),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${room.name} · ${room.kind.label}',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _text,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              '${room.peerGroup} · ${_chatMessages[room.id]?.length ?? 0} ciphertext envelopes · ${room.publicDiscovery ? 'public-approved' : 'private'}',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _subtext,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      _TinyState(
+                        (_chatMonitors[room.id]?.linkState ??
+                                NazaIpfsChatLinkState.offline)
+                            .label,
+                        _chatMonitors[room.id]?.linkState ==
+                                NazaIpfsChatLinkState.online
+                            ? _mint
+                            : _amber,
+                      ),
+                      IconButton(
+                        tooltip: 'Record adapter monitor boundary',
+                        onPressed: _running
+                            ? null
+                            : () => _recordChatMonitorBoundary(room),
+                        icon: const Icon(
+                          Icons.monitor_heart_outlined,
+                          size: 18,
+                        ),
+                        color: _subtext,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          if (activeRoom != null)
+            Text(
+              'Active room: ${activeRoom.name} · topic ${activeRoom.topic} · Kubo RPC remains ${_kuboSettings.enabled ? 'opt-in and adapter-gated' : 'disabled'}',
+              style: const TextStyle(color: _subtext, fontSize: 10.5),
+            ),
         ],
       ),
     );
@@ -1578,6 +3858,145 @@ class _SelectionTile extends StatelessWidget {
   }
 }
 
+class _RemoteOperationTile extends StatelessWidget {
+  const _RemoteOperationTile({
+    required this.operation,
+    this.onApprove,
+    this.onCancel,
+  });
+
+  final NazaRemoteOperationRequest operation;
+  final VoidCallback? onApprove;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (operation.kind) {
+      NazaRemoteOperationKind.digitalOceanDroplet =>
+        _NazaAgenticCodingSurfaceState._cyan,
+      NazaRemoteOperationKind.chromiumScrape =>
+        _NazaAgenticCodingSurfaceState._violet,
+      NazaRemoteOperationKind.ipfsPublish ||
+      NazaRemoteOperationKind.ipfsFetch => _NazaAgenticCodingSurfaceState._mint,
+      NazaRemoteOperationKind.scrapeExportIpfs =>
+        _NazaAgenticCodingSurfaceState._mint,
+      NazaRemoteOperationKind.nodeDelete ||
+      NazaRemoteOperationKind.digitalOceanDropletDelete =>
+        _NazaAgenticCodingSurfaceState._rose,
+      NazaRemoteOperationKind.nodeStart ||
+      NazaRemoteOperationKind.digitalOceanDropletStart =>
+        _NazaAgenticCodingSurfaceState._mint,
+      NazaRemoteOperationKind.nodeStop ||
+      NazaRemoteOperationKind.digitalOceanDropletStop =>
+        _NazaAgenticCodingSurfaceState._amber,
+    };
+    final detail = switch (operation.kind) {
+      NazaRemoteOperationKind.digitalOceanDroplet =>
+        '${operation.droplet!.region} · ${operation.droplet!.size} · ${operation.droplet!.image}',
+      NazaRemoteOperationKind.chromiumScrape =>
+        '${operation.scrape!.targetUrl} · ${operation.scrape!.maxPages} pages · ${operation.scrape!.outputFormat}${operation.scrape!.workerNodeId == null ? '' : ' · worker ${operation.scrape!.workerNodeId}'}',
+      NazaRemoteOperationKind.ipfsPublish ||
+      NazaRemoteOperationKind.ipfsFetch =>
+        '${operation.ipfs!.contentCid} · ${operation.ipfs!.peerIds.length} trusted peers · ${operation.ipfs!.publiclyDiscoverable ? 'public' : 'private'}',
+      NazaRemoteOperationKind.scrapeExportIpfs =>
+        '${operation.scrapeExport!.destination.label} · source ${operation.scrapeExport!.scrapeRequestId} · ${operation.scrapeExport!.format} · ${_NazaAgenticCodingSurfaceState._formatBytes(operation.scrapeExport!.maxBytes)}',
+      NazaRemoteOperationKind.nodeStart ||
+      NazaRemoteOperationKind.nodeStop ||
+      NazaRemoteOperationKind.nodeDelete ||
+      NazaRemoteOperationKind.digitalOceanDropletStart ||
+      NazaRemoteOperationKind.digitalOceanDropletStop ||
+      NazaRemoteOperationKind.digitalOceanDropletDelete =>
+        'node ${operation.nodeId ?? 'unknown'}',
+    };
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Container(
+        padding: const EdgeInsets.all(11),
+        decoration: BoxDecoration(
+          color: _NazaAgenticCodingSurfaceState._ink.withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(13),
+          border: Border.all(color: color.withValues(alpha: 0.42)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              switch (operation.kind) {
+                NazaRemoteOperationKind.digitalOceanDroplet =>
+                  Icons.cloud_queue_rounded,
+                NazaRemoteOperationKind.chromiumScrape =>
+                  Icons.travel_explore_rounded,
+                NazaRemoteOperationKind.ipfsPublish ||
+                NazaRemoteOperationKind.ipfsFetch => Icons.hub_outlined,
+                NazaRemoteOperationKind.scrapeExportIpfs =>
+                  Icons.output_rounded,
+                NazaRemoteOperationKind.nodeStart ||
+                NazaRemoteOperationKind.digitalOceanDropletStart =>
+                  Icons.play_arrow_rounded,
+                NazaRemoteOperationKind.nodeStop ||
+                NazaRemoteOperationKind.digitalOceanDropletStop =>
+                  Icons.stop_rounded,
+                NazaRemoteOperationKind.nodeDelete ||
+                NazaRemoteOperationKind.digitalOceanDropletDelete =>
+                  Icons.delete_forever_rounded,
+              },
+              color: color,
+              size: 19,
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${operation.kind.label} · ${operation.label}',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: _NazaAgenticCodingSurfaceState._text,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      _TinyState(operation.state.label, color),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    detail,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _NazaAgenticCodingSurfaceState._subtext,
+                      fontSize: 10.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (onApprove != null)
+              IconButton(
+                tooltip: 'Approve request for trusted adapter',
+                onPressed: onApprove,
+                icon: const Icon(Icons.verified_rounded, size: 18),
+                color: _NazaAgenticCodingSurfaceState._mint,
+              ),
+            if (onCancel != null)
+              IconButton(
+                tooltip: 'Cancel request',
+                onPressed: onCancel,
+                icon: const Icon(Icons.close_rounded, size: 18),
+                color: _NazaAgenticCodingSurfaceState._subtext,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _NodeTile extends StatelessWidget {
   const _NodeTile({
     required this.node,
@@ -1585,6 +4004,9 @@ class _NodeTile extends StatelessWidget {
     this.onSelect,
     this.onConfigure,
     this.onRemove,
+    this.state,
+    this.onStart,
+    this.onStop,
   });
 
   final NazaAgenticNodeProfile node;
@@ -1592,6 +4014,9 @@ class _NodeTile extends StatelessWidget {
   final VoidCallback? onSelect;
   final VoidCallback? onConfigure;
   final VoidCallback? onRemove;
+  final String? state;
+  final VoidCallback? onStart;
+  final VoidCallback? onStop;
 
   @override
   Widget build(BuildContext context) {
@@ -1680,7 +4105,7 @@ class _NodeTile extends StatelessWidget {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        detail,
+                        state == null ? detail : '$detail · $state',
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -1708,6 +4133,26 @@ class _NodeTile extends StatelessWidget {
                     icon: const Icon(
                       Icons.delete_outline_rounded,
                       color: _NazaAgenticCodingSurfaceState._rose,
+                      size: 19,
+                    ),
+                  ),
+                if (onStart != null)
+                  IconButton(
+                    tooltip: 'Request start',
+                    onPressed: onStart,
+                    icon: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: _NazaAgenticCodingSurfaceState._mint,
+                      size: 19,
+                    ),
+                  ),
+                if (onStop != null)
+                  IconButton(
+                    tooltip: 'Request stop',
+                    onPressed: onStop,
+                    icon: const Icon(
+                      Icons.stop_rounded,
+                      color: _NazaAgenticCodingSurfaceState._amber,
                       size: 19,
                     ),
                   ),
@@ -1879,12 +4324,14 @@ class _NoticeCard extends StatelessWidget {
     required this.color,
     required this.title,
     required this.message,
+    this.onDismiss,
   });
 
   final IconData icon;
   final Color color;
   final String title;
   final String message;
+  final VoidCallback? onDismiss;
 
   @override
   Widget build(BuildContext context) {
@@ -1920,6 +4367,14 @@ class _NoticeCard extends StatelessWidget {
               ],
             ),
           ),
+          if (onDismiss != null)
+            IconButton(
+              tooltip: 'Dismiss notice',
+              onPressed: onDismiss,
+              icon: const Icon(Icons.close_rounded),
+              color: color,
+              visualDensity: VisualDensity.compact,
+            ),
         ],
       ),
     );

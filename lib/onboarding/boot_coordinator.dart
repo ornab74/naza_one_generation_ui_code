@@ -21,6 +21,7 @@ import '../model/model_distribution_manifest.dart';
 import '../model/multiplane_model_downloader.dart';
 import '../model/pausable_model_downloader.dart';
 import '../model/runtime_mirror_catalog.dart';
+import '../model/sentinel_model_runtime.dart';
 import '../security/secure_database.dart';
 import 'boot_theme_catalog.dart';
 
@@ -104,6 +105,8 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   bool _useLocalModel = false;
   bool _downloadPaused = false;
   bool _modelReady = false;
+  bool _sentinelReady = false;
+  String _downloadArtifactLabel = 'Gemma model';
   String? _error;
   String _status = 'Preparing private local storage…';
   String _themeId = NazaBootThemeCatalog.defaultId;
@@ -128,6 +131,8 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
 
   bool get _desktop =>
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
+  bool get _allModelsReady => _modelReady && _sentinelReady;
 
   Future<T> _trace<T>(String step, Future<T> Function() operation) async {
     final timer = Stopwatch()..start();
@@ -331,9 +336,13 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       );
     }
     _modelReady = modelStatus.installed;
+    _sentinelReady = await _trace(
+      'probabilistic harm-filter model verification',
+      NazaSentinelModelStore.isInstalled,
+    );
 
     if (!mounted) return;
-    if (complete && _modelReady && !firstRun) {
+    if (complete && _allModelsReady && !firstRun) {
       // _unlockVault keeps the coordinator busy while authenticating. Allow
       // the authenticated startup handoff to take ownership of that same
       // busy state; otherwise _prepareAndEnterChat would return immediately
@@ -346,9 +355,11 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     }
     setState(() {
       _stage = _BootStage.model;
-      _status = _modelReady
-          ? 'Verified model is ready.'
-          : 'Choose how to install the verified local AI model.';
+      _status = _allModelsReady
+          ? 'Verified Gemma and safety sentinel are ready.'
+          : _modelReady
+          ? 'Gemma is ready; install the pinned core safety sentinel.'
+          : 'Choose how to install the verified local AI models.';
     });
   }
 
@@ -405,8 +416,8 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
   }
 
   Future<void> _startDownload() async {
-    if (_busy || _modelReady) {
-      if (_modelReady) _goToGuide();
+    if (_busy || _allModelsReady) {
+      if (_allModelsReady) _goToGuide();
       return;
     }
     _downloadPaintTimer?.cancel();
@@ -423,32 +434,65 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     final control = NazaTransferController();
     _transferControl = control;
     try {
-      final manifest = await NazaRuntimeMirrorCatalog.resolve(
-        NazaModelDistributionManifest.gemma4E2b,
-      );
-      final downloader = NazaPausableModelDownloader(
-        manifest: manifest,
-        control: control,
-      );
-      _activeDownloader = downloader;
-      final target = await _managedModelTarget();
-      await downloader.download(
-        target: target,
-        onProgress: _publishDownloadProgress,
-      );
-      await downloader.close();
-      _activeDownloader = null;
-      final refreshed = await app.NazaSecureModelStore.refresh();
-      if (!refreshed.installed) {
-        throw StateError(
-          'Downloaded model passed transport verification but app trust refresh did not accept it.',
+      if (!_modelReady) {
+        _downloadArtifactLabel = 'Gemma model';
+        final manifest = await NazaRuntimeMirrorCatalog.resolve(
+          NazaModelDistributionManifest.gemma4E2b,
         );
+        final downloader = NazaPausableModelDownloader(
+          manifest: manifest,
+          control: control,
+        );
+        _activeDownloader = downloader;
+        final target = await _managedModelTarget();
+        await downloader.download(
+          target: target,
+          onProgress: _publishDownloadProgress,
+        );
+        await downloader.close();
+        _activeDownloader = null;
+        final refreshed = await app.NazaSecureModelStore.refresh();
+        if (!refreshed.installed) {
+          throw StateError(
+            'Downloaded Gemma model passed transport verification but app trust refresh did not accept it.',
+          );
+        }
+        _modelReady = true;
+      }
+
+      if (!_sentinelReady) {
+        _downloadArtifactLabel = 'Core safety sentinel';
+        if (mounted) {
+          setState(() {
+            _download = null;
+            _pendingDownload = null;
+            _status = 'Preparing the pinned scanner-only safety model…';
+          });
+        }
+        final downloader = NazaPausableModelDownloader(
+          manifest: NazaModelDistributionManifest.llama3SmallSentinel,
+          control: control,
+        );
+        _activeDownloader = downloader;
+        await downloader.download(
+          target: await NazaSentinelModelStore.target(),
+          onProgress: _publishDownloadProgress,
+        );
+        await downloader.close();
+        _activeDownloader = null;
+        _sentinelReady = await NazaSentinelModelStore.isInstalled();
+        if (!_sentinelReady) {
+          throw StateError(
+            'Downloaded safety sentinel failed the final local trust refresh.',
+          );
+        }
       }
       if (!mounted) return;
       setState(() {
         _modelReady = true;
+        _sentinelReady = true;
         _downloadPaused = false;
-        _status = 'Verified model ready.';
+        _status = 'Verified Gemma and core safety sentinel ready.';
       });
       _goToGuide();
     } catch (error) {
@@ -475,13 +519,16 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
     _download = snapshot;
     if (!_downloadPaused || snapshot.stage == NazaDownloadStage.complete) {
       _status = switch (snapshot.stage) {
-        NazaDownloadStage.probing => 'Preparing approved mirrors…',
-        NazaDownloadStage.allocating => 'Resuming secure chunk spool…',
+        NazaDownloadStage.probing =>
+          'Preparing approved $_downloadArtifactLabel mirrors…',
+        NazaDownloadStage.allocating =>
+          'Resuming $_downloadArtifactLabel secure chunk spool…',
         NazaDownloadStage.downloading =>
-          'Downloading from multiple verified transports…',
+          'Downloading $_downloadArtifactLabel from verified transports…',
         NazaDownloadStage.verifying =>
-          'Checking part hashes + final model SHA-256…',
-        NazaDownloadStage.complete => 'Verified local model installed.',
+          'Checking $_downloadArtifactLabel hashes + final SHA-256…',
+        NazaDownloadStage.complete =>
+          'Verified $_downloadArtifactLabel installed.',
       };
     }
 
@@ -573,10 +620,19 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       if (!mounted) return;
       setState(() {
         _modelReady = true;
+        _sentinelReady = false;
+        _useLocalModel = false;
         _status =
-            'Verified local model selected and encrypted preference saved.';
+            'Verified Gemma selected. Install the pinned core safety sentinel to continue.';
       });
-      _goToGuide();
+      if (await NazaSentinelModelStore.isInstalled()) {
+        if (!mounted) return;
+        setState(() {
+          _sentinelReady = true;
+          _status = 'Verified Gemma and core safety sentinel ready.';
+        });
+        _goToGuide();
+      }
     } catch (error) {
       if (mounted) setState(() => _error = 'Local model rejected: $error');
     } finally {
@@ -940,7 +996,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
         (snapshot.stage == NazaDownloadStage.allocating ||
             snapshot.stage == NazaDownloadStage.downloading) &&
         snapshot.receivedBytes > 0;
-    final double? progressValue = _modelReady
+    final double? progressValue = _allModelsReady
         ? 1
         : complete
         ? 1
@@ -956,7 +1012,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
       eyebrow: '2 · Local AI model',
       title: 'Verified multi-source model setup',
       subtitle:
-          'Naza can fetch 4 MiB chunks from approved HTTPS model hosts, resume completed chunks after interruption, and verify every model part plus the final SHA-256 before use.',
+          'Naza installs Gemma for Chat plus a separate scanner-only Llama safety sentinel. Both use resumable 4 MiB chunks from approved HTTPS hosts and exact part/final SHA-256 verification.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -972,7 +1028,9 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                 Row(
                   children: <Widget>[
                     Icon(
-                      _modelReady ? Icons.verified_rounded : Icons.hub_rounded,
+                      _allModelsReady
+                          ? Icons.verified_rounded
+                          : Icons.hub_rounded,
                       color: scheme.primary,
                     ),
                     const SizedBox(width: 10),
@@ -1024,20 +1082,26 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                   spacing: 10,
                   runSpacing: 10,
                   children: <Widget>[
-                    if (!_modelReady && !_busy)
+                    if (!_allModelsReady && !_busy)
                       FilledButton.icon(
-                        onPressed: _useLocalModel
+                        onPressed: _modelReady
+                            ? _startDownload
+                            : _useLocalModel
                             ? _chooseLocalModel
                             : _startDownload,
                         icon: Icon(
-                          _useLocalModel
+                          _modelReady
+                              ? Icons.security_rounded
+                              : _useLocalModel
                               ? Icons.folder_open_rounded
                               : Icons.download_rounded,
                         ),
                         label: Text(
-                          _useLocalModel
+                          _modelReady
+                              ? 'Download safety sentinel'
+                              : _useLocalModel
                               ? 'Select & verify model'
-                              : 'Download verified model',
+                              : 'Download both verified models',
                         ),
                       ),
                     if (_busy && _transferControl != null && !_downloadPaused)
@@ -1052,7 +1116,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
                         icon: const Icon(Icons.play_arrow_rounded),
                         label: const Text('Resume'),
                       ),
-                    if (_modelReady)
+                    if (_allModelsReady)
                       FilledButton.icon(
                         onPressed: _goToGuide,
                         icon: const Icon(Icons.arrow_forward_rounded),
@@ -1093,7 +1157,7 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
           const SizedBox(height: 14),
           _messageCard(
             Icons.verified_user_outlined,
-            'Transport location is not trust. Mirror URLs may change, but model filename, immutable revision, sizes, part hashes, and the final SHA-256 are pinned in the app.',
+            'Transport location is not trust. Gemma and the scanner-only sentinel have separate pinned filenames, sizes, part layouts, and final SHA-256 identities.',
             scheme.primary,
           ),
         ],

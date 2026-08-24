@@ -18,6 +18,7 @@ dependencies:
   flutter:
     sdk: flutter
   archive: ^4.0.9
+  audioplayers: ^6.5.0
   cryptography: ^2.9.0
   crypto: ^3.0.6
   file_picker: ^11.0.2
@@ -26,6 +27,7 @@ dependencies:
   geolocator: ^14.0.2
   pedometer: ^4.1.1
   permission_handler: ^12.0.1
+  record: ^6.1.2
   # Keep the current Flutter Gemma facade on all targets. The LiteRT-LM engine
   # is 1.3.1 at flutter_gemma 1.5.2; Windows builds generate a local
   # pubspec_overrides.yaml that selects the pre-v0.14 bridge (1.0.2) because
@@ -34,6 +36,9 @@ dependencies:
   flutter_gemma_litertlm: 1.3.1
   flutter_secure_storage: ^10.3.1
   image_picker: ^1.2.3
+  # Scanner-only, pinned Llama 3 Small runtime used by road/food classifiers
+  # and the probabilistic harm filter. It is never exposed through Chat.
+  llamadart: 0.8.17
   path_provider: ^2.1.6
   pqcrypto: ^0.4.0
   sqlite3: ^3.3.4
@@ -69,3 +74,17 @@ flutter:
     - family: JetBrainsMono
       fonts:
         - asset: assets/fonts/JetBrainsMono[wght].ttf
+
+# Match the verified scanner source's llama.cpp ABI. Do not set a global local
+# native path here: that source bundle contains only Linux libraries, while
+# Naza One also builds for Android, iOS, macOS, and Windows. LlamaDart resolves
+# the matching b10075 bundle for each target. Linux/Crostini can opt into the
+# exact-source host build documented under tool/.
+hooks:
+  user_defines:
+    llamadart:
+      llamadart_native_runtimes: [llama_cpp]
+      llamadart_native_tag: b10075
+      llamadart_native_backends:
+        platforms:
+          linux-x64: [cpu]

@@ -51,7 +51,7 @@ class FoodVisionHub extends StatefulWidget {
   State<FoodVisionHub> createState() => _FoodVisionHubState();
 }
 
-enum _WorkspaceTab { fridge, shelf, recipes, more }
+enum _WorkspaceTab { fridge, shelf, recipes, bake, safety, more }
 
 enum _PhotoChoice { camera, gallery, files }
 
@@ -66,10 +66,26 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
     _tab = switch (widget.initialWorkspace) {
       'recipes' => _WorkspaceTab.recipes,
       'shelf' => _WorkspaceTab.shelf,
+      'bake' => _WorkspaceTab.bake,
+      'safety' => _WorkspaceTab.safety,
       'more' => _WorkspaceTab.more,
-      'bake' || 'safety' => _WorkspaceTab.more,
       _ => _WorkspaceTab.fridge,
     };
+  }
+
+  @override
+  void didUpdateWidget(covariant FoodVisionHub oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialWorkspace == widget.initialWorkspace) return;
+    final nextTab = switch (widget.initialWorkspace) {
+      'recipes' => _WorkspaceTab.recipes,
+      'shelf' => _WorkspaceTab.shelf,
+      'bake' => _WorkspaceTab.bake,
+      'safety' => _WorkspaceTab.safety,
+      'more' => _WorkspaceTab.more,
+      _ => _WorkspaceTab.fridge,
+    };
+    if (mounted) setState(() => _tab = nextTab);
   }
 
   Widget _tabFor(_WorkspaceTab tab) {
@@ -97,6 +113,28 @@ class _FoodVisionHubState extends State<FoodVisionHub> {
           foodSafetyChild: widget.foodSafetyChild,
           draftController: widget.draftController,
           openRecipes: true,
+        ),
+        _WorkspaceTab.bake => legacy.FoodVisionHub(
+          repository: widget.repository,
+          photoPicker: widget.photoPicker,
+          analyzeFridgeImage: widget.analyzeFridgeImage,
+          analyzeBakeImage: widget.analyzeBakeImage,
+          regenerateRecipes: widget.regenerateRecipes,
+          onCancel: widget.onCancel,
+          foodSafetyChild: widget.foodSafetyChild,
+          draftController: widget.draftController,
+          initialTab: 'bake',
+        ),
+        _WorkspaceTab.safety => legacy.FoodVisionHub(
+          repository: widget.repository,
+          photoPicker: widget.photoPicker,
+          analyzeFridgeImage: widget.analyzeFridgeImage,
+          analyzeBakeImage: widget.analyzeBakeImage,
+          regenerateRecipes: widget.regenerateRecipes,
+          onCancel: widget.onCancel,
+          foodSafetyChild: widget.foodSafetyChild,
+          draftController: widget.draftController,
+          initialTab: 'safety',
         ),
         _WorkspaceTab.more => legacy.FoodVisionHub(
           repository: widget.repository,

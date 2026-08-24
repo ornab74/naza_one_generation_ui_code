@@ -53,10 +53,24 @@ void main() {
       NazaProviderModelCatalog.forProvider(NazaRemoteProvider.meta),
       contains('muse-spark-1.2'),
     );
-    expect(
-      NazaProviderModelCatalog.forProvider(NazaRemoteProvider.digitalOcean),
-      contains('kimi-k3'),
+    final digitalOceanModels = NazaProviderModelCatalog.forProvider(
+      NazaRemoteProvider.digitalOcean,
     );
+    expect(
+      digitalOceanModels,
+      containsAll(<String>[
+        'kimi-k3',
+        'deepseek-v4-pro',
+        'openai-gpt-5.6-luna',
+        'llama-4-maverick',
+        'qwen3.8-max',
+        'openai-gpt-oss-120b',
+        'gemma-4-31B-it',
+        'bge-m3',
+        'bge-reranker-v2-m3',
+      ]),
+    );
+    expect(digitalOceanModels.toSet().length, digitalOceanModels.length);
   });
 
   test(

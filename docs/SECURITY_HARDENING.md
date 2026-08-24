@@ -40,6 +40,16 @@ The model must never mint or validate these leases. An LLM may propose an operat
 6. The rollback epoch must be committed only after the new vault state is durably committed.
 7. Audit data must never contain passwords, VUKs, DEKs, recovery private keys, full prompts, or plaintext user records.
 8. LLM output is untrusted data. It cannot grant capabilities or weaken policy.
+9. The probabilistic harm filter is a veto layer, not a capability issuer.
+   `Low` or `Medium` never bypasses user approval or deterministic policy.
+10. A privileged adapter must supply a compiled semantic command identifier;
+    it must never derive that identifier from untrusted model text.
+11. The sentinel must be evaluated as close as possible to the actual side
+    effect. Approval-time results cannot be reused indefinitely at dispatch or
+    network-I/O time.
+12. Arguments and payloads stay outside the sentinel, so adapters must still
+    enforce typed schemas, path/domain allowlists, resource limits, immutable
+    image digests, host-key pins, and single-purpose capability leases.
 
 ## Post-quantum direction
 
@@ -89,6 +99,8 @@ Application and model updates should eventually use independent signed manifests
 - Secure storage is not automatically equivalent to a hardware monotonic counter.
 - Memory canaries do not defeat a privileged attacker.
 - More entropy sources do not automatically improve a good OS CSPRNG; CPU load, timing, and visual/color state must not be treated as cryptographic entropy.
+- A probabilistic safety classification does not prove that an operation is
+  harmless. It may veto authority but cannot create authority.
 - Hybrid or post-quantum cryptography does not compensate for a compromised policy engine or a process that exposes plaintext after legitimate decryption.
 - "ORAM-lite" placement/padding techniques are not full oblivious RAM unless a reviewed ORAM protocol is actually implemented.
 

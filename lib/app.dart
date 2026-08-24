@@ -33,6 +33,9 @@ import 'navigation/unified_feature_drawer.dart';
 import 'model/provider_gateway.dart';
 import 'model/model_assembly.dart';
 import 'model/embedding_runtime.dart';
+import 'model/sentinel_model_runtime.dart';
+import 'audio/openai_reading_service.dart';
+import 'audio/openai_live_transcribe_input.dart';
 import 'chat/history_metadata_repository.dart';
 import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
@@ -11815,7 +11818,7 @@ final class NazaLocalGemma {
       final persistedUser = historyUserText?.trim();
       if (persistTurn) {
         unawaited(
-          _persistMessagePair(
+          NazaLocalGemma.instance.persistRemoteMessagePair(
             user: persistedUser == null || persistedUser.isEmpty
                 ? trimmed
                 : persistedUser,
@@ -13503,6 +13506,32 @@ final class NazaLocalGemma {
       // A storage failure must never replace an already generated answer.
     }
   }
+
+  /// Remote gateways use the same encrypted history and vector-memory writer
+  /// as local Gemma, but must cross this boundary explicitly.
+  Future<void> persistRemoteMessagePair({
+    required String user,
+    required NazaResponse response,
+    String? threadId,
+    String? turnId,
+  }) => _persistMessagePair(
+    user: user,
+    response: response,
+    threadId: threadId,
+    turnId: turnId,
+  );
+
+  Future<NazaMemoryAllocation> allocateRemoteMemory({
+    required String userText,
+    required NazaRoute route,
+    required NazaActionProfile actionProfile,
+    Set<String> excludedTurnIds = const <String>{},
+  }) => _allocateMemoryForTurn(
+    userText: userText,
+    route: route,
+    actionProfile: actionProfile,
+    excludedTurnIds: excludedTurnIds,
+  );
 }
 
 final class NazaResponse {
@@ -14546,6 +14575,43 @@ Sensor / observation notes: ${_value(data, 'sensor_notes', 'none supplied')}
 - Distinguish observed hazards from inferred risk and missing evidence before choosing the final labels.
 - Return exactly one Risk line, one Confidence line, two concise cue bullets, two action bullets, and the verification sentence.
 [/validation]
+[local_circuit_provenance]
+This request includes a bounded, deterministic diagnostic trace generated locally before any
+remote model call. It is a calibration and integrity aid, not a physical sensor, quantum
+measurement, probability oracle, or proof of safety. Never promote it into a road hazard.
+Use it only to detect prompt corruption, compare repeated passes, and decide whether missing
+scene evidence should keep Confidence conservative. The trace must not override direct scene
+observations, and a high trace score must never increase Risk or Confidence by itself.
+Purpose: road-scanner
+Entropy diagnostic: ${trace?.entropy ?? 'not recorded'}
+Integrity diagnostic: ${trace?.integrity ?? 'not recorded'}
+Multi-node diagnostic: ${trace?.multiNode ?? 'not recorded'}
+Defense capsule: ${trace?.defenseCapsule ?? 'not recorded'}
+Colorwheel diagnostic: ${trace?.colorwheel ?? 'not recorded'}
+Chromatic ribbon: ${trace?.chromaticRibbon ?? 'not recorded'}
+RGB timing diagnostic: ${trace?.rgbTiming ?? 'not recorded'}
+Non-local ribbon: ${trace?.nonlocalRibbon ?? 'not recorded'}
+Checksum: ${trace?.checksum ?? 'not recorded'}
+Defense passes: ${trace?.defensePasses ?? 0}
+[/local_circuit_provenance]
+[remote_model_protocol]
+For a non-local model, perform these bounded passes internally without exposing hidden
+chain-of-thought: (1) normalize each field and mark unknowns; (2) separate direct observation,
+reported observation, inference, and absence of evidence; (3) inventory hazards by visibility,
+surface, weather, traffic, speed-flow, road geometry, and location context; (4) test whether
+each proposed cue is supported by an input field; (5) check contradictions and stale or vague
+wording; (6) estimate evidence coverage and directness; (7) choose risk; (8) choose confidence
+independently; (9) derive actions only from supported hazards; (10) validate the exact output
+schema. If a field is blank or unknown, state that it is missing in a cue or verification step
+and lower confidence only as warranted. Do not default every incomplete scene to Medium risk:
+missing evidence primarily limits confidence, while risk follows the actual supplied hazards.
+Do not manufacture detail from the location name. Do not use the diagnostic trace as scene
+evidence. Prefer Low risk only when no supported hazard is present and the scene evidence is
+reasonably complete; prefer High risk only when a serious supported hazard or clearly dangerous
+combination is present; use Medium for supported intermediate hazards or unresolved but material
+conditions. Confidence may be High only with specific, consistent, direct evidence; otherwise
+use Medium or Low and explain the missing verification in the required concise output.
+[/remote_model_protocol]
 [completion_criteria]
 - Risk and confidence reflect only observable road evidence and its completeness.
 - Actions are immediately usable, conservative, and safe to perform.
@@ -19111,6 +19177,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
               feature: NazaModelFeature.chat,
               prompt: request.prompt,
               systemInstruction: request.systemInstruction,
+              historyContext: request.threadContext,
+              excludedMemoryTurnIds: request.excludedMemoryTurnIds,
             )
           : null;
       if (remote != null) {
@@ -19121,6 +19189,16 @@ class _NazaStableHomeState extends State<NazaStableHome>
           route: 'remote-${remote.provider}-${remote.model}',
           cancelled: false,
           createdAt: DateTime.now(),
+        );
+        // Remote providers bypass the local Gemma runtime, so explicitly use
+        // the same encrypted history and vector-memory writer here.
+        unawaited(
+          NazaLocalGemma.instance.persistRemoteMessagePair(
+            user: request.historyUserText,
+            response: response,
+            threadId: request.historyThreadId,
+            turnId: request.historyTurnId,
+          ),
         );
       } else {
         response = sender == null
@@ -19482,6 +19560,32 @@ class _NazaStableHomeState extends State<NazaStableHome>
     await WidgetsBinding.instance.endOfFrame;
 
     try {
+      if (mounted) {
+        setState(() => _status = 'core safety sentinel classification');
+      }
+      final sentinel = await NazaSentinelGuard.instance.classifyScanner(
+        domain: kind.toLowerCase().contains('road')
+            ? 'road-scanner'
+            : 'food-water-scanner',
+        evidence: riskPrompt,
+        lState: <String>[
+          trace.chromaticRibbon,
+          trace.rgbTiming,
+          trace.nonlocalRibbon,
+          trace.entropy,
+          trace.integrity,
+          trace.multiNode,
+          trace.defenseCapsule,
+          trace.colorwheel,
+          'checksum=${trace.checksum}',
+        ].join('\n'),
+        defensePasses: trace.defensePasses.clamp(1, 5),
+      );
+      if (!sentinel.valid) {
+        throw StateError(
+          'The scanner-only safety sentinel did not return a valid classification.',
+        );
+      }
       final scannerPrompt = NazaScannerPrompts.buildSinglePassScanner(
         kind: kind,
         visibleSummary: visibleSummary,
@@ -19514,6 +19618,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
               cancelled: false,
               createdAt: DateTime.now(),
             );
+      final sentinelResponse = _applyScannerSentinel(scannerResponse, sentinel);
 
       if (mounted) {
         setState(() => _status = safetyStatus);
@@ -19525,8 +19630,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
         title: title,
         kind: kind,
         visibleSummary: visibleSummary,
-        riskResponse: scannerResponse,
-        safetyResponse: scannerResponse,
+        riskResponse: sentinelResponse,
+        safetyResponse: sentinelResponse,
         trace: trace,
       );
     } catch (error) {
@@ -19546,6 +19651,22 @@ class _NazaStableHomeState extends State<NazaStableHome>
         });
       }
     }
+  }
+
+  NazaResponse _applyScannerSentinel(
+    NazaResponse response,
+    NazaScannerSentinelDecision sentinel,
+  ) {
+    return NazaResponse(
+      text: NazaScannerSentinelPolicy.calibrateStructuredText(
+        response.text,
+        sentinel,
+      ),
+      score: response.score,
+      route: '${response.route}+sentinel-${sentinel.risk.name}',
+      cancelled: response.cancelled,
+      createdAt: response.createdAt,
+    );
   }
 
   void _stopActiveGeneration() {
@@ -19870,6 +19991,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
     required NazaModelFeature feature,
     required String prompt,
     String? systemInstruction,
+    String historyContext = '',
+    Set<String> excludedMemoryTurnIds = const <String>{},
   }) async {
     final routing = await NazaModelRoutingStore().load();
     final profileId = routing.profileFor(feature);
@@ -19877,8 +20000,33 @@ class _NazaStableHomeState extends State<NazaStableHome>
         profileId == NazaModelRoutingStore.localProfileId) {
       return null;
     }
+    if (feature != NazaModelFeature.chat) {
+      // Chat is intentionally excluded. Every other configured frontier-model
+      // egress receives only this semantic feature name plus host telemetry
+      // and L-state through the central sentinel boundary.
+      await NazaSentinelGuard.instance.gate.requireAllowed(
+        'frontier.${feature.name}.request',
+      );
+    }
     final profiles = await NazaRemoteModelCatalog().load();
     final assembly = await NazaModelAssemblyStore().load();
+    final route = NazaQuantumRouter.route(prompt);
+    final actionProfile = NazaActionSelector.select(prompt, route);
+    final memory = await NazaLocalGemma.instance.allocateRemoteMemory(
+      userText: prompt,
+      route: route,
+      actionProfile: actionProfile,
+      excludedTurnIds: excludedMemoryTurnIds,
+    );
+    final contextSections = <String>[
+      if (historyContext.trim().isNotEmpty)
+        '[active_thread_history]\n${historyContext.trim()}\n[/active_thread_history]',
+      if (memory.contextBlock.trim().isNotEmpty)
+        '[vector_memory_context]\n${memory.contextBlock.trim()}\n[/vector_memory_context]',
+    ];
+    final remotePrompt = contextSections.isEmpty
+        ? prompt
+        : '${contextSections.join('\n\n')}\n\n[current_user_request]\n$prompt\n[/current_user_request]';
     if (assembly.mode == NazaAssemblyMode.shardedAssembly &&
         assembly.profileIds.length > 1) {
       final selectedProfiles = profiles
@@ -19895,7 +20043,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
         final assembled = await coordinator.assemble(
           profiles: selectedProfiles,
           config: assembly,
-          prompt: prompt,
+          prompt: remotePrompt,
           systemInstruction: systemInstruction,
         );
         return NazaRemoteModelResponse(
@@ -19923,7 +20071,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
     try {
       return await gateway.send(
         profile: matches.first,
-        prompt: prompt,
+        prompt: remotePrompt,
         systemInstruction: systemInstruction,
       );
     } finally {
@@ -19960,6 +20108,13 @@ class _NazaStableHomeState extends State<NazaStableHome>
   Future<NazaAgenticRunResult> _runAgenticTaskNow(
     NazaAgenticTaskRequest request,
   ) async {
+    final sentinelCommand = _agenticSentinelCommand(request);
+    if (sentinelCommand != null) {
+      // Only this semantic identifier crosses the sentinel boundary. The task,
+      // repository evidence, image, provider prompt, node host, credentials,
+      // command arguments, and paths remain outside it.
+      await NazaSentinelGuard.instance.gate.requireAllowed(sentinelCommand);
+    }
     if (request.modality == NazaAgenticModality.vision) {
       return _runLocalAgenticTask(
         request,
@@ -20076,6 +20231,33 @@ class _NazaStableHomeState extends State<NazaStableHome>
     } finally {
       coordinator.close();
     }
+  }
+
+  String? _agenticSentinelCommand(NazaAgenticTaskRequest request) {
+    final segments = <String>['agentic'];
+    if (request.node.kind == NazaExecutionTargetKind.remoteSsh ||
+        request.permissions.contains(NazaAgenticPermission.remoteExecution)) {
+      segments.addAll(const <String>['remote', 'ssh']);
+    } else if (request.node.kind == NazaExecutionTargetKind.ociContainer) {
+      segments.add('container');
+    }
+    if (request.permissions.contains(NazaAgenticPermission.runChecks)) {
+      segments.addAll(const <String>['check', 'execute']);
+    }
+    if (request.permissions.contains(NazaAgenticPermission.networkAccess)) {
+      segments.add('network');
+    }
+    switch (request.modelMode) {
+      case NazaAgenticModelMode.localGemma:
+        break;
+      case NazaAgenticModelMode.routedProvider:
+        segments.addAll(const <String>['frontier', 'remote']);
+        break;
+      case NazaAgenticModelMode.shardedFabric:
+        segments.addAll(const <String>['frontier', 'sharded', 'remote']);
+        break;
+    }
+    return segments.length == 1 ? null : segments.join('.');
   }
 
   Future<NazaAgenticRunResult> _runLocalAgenticTask(
@@ -21178,6 +21360,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         );
       case NazaPanel.foodWater:
         return FoodVisionHub(
+          key: ValueKey<String>('food-workspace-$_foodWorkspace'),
           repository: _foodRepository,
           photoPicker: _foodPhotoPicker,
           analyzeFridgeImage: _analyzeFridgeImage,
@@ -22162,6 +22345,7 @@ class _ComposerBar extends StatelessWidget {
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                       ),
+                      suffixIcon: NazaVoiceInputButton(controller: controller),
                     ),
                   ),
                 ),
@@ -22614,6 +22798,7 @@ class _StableMessageBubble extends StatelessWidget {
                       tooltip: 'Copy message',
                       text: message.text,
                     ),
+                    NazaReadAloudButton(text: message.text),
                   ],
                 ],
               ),
@@ -28700,6 +28885,7 @@ class _NazaTextInput extends StatelessWidget {
                 horizontal: 13,
                 vertical: 12,
               ),
+              suffixIcon: NazaVoiceInputButton(controller: controller),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide(color: NazaPalette.border),

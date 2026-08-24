@@ -75,6 +75,29 @@ void main() {
   });
 
   test(
+    'first run requires and downloads the separate safety sentinel',
+    () async {
+      final source = await File(
+        'lib/onboarding/boot_coordinator.dart',
+      ).readAsString();
+      expect(source, contains('bool get _allModelsReady'));
+      expect(source, contains('_modelReady && _sentinelReady'));
+      expect(source, contains('NazaSentinelModelStore.isInstalled()'));
+      expect(
+        source,
+        contains('NazaModelDistributionManifest.llama3SmallSentinel'),
+      );
+      expect(source, contains('Download safety sentinel'));
+    },
+  );
+
+  test('remote frontier egress excludes Chat from the sentinel', () async {
+    final source = await File('lib/app.dart').readAsString();
+    expect(source, contains('feature != NazaModelFeature.chat'));
+    expect(source, contains("'frontier.\${feature.name}.request'"));
+  });
+
+  test(
     'model store cannot poison refresh after target path resolution fails',
     () async {
       final source = await File('lib/app.dart').readAsString();
@@ -157,17 +180,20 @@ void main() {
     },
   );
 
-  test('both retained GitHub workflows gate pushes and pull requests', () async {
-    for (final path in <String>[
-      '.github/workflows/flutter-release.yml',
-      '.github/workflows/windows-store-msix.yml',
-    ]) {
-      final source = await File(path).readAsString();
-      expect(source, contains('workflow_dispatch:'));
-      expect(source, contains('\n  push:'));
-      expect(source, contains('\n  pull_request:'));
-    }
-  });
+  test(
+    'both retained GitHub workflows gate pushes and pull requests',
+    () async {
+      for (final path in <String>[
+        '.github/workflows/flutter-release.yml',
+        '.github/workflows/windows-store-msix.yml',
+      ]) {
+        final source = await File(path).readAsString();
+        expect(source, contains('workflow_dispatch:'));
+        expect(source, contains('\n  push:'));
+        expect(source, contains('\n  pull_request:'));
+      }
+    },
+  );
 
   test('desktop local model preference is encrypted and hash gated', () async {
     final source = await File(

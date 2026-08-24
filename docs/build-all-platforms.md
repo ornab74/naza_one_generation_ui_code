@@ -108,6 +108,14 @@ flutter pub get
 flutter build linux --release --no-pub
 ```
 
+On an older GLIBC/Crostini host that cannot load LlamaDart's upstream `b10075`
+bundle, build the same ABI locally first:
+
+```bash
+./tool/prepare_linux_llamadart_native.sh
+LLAMADART_ALLOW_LEGACY_LOCAL_BUNDLES=1 flutter build linux --release --no-pub
+```
+
 Output folder:
 
 ```text

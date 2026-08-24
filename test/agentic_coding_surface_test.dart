@@ -130,6 +130,39 @@ void main() {
       expect(decision.requiresApproval, isTrue);
       expect(decision.approvals, isNotEmpty);
     });
+
+    test('frontier-provider routing requires explicit network approval', () {
+      final request = NazaAgenticTaskRequest.validated(
+        task: 'Review a bounded parser change.',
+        modelMode: NazaAgenticModelMode.routedProvider,
+        modality: NazaAgenticModality.text,
+        node: NazaAgenticNodeProfile.localDefault,
+        permissions: const <NazaAgenticPermission>{
+          NazaAgenticPermission.proposePatch,
+        },
+        mutationApproved: false,
+        networkApproved: false,
+        memoryEnabled: true,
+      );
+
+      final denied = const NazaAgenticPolicyEngine().evaluate(request);
+      expect(denied.canRun, isFalse);
+      expect(denied.requiresApproval, isTrue);
+
+      final approved = const NazaAgenticPolicyEngine().evaluate(
+        NazaAgenticTaskRequest.validated(
+          task: request.task,
+          modelMode: request.modelMode,
+          modality: request.modality,
+          node: request.node,
+          permissions: request.permissions,
+          mutationApproved: false,
+          networkApproved: true,
+          memoryEnabled: true,
+        ),
+      );
+      expect(approved.canRun, isTrue);
+    });
   });
 
   test(
@@ -392,6 +425,31 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('Code Foundry'), findsOneWidget);
     expect(find.text('EXECUTION INTELLIGENCE'), findsOneWidget);
+    await tester.tap(find.text('Code Foundry'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    final foundry = find.byKey(const ValueKey<String>('agentic-code-foundry'));
+    final remoteSection = find.descendant(
+      of: foundry,
+      matching: find.text('Remote operations control plane'),
+    );
+    await tester.scrollUntilVisible(
+      remoteSection,
+      520,
+      scrollable: find
+          .descendant(of: foundry, matching: find.byType(Scrollable))
+          .first,
+    );
+    expect(remoteSection, findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('request-scrape-ipfs-export')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('manage-digitalocean-droplet')),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
   });

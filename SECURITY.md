@@ -55,11 +55,12 @@ records.
 Fresh/current installs use the following startup ordering:
 
 1. inspect/create/unlock encrypted storage;
-2. choose and verify a local model source;
+2. choose and verify the local Gemma model and the separate scanner-only
+   safety-sentinel model;
 3. optional product/prompt guide;
 4. encrypted theme selection;
 5. initialize the selected local inference backend;
-6. enter Chat only after the local model is ready.
+6. enter Chat only after both local model identities are ready.
 
 An install containing legacy encrypted records is routed through the original
 authenticated migration gate before the new flow can create replacement state.
@@ -100,9 +101,11 @@ systems prevent a reliable secure-deletion guarantee.
 
 ## Model artifact trust
 
-The model identity is compiled into the app: expected filename, immutable
-revision, exact byte count, part identities, and SHA-256 values. Transport
-location is not treated as model identity.
+Each model identity is compiled into the app: expected filename, revision,
+exact byte count, part identities, and SHA-256 values. Transport location is
+not treated as model identity. Gemma and the scanner-only Llama sentinel have
+independent identities and managed files; neither artifact can be substituted
+for the other.
 
 The first-run multi-source downloader may obtain chunks from the immutable
 Hugging Face full object or approved GitHub Release parts. Completed chunks are
@@ -123,6 +126,54 @@ because it is public model data.
 A runtime mirror catalog may add approved transport locations only when its
 immutable model identity matches the version compiled into the app. It cannot
 replace the expected model hash or part layout.
+
+The safety sentinel is pinned as `llama3-small-Q3_K_M.gguf`, 111,454,016 bytes,
+SHA-256
+`8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa`.
+It runs through LlamaDart's CPU-only llama.cpp runtime with the `b10075` ABI.
+The Linux reproducible-build helper pins native source commit
+`0ba009799d7b88ea2851cff4c273a41aa7137224`. The GGUF is rechecked before it is
+loaded. This runtime is not exposed to Chat, chat history, tools, or memory.
+
+## Probabilistic harm-filter boundary
+
+Privileged remote-development operations pass through a central, fail-closed
+sentinel immediately before authorization or I/O. Current call sites include
+DigitalOcean/node lifecycle plans, container/remote/agentic runs, every
+configured non-Chat frontier-model egress, Kubo IPFS publish/pull/RPC, and
+GitHub repository scan/download/publish.
+
+The privileged-operation classifier receives only:
+
+- one bounded semantic command identifier selected by trusted application
+  code;
+- bounded CPU/RAM measurements; and
+- the locally derived L-state fields and checksum.
+
+It never receives arguments, paths, hosts, CIDs, payloads, prompts, repository
+content, credentials, environment variables, or chat history. Repeated
+PUNKD/CHUNKD passes return strict `Low`, `Medium`, or `High` votes. Any `High`
+vote denies the operation. A timeout, unavailable model, invalid model output,
+invalid command identifier, or telemetry failure that cannot be represented
+safely also denies. Shell interpreters and destructive command classes retain
+deterministic hard denies independent of model output.
+
+`Low` and `Medium` are not authority. Existing user approval, capability,
+allowlist, encryption, immutable-image, host-key, and adapter checks still have
+to pass. Remote-operation approval and dispatch are separate fresh sentinel
+checks, and direct network adapters gate again immediately before opening a
+request. Audit receipts contain the semantic name and bounded decision
+metadata, never the excluded operation data.
+
+Road and Food/Water scanners use the same small model through a separate
+scanner-only evidence API. Its result is authoritative for the displayed risk
+band; Gemma may still produce bounded explanations and recommendations. Chat
+continues to use its existing model route and does not call the sentinel.
+
+The L-state is a required classifier signal in this design. It is not used as
+a password, cryptographic random source, signature, capability, or physical
+attestation. See [Probabilistic Harm Filter](docs/probabilistic-harm-filter.md)
+for adapter invariants and failure semantics.
 
 ## Download pause/resume boundary
 
@@ -206,10 +257,12 @@ flutter test
 Security tests cover wrong-password rejection, ciphertext tampering, key
 rotation, device-key mode, encrypted recovery round trips, malformed recovery
 material, first-run password-default invariants, model distribution identity,
-and the cooperative transfer pause gate. Changes to vault formats, KDF policies,
-model attestations, model identities, or recovery formats require explicit
-migration and regression tests; do not silently fall back to defaults after
-authentication or parsing errors.
+the cooperative transfer pause gate, harm-filter High vetoes, malformed and
+timed-out classifier output, semantic-input minimization, pre-network denial,
+and approval/dispatch rechecks. Changes to vault formats, KDF policies, model
+attestations, model identities, sentinel policy, or recovery formats require
+explicit migration and regression tests; do not silently fall back to defaults
+after authentication or parsing errors.
 
 ## Reporting a vulnerability
 

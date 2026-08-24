@@ -103,8 +103,8 @@ final class NazaDistributionPart {
   };
 }
 
-/// Immutable distribution identity plus transport locations for the bundled
-/// Gemma 4 E2B LiteRT-LM model.
+/// Immutable distribution identity plus transport locations for a bundled
+/// local model artifact.
 ///
 /// Bytes, hashes, and revision are compiled into the application. Runtime
 /// mirror discovery may add HTTPS transport locations but cannot replace any
@@ -189,6 +189,67 @@ final class NazaModelDistributionManifest {
         index: 2,
         expectedSha256:
             '00e9d3b99151f41afe9cbc2e99cd3d684b62d67238859285ec89d1cf5a94c2f3',
+      ),
+    ],
+  );
+
+  /// Scanner-only Llama 3 Small artifact imported from
+  /// `naza-dart-source.zip`. It is a separate safety/scanner runtime and must
+  /// never be routed into Chat.
+  static final NazaModelDistributionManifest
+  llama3SmallSentinel = NazaModelDistributionManifest(
+    modelFileName: 'llama3-small-Q3_K_M.gguf',
+    expectedSha256:
+        '8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa',
+    expectedBytes: 111454016,
+    revision: 'naza-sentinel-llama3-small-v1',
+    // This catalog is not consumed for the sentinel today. Keeping the
+    // field pinned preserves the manifest contract; any attempted merge
+    // would fail identity validation and return this built-in manifest.
+    runtimeCatalogUri: Uri.parse(
+      'https://raw.githubusercontent.com/ornab74/'
+      'naza_one_generation_ui_code/92e3c182ea1ed8209ac57d600b3cb571ae6e4bfd/mirrors.md',
+    ),
+    fullSources: <NazaDistributionSource>[
+      NazaDistributionSource(
+        id: 'sentinel-github-full',
+        uri: Uri.parse(
+          'https://github.com/ornab74/naza_one_generation_ui_code/'
+          'releases/download/v1/llama3-small-Q3_K_M.gguf',
+        ),
+        plane: NazaDistributionPlane.canonicalFull,
+        trustWeight: 1.25,
+      ),
+      NazaDistributionSource(
+        id: 'sentinel-huggingface-full',
+        uri: Uri.parse(
+          'https://huggingface.co/tensorblock/llama3-small-GGUF/'
+          'resolve/main/llama3-small-Q3_K_M.gguf',
+        ),
+        plane: NazaDistributionPlane.canonicalFull,
+        trustWeight: 1.10,
+      ),
+      NazaDistributionSource(
+        id: 'sentinel-pinata-full',
+        uri: Uri.parse(
+          'https://silver-southern-echidna-758.mypinata.cloud/ipfs/'
+          'bafybeifb3732qilucogsp7d3q4kgqewkyu2lguyhndgzv5jlbkqiptqt5a',
+        ),
+        plane: NazaDistributionPlane.canonicalFull,
+        trustWeight: 1.05,
+      ),
+    ],
+    // The downloader's ordered assembly contract requires a part layout.
+    // This 106 MiB artifact is represented as one hash-pinned part while
+    // the full-object mirrors above race for every bounded range.
+    parts: <NazaDistributionPart>[
+      NazaDistributionPart(
+        index: 0,
+        name: 'llama3-small-Q3_K_M.gguf',
+        expectedBytes: 111454016,
+        expectedSha256:
+            '8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa',
+        sources: <NazaDistributionSource>[],
       ),
     ],
   );

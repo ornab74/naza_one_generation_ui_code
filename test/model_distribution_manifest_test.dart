@@ -125,4 +125,28 @@ void main() {
       expect(a, hasLength(64));
     });
   });
+
+  group('Llama 3 Small sentinel distribution manifest', () {
+    final manifest = NazaModelDistributionManifest.llama3SmallSentinel;
+
+    test('pins the exact scanner artifact supplied by the source ZIP', () {
+      expect(manifest.modelFileName, 'llama3-small-Q3_K_M.gguf');
+      expect(manifest.expectedBytes, 111454016);
+      expect(
+        manifest.expectedSha256,
+        '8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa',
+      );
+      expect(manifest.parts, hasLength(1));
+      expect(manifest.parts.single.expectedBytes, manifest.expectedBytes);
+      expect(manifest.parts.single.expectedSha256, manifest.expectedSha256);
+    });
+
+    test('uses only approved HTTPS mirror transports', () {
+      expect(manifest.fullSources, hasLength(3));
+      for (final source in manifest.fullSources) {
+        expect(source.isFullObject, isTrue);
+        expect(nazaIsApprovedModelTransportUri(source.uri), isTrue);
+      }
+    });
+  });
 }

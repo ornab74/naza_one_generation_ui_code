@@ -13,11 +13,14 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'audio/openai_reading_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xml/xml.dart';
 
 import 'security/bounded_input.dart';
+import 'model/sentinel_model_runtime.dart';
+import 'security/probabilistic_harm_filter.dart';
 import 'security/secure_database.dart';
 
 const Object _bookUnset = Object();
@@ -487,7 +490,10 @@ class ImportService {
           paragraphText.write('\n');
         }
       }
-      final String text = paragraphText.toString().replaceAll(RegExp(r'[ \t]+'), ' ').trim();
+      final String text = paragraphText
+          .toString()
+          .replaceAll(RegExp(r'[ \t]+'), ' ')
+          .trim();
       if (text.isEmpty) continue;
       final String? style = paragraph
           .findAllElements('w:pStyle')
@@ -583,16 +589,13 @@ class ImportService {
         .replaceFirst(RegExp(r'\.[^.]+$'), '')
         .replaceAll(RegExp(r'[_-]+'), ' ')
         .trim();
-    final generic = <String>{
-      'table of contents',
-      'contents',
-      'toc',
-      'index',
-    };
+    final generic = <String>{'table of contents', 'contents', 'toc', 'index'};
     final headings = RegExp(r'^#{1,2}\s+(.+)$', multiLine: true)
         .allMatches(content)
         .map((match) => _cleanTitle(match.group(1) ?? ''))
-        .where((title) => title.isNotEmpty && !generic.contains(title.toLowerCase()))
+        .where(
+          (title) => title.isNotEmpty && !generic.contains(title.toLowerCase()),
+        )
         .toList();
     // Prefer the repository filename when the document only exposes a
     // navigational “Table of Contents” heading (common in DOCX exports).
@@ -623,24 +626,35 @@ class ImportService {
 class GitHubService {
   static const int maxDownloadBytes = ImportService.maxCompressedBytes;
   static const Duration requestTimeout = Duration(seconds: 30);
-  GitHubService({http.Client? client}) : _client = client ?? http.Client();
+  GitHubService({http.Client? client, NazaHarmGate? harmGate})
+    : _client = client ?? http.Client(),
+      _harmGate = harmGate ?? NazaSentinelGuard.instance.gate;
   final http.Client _client;
+  final NazaHarmGate _harmGate;
 
-  Map<String, String> headers(String token) => <String, String>{
-    'Accept': 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-    if (token.trim().isNotEmpty) 'Authorization': 'Bearer ${token.trim()}',
-  };
+  Map<String, String> headers(String token) {
+    final clean = token.trim();
+    if (clean.length > 1024 || clean.contains(RegExp(r'[\r\n\u0000]'))) {
+      throw const FormatException('GitHub credential is malformed.');
+    }
+    return <String, String>{
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      if (clean.isNotEmpty) 'Authorization': 'Bearer $clean',
+    };
+  }
 
   Future<List<RepositoryBook>> scanBooks(
     RepositoryTarget target, {
     String token = '',
   }) async {
+    _validateTarget(target);
     final Uri uri = Uri.https(
       'api.github.com',
       '/repos/${target.fullName}/git/trees/${target.branch}',
       <String, String>{'recursive': '1'},
     );
+    await _harmGate.requireAllowed('github.repository.scan');
     final http.Response response = await _client
         .get(uri, headers: headers(token))
         .timeout(requestTimeout);
@@ -696,14 +710,17 @@ class GitHubService {
     RepositoryBook book, {
     String token = '',
   }) async {
+    _validateTarget(target);
+    _validateRepositoryPath(book.path);
     // The Contents API does not reliably return inline content for large files
     // (notably DOCX files). Fetch the raw blob instead so the ZIP remains intact.
-    final Uri uri =
-        book.downloadUrl ??
-        Uri.https(
-          'raw.githubusercontent.com',
-          '/${target.fullName}/${target.branch}/${book.path}',
-        );
+    // Reconstruct the URI from the validated target/path instead of trusting a
+    // repository response or deserialized `downloadUrl` to choose the host.
+    final Uri uri = Uri.https(
+      'raw.githubusercontent.com',
+      '/${target.fullName}/${target.branch}/${book.path}',
+    );
+    await _harmGate.requireAllowed('github.data.pull');
     final Uint8List bytes = await _downloadBounded(
       uri,
       headers: headers(token),
@@ -741,7 +758,11 @@ class GitHubService {
     required String action,
   }) async {
     final http.StreamedResponse response = await _client
-        .send(http.Request('GET', uri)..headers.addAll(headers))
+        .send(
+          http.Request('GET', uri)
+            ..followRedirects = false
+            ..headers.addAll(headers),
+        )
         .timeout(requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw StateError('Could not $action (${response.statusCode}).');
@@ -776,16 +797,19 @@ class GitHubService {
   }) async {
     if (token.trim().isEmpty)
       throw ArgumentError('A GitHub token is required to publish.');
+    _validateTarget(target);
     final String directory = target.directory.trim().replaceAll(
       RegExp(r'^/+|/+$'),
       '',
     );
+    if (directory.isNotEmpty) _validateRepositoryPath(directory);
     final String path =
         '${directory.isEmpty ? '' : '$directory/'}${_slug(book.title)}.md';
     final Uri uri = Uri.https(
       'api.github.com',
       '/repos/${target.fullName}/contents/$path',
     );
+    await _harmGate.requireAllowed('github.data.publish');
     String? existingSha;
     final http.Response existing = await _client
         .get(
@@ -856,6 +880,47 @@ tags: [${book.tags.map(_yamlDoubleQuoted).map((String value) => '"$value"').join
           message;
     } catch (_) {}
     throw StateError('Could not $action (${response.statusCode}): $message');
+  }
+
+  static void _validateTarget(RepositoryTarget target) {
+    final owner = target.owner.trim();
+    final repository = target.name.trim();
+    final branch = target.branch.trim();
+    if (!RegExp(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$').hasMatch(owner) ||
+        !RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$').hasMatch(repository)) {
+      throw const FormatException('GitHub repository identity is malformed.');
+    }
+    if (branch.isEmpty ||
+        branch.length > 255 ||
+        !RegExp(r'^[A-Za-z0-9._/-]+$').hasMatch(branch) ||
+        branch.startsWith('/') ||
+        branch.endsWith('/') ||
+        branch.contains('..') ||
+        branch.contains('//') ||
+        branch.contains('@{') ||
+        branch.endsWith('.lock')) {
+      throw const FormatException('GitHub branch identity is malformed.');
+    }
+  }
+
+  static void _validateRepositoryPath(String raw) {
+    final path = raw.trim();
+    final segments = path.split('/');
+    if (path.isEmpty ||
+        path.length > 512 ||
+        path.startsWith('/') ||
+        path.endsWith('/') ||
+        path.contains('\\') ||
+        path.contains(RegExp(r'[\u0000-\u001F\u007F]')) ||
+        segments.any(
+          (segment) =>
+              segment.isEmpty ||
+              segment == '.' ||
+              segment == '..' ||
+              segment.length > 160,
+        )) {
+      throw const FormatException('Repository path is malformed.');
+    }
   }
 
   String _slug(String value) {
@@ -1178,7 +1243,7 @@ class _StudioScreenState extends State<StudioScreen> {
   final TextEditingController _model = TextEditingController(
     text: 'gpt-5-mini',
   );
-  BookProvider _provider = BookProvider.gemma4;
+  final BookProvider _provider = BookProvider.gemma4;
   final TextEditingController _owner = TextEditingController(text: 'ornab74');
   final TextEditingController _repo = TextEditingController(text: 'books');
   final TextEditingController _branch = TextEditingController(text: 'main');
@@ -2097,10 +2162,7 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
-  Widget _compactLibrary(
-    List<BookDocument> visibleBooks,
-    ColorScheme scheme,
-  ) {
+  Widget _compactLibrary(List<BookDocument> visibleBooks, ColorScheme scheme) {
     return CustomScrollView(
       slivers: <Widget>[
         SliverPadding(
@@ -2109,10 +2171,23 @@ class _StudioScreenState extends State<StudioScreen> {
             child: Row(
               children: <Widget>[
                 Expanded(
-                  child: Text('BookForge', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
+                  child: Text(
+                    'BookForge',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
-                IconButton(onPressed: _newBook, tooltip: 'New book', icon: const Icon(Icons.add_rounded)),
-                IconButton(onPressed: _import, tooltip: 'Import', icon: const Icon(Icons.upload_file_rounded)),
+                IconButton(
+                  onPressed: _newBook,
+                  tooltip: 'New book',
+                  icon: const Icon(Icons.add_rounded),
+                ),
+                IconButton(
+                  onPressed: _import,
+                  tooltip: 'Import',
+                  icon: const Icon(Icons.upload_file_rounded),
+                ),
               ],
             ),
           ),
@@ -2120,13 +2195,22 @@ class _StudioScreenState extends State<StudioScreen> {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: SliverToBoxAdapter(
-            child: TextField(controller: _search, decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search library')),
+            child: TextField(
+              controller: _search,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search library',
+              ),
+            ),
           ),
         ),
         SliverPadding(
           padding: const EdgeInsets.all(16),
           sliver: SliverToBoxAdapter(
-            child: Text('${visibleBooks.length} books', style: TextStyle(color: scheme.onSurfaceVariant)),
+            child: Text(
+              '${visibleBooks.length} books',
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
           ),
         ),
         SliverPadding(
@@ -2139,11 +2223,25 @@ class _StudioScreenState extends State<StudioScreen> {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  tileColor: active ? scheme.primaryContainer : scheme.surfaceContainerHighest,
-                  leading: CircleAvatar(child: Text(book.title.isEmpty ? '?' : book.title[0].toUpperCase())),
-                  title: Text(book.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${book.wordCount} words · ${book.status.name}'),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  tileColor: active
+                      ? scheme.primaryContainer
+                      : scheme.surfaceContainerHighest,
+                  leading: CircleAvatar(
+                    child: Text(
+                      book.title.isEmpty ? '?' : book.title[0].toUpperCase(),
+                    ),
+                  ),
+                  title: Text(
+                    book.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${book.wordCount} words · ${book.status.name}',
+                  ),
                   onTap: () => _select(book),
                 ),
               );
@@ -2160,22 +2258,42 @@ class _StudioScreenState extends State<StudioScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
-                      Text(_selected!.title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                      Text(
+                        _selected!.title,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       SegmentedButton<bool>(
                         segments: const [
-                          ButtonSegment(value: true, icon: Icon(Icons.visibility_outlined), label: Text('Read')),
-                          ButtonSegment(value: false, icon: Icon(Icons.edit_outlined), label: Text('Edit')),
+                          ButtonSegment(
+                            value: true,
+                            icon: Icon(Icons.visibility_outlined),
+                            label: Text('Read'),
+                          ),
+                          ButtonSegment(
+                            value: false,
+                            icon: Icon(Icons.edit_outlined),
+                            label: Text('Edit'),
+                          ),
                         ],
                         selected: {_preview},
-                        onSelectionChanged: (value) => setState(() => _preview = value.first),
+                        onSelectionChanged: (value) =>
+                            setState(() => _preview = value.first),
                       ),
                       const SizedBox(height: 12),
                       SizedBox(
                         height: 420,
                         child: _preview
                             ? ReadingPane(book: _selected!)
-                            : TextField(controller: _editor, maxLines: null, expands: true, textAlignVertical: TextAlignVertical.top),
+                            : TextField(
+                                controller: _editor,
+                                maxLines: null,
+                                expands: true,
+                                textAlignVertical: TextAlignVertical.top,
+                              ),
                       ),
                     ],
                   ),
@@ -2200,56 +2318,66 @@ class ReadingPane extends StatelessWidget {
     final int textChunks = (lines.length + linesPerChunk - 1) ~/ linesPerChunk;
     final int itemCount = textChunks + (book.media.isEmpty ? 0 : 1);
     return RepaintBoundary(
-      child: ListView.builder(
-        padding: EdgeInsets.fromLTRB(
-          compact ? 16 : 48,
-          24,
-          compact ? 16 : 48,
-          80,
-        ),
-        itemCount: itemCount,
-        itemBuilder: (BuildContext context, int index) {
-          if (index < textChunks) {
-            final int start = index * linesPerChunk;
-            final int end = math.min(start + linesPerChunk, lines.length);
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: SelectableText(
-                lines.sublist(start, end).join('\n'),
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyLarge?.copyWith(height: 1.55),
+      child: Column(
+        children: <Widget>[
+          Align(
+            alignment: Alignment.centerRight,
+            child: NazaReadAloudButton(text: book.content),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: EdgeInsets.fromLTRB(
+                compact ? 16 : 48,
+                8,
+                compact ? 16 : 48,
+                80,
               ),
-            );
-          }
-          return Padding(
-            padding: const EdgeInsets.only(top: 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  'Figures and diagrams',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 14),
-                ...book.media.map(
-                  (BookMedia media) => Padding(
-                    padding: const EdgeInsets.only(bottom: 18),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: Image.memory(
-                        Uint8List.fromList(media.bytes),
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, _, _) =>
-                            Text('Unable to render ${media.name}'),
-                      ),
+              itemCount: itemCount,
+              itemBuilder: (BuildContext context, int index) {
+                if (index < textChunks) {
+                  final int start = index * linesPerChunk;
+                  final int end = math.min(start + linesPerChunk, lines.length);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: SelectableText(
+                      lines.sublist(start, end).join('\n'),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyLarge?.copyWith(height: 1.55),
                     ),
+                  );
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        'Figures and diagrams',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 14),
+                      ...book.media.map(
+                        (BookMedia media) => Padding(
+                          padding: const EdgeInsets.only(bottom: 18),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: Image.memory(
+                              Uint8List.fromList(media.bytes),
+                              fit: BoxFit.contain,
+                              errorBuilder: (_, _, _) =>
+                                  Text('Unable to render ${media.name}'),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
+                );
+              },
             ),
-          );
-        },
+          ),
+        ],
       ),
     );
     /*
@@ -2634,8 +2762,8 @@ class RepositoryPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool compact = MediaQuery.sizeOf(context).width < 760;
-    final double compactFieldWidth =
-        (MediaQuery.sizeOf(context).width - 68).clamp(220.0, 900.0);
+    final double compactFieldWidth = (MediaQuery.sizeOf(context).width - 68)
+        .clamp(220.0, 900.0);
     return Padding(
       padding: EdgeInsets.all(compact ? 16 : 30),
       child: Column(
@@ -2658,10 +2786,38 @@ class RepositoryPanel extends StatelessWidget {
                 spacing: 12,
                 runSpacing: 12,
                 children: <Widget>[
-                  SizedBox(width: compact ? compactFieldWidth : 180, child: TextField(controller: owner, decoration: const InputDecoration(labelText: 'Owner'))),
-                  SizedBox(width: compact ? compactFieldWidth : 180, child: TextField(controller: repo, decoration: const InputDecoration(labelText: 'Repository'))),
-                  SizedBox(width: compact ? compactFieldWidth : 140, child: TextField(controller: branch, decoration: const InputDecoration(labelText: 'Branch'))),
-                  SizedBox(width: compact ? compactFieldWidth : 165, child: TextField(controller: directory, decoration: const InputDecoration(labelText: 'Publish folder'))),
+                  SizedBox(
+                    width: compact ? compactFieldWidth : 180,
+                    child: TextField(
+                      controller: owner,
+                      decoration: const InputDecoration(labelText: 'Owner'),
+                    ),
+                  ),
+                  SizedBox(
+                    width: compact ? compactFieldWidth : 180,
+                    child: TextField(
+                      controller: repo,
+                      decoration: const InputDecoration(
+                        labelText: 'Repository',
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: compact ? compactFieldWidth : 140,
+                    child: TextField(
+                      controller: branch,
+                      decoration: const InputDecoration(labelText: 'Branch'),
+                    ),
+                  ),
+                  SizedBox(
+                    width: compact ? compactFieldWidth : 165,
+                    child: TextField(
+                      controller: directory,
+                      decoration: const InputDecoration(
+                        labelText: 'Publish folder',
+                      ),
+                    ),
+                  ),
                   FilledButton.icon(
                     onPressed: busy ? null : onScan,
                     icon: busy
