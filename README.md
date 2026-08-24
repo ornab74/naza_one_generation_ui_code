@@ -3,7 +3,7 @@
 [![Build Naza One](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/flutter-release.yml/badge.svg)](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/flutter-release.yml)
 [![Microsoft Store MSIX](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/windows-store-msix.yml/badge.svg)](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/windows-store-msix.yml)
 
-**Naza One is a private, local-first Flutter AI workstation built around on-device Gemma + LiteRT-LM.** It combines local chat, vision, road/safety scanning, food intelligence, encrypted memory, hardened local storage, hybrid post-quantum recovery, verified model delivery, and cross-platform desktop/mobile builds without requiring a cloud chat backend.
+**Naza One is a private, local-first Flutter AI workstation built around on-device Gemma + LiteRT-LM and a separate scanner-only Llama safety sentinel.** It combines local chat, vision, road/safety scanning, food intelligence, agentic development tools, encrypted memory, hardened local storage, hybrid post-quantum recovery, verified model delivery, and cross-platform desktop/mobile builds without requiring a cloud chat backend.
 
 > **Microsoft Store:** https://apps.microsoft.com/detail/9nm382wsvsvn
 >
@@ -18,6 +18,38 @@ Food workspace and kitchen trend improvements
 HeartFlow six-dimension simulation
 Chess and memory games
 Security, encrypted backup, and post-quantum recovery improvements
+
+## Current security and agentic-runtime update
+
+The repository now includes the scanner-only model supplied in
+`naza-dart-source.zip` as a **probabilistic harm filter**. It is deliberately
+separate from Chat and cannot be selected as a conversational model.
+
+- A verified, CPU-only LlamaDart runtime loads the exact
+  `llama3-small-Q3_K_M.gguf` artifact.
+- First-run model preparation now requires both the Gemma chat model and the
+  safety-sentinel model before the application is considered model-ready.
+- Privileged-operation prompts contain only a normalized semantic command
+  identifier, bounded CPU/RAM telemetry, and the locally derived L-state. They
+  never contain shell arguments, payloads, paths, hostnames, CIDs, repository
+  contents, credentials, chat history, or user prompts.
+- Any `High` result denies the operation. Invalid output, model unavailability,
+  inference failure, or timeout also denies the operation.
+- Deterministically destructive command classes remain hard-denied without
+  relying on model authorization.
+- DigitalOcean lifecycle actions, remote SSH/execution routes, container work,
+  IPFS publish/pull/RPC operations, BookForge GitHub scan/pull/publish, and
+  non-Chat frontier-provider egress are gated immediately before side effects.
+- Stored approval is not a reusable bypass: remote-operation transitions are
+  checked again at approval and dispatch time.
+- Road and Food/Water scanners use the same small model for repeated risk
+  classification and authoritative risk/score-band calibration. Chat remains
+  on Gemma and does not call the sentinel.
+- IPFS and GitHub adapters retain independent validation, authorization, and
+  transport protections; the probabilistic model is a defense-in-depth veto,
+  not a capability issuer.
+
+Detailed contract: [Probabilistic harm filter](docs/probabilistic-harm-filter.md)
 
 ![Naza One demo](./demo.png)
 
@@ -42,6 +74,7 @@ flowchart TD
     App --> Nav[Unified feature registry]
     Nav --> Chat[Chat + encrypted history]
     Nav --> Scan[Road · food · garden vision]
+    Nav --> Agentic[Agentic · remote operations]
     Nav --> Health[HealthDash + Walking]
     Nav --> Intelligence[FindIt · Drive · Predict · Heart Flow]
     Chat --> Runtime[Local Gemma runtime]
@@ -49,6 +82,10 @@ flowchart TD
     Health --> Runtime
     Intelligence --> Runtime
     Runtime --> Model[Verified LiteRT-LM artifact]
+    Scan --> Sentinel[Scanner-only Llama sentinel]
+    Agentic --> Gate[Fail-closed harm gate]
+    Gate --> Sentinel
+    Sentinel --> SafetyModel[Verified GGUF artifact]
     App --> Vault[Authenticated encrypted vault]
     Vault --> Recovery[Hybrid post-quantum recovery]
     Tests[Analysis + tests] -. preserve invariants .-> App
@@ -73,7 +110,7 @@ lib/main.dart
 NazaBootCoordinator
     |
     +-- 1. encrypted vault setup / unlock
-    +-- 2. verified model setup
+    +-- 2. verified Gemma + sentinel model setup
     +-- 3. skippable AI + feature guide
     +-- 4. theme selection
     +-- 5. pre-load Gemma runtime
@@ -99,7 +136,11 @@ Existing password-protected vaults still request their password. Installs contai
 
 ### 2. Advanced model setup
 
-The second screen is the local-model setup surface. It exposes a real multi-source chunked downloader with live progress rather than a decorative progress bar.
+The second screen is the local-model setup surface. It prepares two
+independently verified artifacts: Gemma for Chat/explanatory generation and the
+small Llama sentinel for scanners and privileged-operation vetoes. It exposes a
+real multi-source chunked downloader with live progress rather than a decorative
+progress bar.
 
 The UI shows:
 
@@ -111,13 +152,13 @@ The UI shows:
 - verification stage;
 - **Pause** and **Resume** controls.
 
-Pause is cooperative and real: active response streams are back-pressured and new chunks stop being scheduled. Completed chunks remain on disk for later resume. Closing and reopening the app can reuse already-completed chunk state.
+Pause is cooperative and real: active response streams are back-pressured and new chunks stop being scheduled. Completed chunks remain on disk for later resume. Closing and reopening the app can reuse already-completed chunk state. Gemma and the sentinel are downloaded sequentially through the same bounded 4 MiB transfer machinery and each must pass its own size and SHA-256 identity check.
 
 ### Desktop local-model picker
 
 Windows, Linux, and macOS also expose **“Use a local .litertlm model file instead”**.
 
-The native file picker accepts the model only after the exact expected byte count and pinned SHA-256 match. The selected source path and model identity are then saved inside the encrypted vault. Naza attempts to expose the verified file to the managed model cache using a link/hard-link first to avoid casually duplicating ~2.4 GiB, with a copy fallback when the platform cannot link it.
+The native file picker accepts the Gemma model only after the exact expected byte count and pinned SHA-256 match. The selected source path and model identity are then saved inside the encrypted vault. Naza attempts to expose the verified file to the managed model cache using a link/hard-link first to avoid casually duplicating ~2.4 GiB, with a copy fallback when the platform cannot link it. Selecting Gemma locally does not bypass the separate sentinel requirement.
 
 The developer/admin override remains supported:
 
@@ -187,6 +228,29 @@ The GitHub release is split into three equal-size model parts:
 | `part02.bin` | 861,028,352 | `00e9d3b99151f41afe9cbc2e99cd3d684b62d67238859285ec89d1cf5a94c2f3` |
 
 Release: https://github.com/ornab74/naza_one_generation_ui_code/releases/tag/v1
+
+## Scanner-only sentinel identity
+
+The safety/scanner model is separately pinned and is never routed into Chat:
+
+```text
+filename: llama3-small-Q3_K_M.gguf
+revision: naza-sentinel-llama3-small-v1
+expected bytes: 111,454,016
+SHA-256: 8e4f4856fb84bafb895f1eb08e6c03e4be613ead2d942f91561aeac742a619aa
+```
+
+The manifest defines hash-pinned HTTPS sources for GitHub Releases, Hugging
+Face, and the configured Pinata IPFS gateway. The transfer engine may select a
+healthy source, but no source can change the compiled artifact identity.
+
+The runtime uses a 2,048-token context, CPU backend, four inference/batch
+threads, 256-token batch, 128-token micro-batch, memory mapping, and serialized
+generation. It verifies the entire GGUF again before loading and unloads it
+after an idle period through the same serialized queue used by inference.
+
+The supplied source attribution and GPL-3.0 license are preserved under
+[`third_party_licenses/naza-dart-source/`](third_party_licenses/naza-dart-source/).
 
 ---
 
@@ -276,7 +340,7 @@ Retrieved memory is treated as potentially stale historical evidence, not as tru
 
 Vision input is selected/captured deliberately by the user and normalized locally before inference.
 
-The scanner system is evidence-bounded: it separates supplied observations from inference, avoids presenting software transforms as physical sensors, and keeps uncertainty explicit when evidence is incomplete.
+The scanner system is evidence-bounded: it separates supplied observations from inference, avoids presenting software transforms as physical sensors, and keeps uncertainty explicit when evidence is incomplete. Road and Food/Water scans run the small local sentinel before the explanatory model. An indeterminate sentinel result fails the scan, and valid sentinel votes control the final risk label, confidence, safety-score range, and safety band so the larger model cannot silently downgrade the small model's classification.
 
 Food modules include fridge analysis, shelf/product workflows, bake analysis/simulation, structured local prompts, image handling, and encrypted saved analyses.
 
@@ -348,6 +412,53 @@ The LLM is never treated as the authority that grants privileged security capabi
 
 ---
 
+# Probabilistic harm filter
+
+The core sentinel converts typed application operations into stable semantic
+names such as `digitalocean.droplet.start`, `ipfs.data.publish`,
+`github.data.pull`, or `frontier.road.request`. The caller cannot attach raw
+arguments or payloads to this API.
+
+For every decision, the gate samples bounded host telemetry and derives the
+L-state values used by the supplied scanner design. It then performs up to five
+PUNKD/CHUNKD classification passes and accepts only an exact `Low`, `Medium`, or
+`High` response. Cyber-operation policy uses any `High` vote as a veto;
+malformed or missing votes fail closed. A `Low` or `Medium` result only permits
+the request to continue to the existing deterministic permissions, approval,
+validation, quota, and transport checks.
+
+Enforcement currently covers:
+
+- DigitalOcean droplet create/start/stop/delete transitions;
+- remote-node start/stop/delete and SSH/check execution routes;
+- containerized Chromium/scraping and container-bound work;
+- IPFS/Kubo identity, peer, fallback RPC, publish, save, and pull operations;
+- BookForge GitHub repository scanning, data pulls, and publishing;
+- configured non-Chat remote/frontier model requests; and
+- approval and dispatch transitions in the encrypted remote-operation store.
+
+The GitHub adapter validates owner, repository, branch, and path components,
+reconstructs raw-content URLs from the validated repository identity, rejects
+path traversal, and does not trust an arbitrary API-provided download host. The
+IPFS adapter gates immediately before request/socket creation. Secret-free
+decision receipts may be stored for audit, while the original command input or
+payload never enters the receipt.
+
+Relevant modules:
+
+```text
+lib/security/probabilistic_harm_filter.dart
+lib/model/sentinel_model_runtime.dart
+lib/agentic/remote_operations.dart
+lib/agentic/ipfs_chatrooms.dart
+lib/agentic/agentic_coding_surface.dart
+lib/agentic/agentic_runtime.dart
+lib/naza_bookforge.dart
+docs/probabilistic-harm-filter.md
+```
+
+---
+
 # Hybrid post-quantum recovery
 
 The current maximum recovery profile uses:
@@ -403,6 +514,20 @@ flutter test --no-pub
 ```
 
 CI currently uses Flutter `3.44.4`; matching it locally is recommended.
+
+LlamaDart's normal target-specific native bundle is selected through the pinned
+`b10075` runtime configuration. Linux x86-64 developers who need to reproduce
+the exact optional native source build can run:
+
+```bash
+./tool/prepare_linux_llamadart_native.sh
+LLAMADART_ALLOW_LEGACY_LOCAL_BUNDLES=1 flutter test --no-pub
+```
+
+The helper pins `llamadart-native` commit
+`0ba009799d7b88ea2851cff4c273a41aa7137224`, builds CPU-only, checks shared
+library dependencies, and never invokes `sudo` or a package manager. Generated
+native bundles and source/build trees remain ignored by Git.
 
 ### Linux
 
@@ -485,6 +610,23 @@ So pushes, pull requests and tags do **not** spend Actions minutes by themselves
 
 The test suite covers encrypted-database lifecycle, wrong-password handling, ciphertext tamper detection, key rotation, post-quantum recovery, security-state/capability behavior, model bootstrap/integrity, runtime backend policy, continuation logic, scanner contracts, food repositories, vector retrieval, encrypted memory, conversation metadata, onboarding, runtime mirror validation and model-distribution identity.
 
+Sentinel-specific regression coverage verifies:
+
+- prompt/input minimization and exact semantic-name normalization;
+- `High`, invalid, unavailable, failed, and timed-out fail-closed behavior;
+- deterministic hard-deny command classes and secret-free receipts;
+- scanner risk/score/safety-band calibration;
+- fresh approval and dispatch checks without state mutation after denial;
+- cancellation/serialization behavior around inference and remote operations;
+- IPFS publish/pull denial before socket creation;
+- GitHub denial before network activity plus raw-host and traversal defenses;
+- exact sentinel size/hash identity and dual-model first-run readiness; and
+- deliberate exclusion of Chat from the scanner-only runtime.
+
+At the integration handoff, `flutter analyze --no-pub` reported no issues and
+the complete Flutter suite passed all 146 tests. No live remote operation or
+model download is required by these tests.
+
 New first-run regression guards also assert:
 
 - the product first-run password requirement remains opt-in;
@@ -527,18 +669,25 @@ lib/
     runtime_mirror_catalog.dart
     local_model_preference.dart
     runtime_profile.dart
+    sentinel_model_runtime.dart
 
   chat/
   memory/
   scanner/
   food/
   security/
+    probabilistic_harm_filter.dart
+  agentic/
+    remote_operations.dart
+    ipfs_chatrooms.dart
   settings/
   theme/
 
 tool/
 docs/
 test/
+native-bundles/
+third_party_licenses/
 mirrors.md
 SECURITY.md
 privacypolicy.md
@@ -555,6 +704,11 @@ Naza One does not claim that:
 - SQLite record encryption hides all database metadata;
 - flash storage can always be securely overwritten;
 - post-quantum primitives repair a compromised policy engine;
+- a probabilistic classifier can prove that an operation is harmless;
+- a `Low` or `Medium` sentinel result grants authority or replaces explicit
+  permissions, validation, or approval;
+- the derived L-state is cryptographic entropy or proof of physical
+  non-locality;
 - image analysis can prove hidden physical/biological properties;
 - hosted CI proves physical NVIDIA execution;
 - HTTPS gateway transport is native libp2p/Bitswap.
@@ -575,6 +729,7 @@ Further reading:
 
 - [Security model](SECURITY.md)
 - [Hardened security architecture](docs/SECURITY_HARDENING.md)
+- [Probabilistic harm-filter contract](docs/probabilistic-harm-filter.md)
 - [Privacy policy](privacypolicy.md)
 - [Build guide](docs/build-all-platforms.md)
 - [Signing guide](docs/github-actions-signing.md)
@@ -746,11 +901,30 @@ BookForge is the local writing studio for manuscript creation and publishing. It
 - Embedded media support with bounded import limits.
 - Local Gemma generation with cancellation, progress, stale-result protection, and continuation limits.
 - OpenAI-compatible provider configuration with endpoint/origin restrictions.
-- GitHub repository scanning and download support with size and integrity checks.
+- GitHub repository scanning, download, and publishing support with size,
+  identity, path, host, and sentinel checks before network access.
 - YAML-safe Markdown publishing metadata.
 - Encrypted storage only, including one-time cleanup of legacy preference copies.
 
 BookForge intentionally keeps the editor as the authoritative Markdown surface. Large previews are rendered in lazy text chunks to avoid blocking the Flutter UI thread while switching books or scrolling.
+
+## Agentic and remote operations
+
+The agentic workspace models remote effects as typed records rather than
+unstructured executable callbacks. Remote-operation intent is immutable for a
+given operation ID, state mutations are serialized, cancellation cannot be
+overwritten by a stale in-flight approval, and only secret-free sentinel
+receipts are retained for audit.
+
+Supported protected operation families include remote nodes, DigitalOcean
+droplets, containerized browser work, IPFS data transfer, GitHub repository
+work, and configured frontier-provider routes. Existing per-run approvals,
+host-key pinning, encrypted credentials, provider-origin restrictions, and
+network permissions remain mandatory independently of the model result.
+
+The IPFS chatroom transport also fixes approval-expiry validation and performs
+separate sentinel checks for publish and pull so authorization for one
+direction cannot authorize the other.
 
 ## Local memory and history
 
@@ -764,13 +938,17 @@ BookForge intentionally keeps the editor as the authoritative Markdown surface. 
 ## Models and provider runtime
 
 - Verified Gemma + LiteRT-LM local runtime.
+- Separately verified scanner-only Llama + LlamaDart sentinel runtime.
 - Pinned model revision, expected size, part hashes, and final SHA-256.
 - Pause/resume multi-source model downloads with chunk journals.
+- Dual-model onboarding that requires Gemma and the sentinel before readiness.
 - Atomic model promotion preserving the last working model on replacement failure.
 - Local model-file picker with exact size/hash verification.
 - Runtime telemetry that distinguishes initialized GPU, CPU fallback, failure, and unknown/unverified states.
 - Secure provider adapter foundation for future remote providers; API keys are stored in encrypted storage, not preferences.
 - Custom endpoints are restricted and must not receive secrets unless the provider/origin policy permits them.
+- Non-Chat frontier-provider egress is classified by the sentinel before the
+  provider request; Chat deliberately remains outside that path.
 
 ## Vault, backup, and recovery
 
