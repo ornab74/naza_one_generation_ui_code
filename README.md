@@ -1099,6 +1099,12 @@ explicit domain allowlist, no cookies, pinned `image@sha256`, rootless/read-only
 containers, dropped capabilities, no-new-privileges, proxy-only egress, bounded
 result bytes/rows, encrypted SQLite ingestion, and teardown after completion.
 
+Successful runs write an encrypted, tamper-evident receipt containing the
+canonical plan digest, result digest, row count, worker identity, and execution
+timestamps. Returned scraper content is reviewed again after transfer; a
+high/critical output finding prevents vault import and still triggers worker
+teardown.
+
 `NazaProgressiveSecurityLoop` runs deterministic rule families over agentic
 coding output and container manifests. It performs repeated independent passes,
 caps findings and input size, sanitizes evidence, preserves a digest of the

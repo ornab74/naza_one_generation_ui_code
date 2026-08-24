@@ -206,10 +206,13 @@ final class NazaDataPipeStore {
     if (receipt.pipelineId.trim().isEmpty ||
         !digest.hasMatch(receipt.planDigest) ||
         !digest.hasMatch(receipt.resultDigest) ||
-        receipt.rowCount < 0 || receipt.rowCount > 10000 ||
+        receipt.rowCount < 0 ||
+        receipt.rowCount > 10000 ||
         receipt.nodeId.trim().isEmpty ||
         receipt.completedAt.isBefore(receipt.startedAt)) {
-      throw const FormatException('The Data Pipes execution receipt is invalid.');
+      throw const FormatException(
+        'The Data Pipes execution receipt is invalid.',
+      );
     }
     await _database.writeJson(
       _namespace,
