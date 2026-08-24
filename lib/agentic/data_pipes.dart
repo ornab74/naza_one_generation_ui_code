@@ -112,6 +112,37 @@ final class NazaDataPipeArtifact {
   final DateTime receivedAt;
 }
 
+@immutable
+final class NazaDataPipeExecutionReceipt {
+  const NazaDataPipeExecutionReceipt({
+    required this.pipelineId,
+    required this.planDigest,
+    required this.resultDigest,
+    required this.rowCount,
+    required this.nodeId,
+    required this.startedAt,
+    required this.completedAt,
+  });
+  final String pipelineId;
+  final String planDigest;
+  final String resultDigest;
+  final int rowCount;
+  final String nodeId;
+  final DateTime startedAt;
+  final DateTime completedAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'format': 'naza-data-pipe-receipt-v1',
+    'pipelineId': pipelineId,
+    'planDigest': planDigest,
+    'resultDigest': resultDigest,
+    'rowCount': rowCount,
+    'nodeId': nodeId,
+    'startedAt': startedAt.toUtc().toIso8601String(),
+    'completedAt': completedAt.toUtc().toIso8601String(),
+  };
+}
+
 abstract interface class NazaDataPipeAdapter {
   /// Implementations obtain credentials directly from the vault. Tokens and
   /// arbitrary model-generated shell text are intentionally absent here.
@@ -169,6 +200,23 @@ final class NazaDataPipeStore {
       'rows': cleanRows,
     });
   }
+
+  Future<void> saveReceipt(NazaDataPipeExecutionReceipt receipt) async {
+    final digest = RegExp(r'^[a-f0-9]{64}$');
+    if (receipt.pipelineId.trim().isEmpty ||
+        !digest.hasMatch(receipt.planDigest) ||
+        !digest.hasMatch(receipt.resultDigest) ||
+        receipt.rowCount < 0 || receipt.rowCount > 10000 ||
+        receipt.nodeId.trim().isEmpty ||
+        receipt.completedAt.isBefore(receipt.startedAt)) {
+      throw const FormatException('The Data Pipes execution receipt is invalid.');
+    }
+    await _database.writeJson(
+      _namespace,
+      'receipt:${receipt.pipelineId}',
+      receipt.toJson(),
+    );
+  }
 }
 
 final class NazaDataPipeOrchestrator {
@@ -199,6 +247,10 @@ final class NazaDataPipeOrchestrator {
         'Progressive security review denied the pipeline manifest.',
       );
     String? nodeId;
+    final startedAt = DateTime.now().toUtc();
+    final planDigest = crypto.sha256
+        .convert(utf8.encode(jsonEncode(plan.toJson())))
+        .toString();
     try {
       await _harmGate.requireAllowed('digitalocean.droplet.create');
       nodeId = await adapter.provision(plan.dropletPlan);
@@ -209,6 +261,12 @@ final class NazaDataPipeOrchestrator {
       if (bytes.length > 64 * 1024 * 1024)
         throw StateError('Scrape result exceeded 64 MiB.');
       final decoded = const Utf8Decoder(allowMalformed: false).convert(bytes);
+      final outputReview = _scanner.review(decoded);
+      if (outputReview.denied) {
+        throw StateError(
+          'Progressive security review denied hostile scraper output.',
+        );
+      }
       final rows = const LineSplitter()
           .convert(decoded)
           .where((line) => line.trim().isNotEmpty)
@@ -230,6 +288,17 @@ final class NazaDataPipeOrchestrator {
         receivedAt: DateTime.now().toUtc(),
       );
       await _store.importArtifact(artifact);
+      await _store.saveReceipt(
+        NazaDataPipeExecutionReceipt(
+          pipelineId: plan.id,
+          planDigest: planDigest,
+          resultDigest: artifact.sha256,
+          rowCount: artifact.rows.length,
+          nodeId: nodeId,
+          startedAt: startedAt,
+          completedAt: DateTime.now().toUtc(),
+        ),
+      );
       return artifact;
     } finally {
       if (nodeId != null) {
