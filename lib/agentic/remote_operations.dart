@@ -15,6 +15,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../model/sentinel_model_runtime.dart';
+import '../security/boundary_sanitizer.dart';
 import '../security/probabilistic_harm_filter.dart';
 import '../security/secure_database.dart';
 
@@ -161,12 +162,18 @@ final class NazaDigitalOceanDropletPlan {
       errors.add('Droplet image is required and bounded.');
     }
     if (sshKeyRefs.length > 32) errors.add('Too many SSH-key references.');
+    if (sshKeyRefs.any((reference) => !_validSshKeyReference(reference))) {
+      errors.add('SSH-key references must be numeric IDs or fingerprints.');
+    }
     if (tags.length > 32) errors.add('Too many droplet tags.');
     if (tags.any((tag) => !_validLabel(tag, 63))) {
       errors.add('Droplet tags must be short, non-empty labels.');
     }
     if (vpcUuid != null && vpcUuid!.trim().isNotEmpty && !_uuidLike(vpcUuid!)) {
       errors.add('VPC UUID is malformed.');
+    }
+    if (!_validToken(workspacePurpose, 64)) {
+      errors.add('Workspace purpose is invalid.');
     }
     return List<String>.unmodifiable(errors);
   }
@@ -205,7 +212,7 @@ final class NazaChromiumScrapePlan {
   List<String> validate() {
     final errors = <String>[];
     final uri = Uri.tryParse(targetUrl.trim());
-    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+    if (uri == null || !_safeScrapeUri(uri)) {
       errors.add('Scraping requires an HTTPS target URL.');
     }
     if (allowedDomains.isEmpty || allowedDomains.length > 32) {
@@ -252,6 +259,19 @@ final class NazaChromiumScrapePlan {
     'respectRobots': respectRobots,
     'allowCookies': allowCookies,
     'networkApproved': networkApproved,
+    'runtimeSecurity': <String, Object?>{
+      'rootless': true,
+      'runAsNonRoot': true,
+      'readOnlyRootFilesystem': true,
+      'noNewPrivileges': true,
+      'dropCapabilities': const <String>['ALL'],
+      'seccomp': 'runtime/default',
+      'networkMode': networkApproved ? 'domain-allowlist' : 'none',
+      'pidsLimit': 128,
+      'memoryLimitMiB': 1024,
+      'cpuLimit': 2,
+      'tmpfs': const <String>['/tmp:rw,noexec,nosuid,nodev,size=128m'],
+    },
   };
 }
 
@@ -959,7 +979,12 @@ final class NazaAgenticImagePolicy {
   NazaAgenticImagePolicy._();
 
   static bool isImmutable(String image) {
-    return RegExp(r'^[^\s@]+@sha256:[a-fA-F0-9]{64}$').hasMatch(image.trim());
+    final clean = image.trim();
+    return clean.length <= 255 &&
+        !clean.contains('..') &&
+        RegExp(
+          r'^[A-Za-z0-9](?:[A-Za-z0-9._:/-]*[A-Za-z0-9])?@sha256:[a-fA-F0-9]{64}$',
+        ).hasMatch(clean);
   }
 }
 
@@ -975,8 +1000,7 @@ bool _isValidId(String value) => _validIdPattern.hasMatch(value.trim());
 final RegExp _validIdPattern = RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{1,95}$');
 
 String _bounded(String value, int max) {
-  final clean = value.trim();
-  return clean.length <= max ? clean : clean.substring(0, max);
+  return NazaBoundarySanitizer.databaseText(value, maxCharacters: max);
 }
 
 String? _nullable(String? value) {
@@ -985,8 +1009,9 @@ String? _nullable(String? value) {
 }
 
 bool _validLabel(String value, int max) {
-  final clean = value.trim();
-  return clean.isNotEmpty && clean.length <= max && !clean.contains('\u0000');
+  final raw = value.trim();
+  final clean = NazaBoundarySanitizer.databaseText(value, maxCharacters: max);
+  return clean.isNotEmpty && raw.length <= max && clean == raw;
 }
 
 bool _validToken(String value, int max) {
@@ -996,18 +1021,64 @@ bool _validToken(String value, int max) {
 
 bool _validDomain(String value) {
   final clean = value.trim().toLowerCase();
-  return clean.length <= 253 &&
-      !clean.contains('/') &&
-      !clean.contains('*') &&
-      RegExp(
-        r'^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?$',
-      ).hasMatch(clean);
+  if (clean.isEmpty || clean.length > 253 || _blockedNetworkHost(clean)) {
+    return false;
+  }
+  final labels = clean.split('.');
+  return labels.length >= 2 &&
+      labels.every(
+        (label) =>
+            label.isNotEmpty &&
+            label.length <= 63 &&
+            RegExp(r'^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$').hasMatch(label),
+      );
 }
 
 bool _sameOrSubdomain(String host, String domain) {
-  final cleanHost = host.trim().toLowerCase().split(':').first;
-  final cleanDomain = domain.trim().toLowerCase().split(':').first;
+  final cleanHost = host.trim().toLowerCase();
+  final cleanDomain = domain.trim().toLowerCase();
   return cleanHost == cleanDomain || cleanHost.endsWith('.$cleanDomain');
+}
+
+bool _safeScrapeUri(Uri uri) {
+  if (uri.scheme != 'https' ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty ||
+      uri.fragment.isNotEmpty ||
+      (uri.hasPort && uri.port != 443) ||
+      !_validDomain(uri.host)) {
+    return false;
+  }
+  const sensitiveQueryNames = <String>{
+    'api_key',
+    'apikey',
+    'access_token',
+    'token',
+    'auth',
+    'authorization',
+    'password',
+    'secret',
+    'session',
+  };
+  return !uri.queryParameters.keys.any(
+    (key) => sensitiveQueryNames.contains(key.trim().toLowerCase()),
+  );
+}
+
+bool _blockedNetworkHost(String host) {
+  final clean = host.trim().toLowerCase().trimRight();
+  return clean == 'localhost' ||
+      clean.endsWith('.localhost') ||
+      clean.endsWith('.local') ||
+      clean.endsWith('.internal') ||
+      RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(clean) ||
+      clean.contains(':');
+}
+
+bool _validSshKeyReference(String value) {
+  final clean = value.trim();
+  return RegExp(r'^\d{1,20}$').hasMatch(clean) ||
+      RegExp(r'^SHA256:[A-Za-z0-9+/]{8,88}={0,2}$').hasMatch(clean);
 }
 
 bool _uuidLike(String value) {

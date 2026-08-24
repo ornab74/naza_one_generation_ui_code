@@ -24,3 +24,5 @@ tools/__pycache__/convert_bark_to_barkpack.cpython-311.pyc
 /native-bundles/linux-x64/
 /third_party/llamadart-native-b10075/
 /third_party/bin/linux-x64/
+scraper-chrome-docker-main.zip
+daybreak_security_scanner-source.zip

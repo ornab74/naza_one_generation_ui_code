@@ -21,9 +21,9 @@ Security, encrypted backup, and post-quantum recovery improvements
 
 ## Current security and agentic-runtime update
 
-The repository now includes the scanner-only model supplied in
-`naza-dart-source.zip` as a **probabilistic harm filter**. It is deliberately
-separate from Chat and cannot be selected as a conversational model.
+The repository includes a dedicated scanner-only model as a **probabilistic
+harm filter**. It is deliberately separate from Chat and cannot be selected as
+a conversational model.
 
 - A verified, CPU-only LlamaDart runtime loads the exact
   `llama3-small-Q3_K_M.gguf` artifact.
@@ -249,7 +249,7 @@ threads, 256-token batch, 128-token micro-batch, memory mapping, and serialized
 generation. It verifies the entire GGUF again before loading and unloads it
 after an idle period through the same serialized queue used by inference.
 
-The supplied source attribution and GPL-3.0 license are preserved under
+Third-party attribution and the GPL-3.0 license are preserved under
 [`third_party_licenses/naza-dart-source/`](third_party_licenses/naza-dart-source/).
 
 ---
@@ -926,6 +926,21 @@ The IPFS chatroom transport also fixes approval-expiry validation and performs
 separate sentinel checks for publish and pull so authorization for one
 direction cannot authorize the other.
 
+Additional runtime hardening now requires literal loopback Kubo RPC addresses,
+short-lived dispatch approvals, connection/idle/body timeouts,
+compression-disabled responses, bounded PubSub line framing, sanitized daemon errors,
+validated peer IDs, immutable message identities, and unique sender sequence
+numbers. Repository evidence re-resolves every file immediately before opening
+it to prevent symlink replacement from escaping the selected root.
+
+Scrape/container plans reject URL credentials, fragments, non-443 ports,
+private/local/internal targets, IP literals, and secret-bearing query names.
+Every adapter plan carries a rootless, non-root, read-only, no-new-privileges,
+drop-all-capabilities, default-seccomp, bounded CPU/memory/PID, no-network-by-
+default contract. Remote SSH workspaces must be bounded absolute paths without
+traversal or shell metacharacters. A future concrete dispatcher must enforce
+these fields at the runtime API; model output is never treated as execution.
+
 ## Local memory and history
 
 - Encrypted conversation history and metadata.
@@ -949,6 +964,66 @@ direction cannot authorize the other.
 - Custom endpoints are restricted and must not receive secrets unless the provider/origin policy permits them.
 - Non-Chat frontier-provider egress is classified by the sentinel before the
   provider request; Chat deliberately remains outside that path.
+
+### Supported inference models
+
+Naza always defaults to the verified local **Gemma 4 E2B** LiteRT-LM model.
+The separately verified **Llama 3 Small Q3_K_M sentinel** is internal to safety
+and scanner flows and cannot be selected for Chat. Optional remote routing
+supports these provider protocols and curated model identifiers:
+
+| Provider | Curated model identifiers |
+| --- | --- |
+| OpenAI | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.2`, `gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, GPT-5 Codex variants, `o3`, `o3-pro`, `o4-mini`, deep-research variants, GPT-4.1 variants, realtime/audio/TTS/transcription variants, `gpt-image-1`, `gpt-oss-120b`, `gpt-oss-20b` |
+| Anthropic | `claude-opus-4-1`, `claude-opus-4-0`, `claude-sonnet-4-0`, `claude-3-7-sonnet-latest`, Claude 3.5 Sonnet/Haiku, `claude-3-haiku-20240307` |
+| Google Gemini | Gemini 3.x/2.5 Flash and Pro variants, Gemini image/native-audio/TTS, Veo 3.1 preview, deep research preview, `gemini-embedding-2-preview`, `gemini-embedding-001` |
+| Meta Muse | `muse-spark-1.2`, `muse-spark-1.1`, `llama-4-maverick`, `llama-4-scout` |
+| DigitalOcean Gradient | Kimi, Llama, Qwen, DeepSeek, Claude, OpenAI GPT/o-series, Arcee Trinity, Mistral/Ministral, Nemotron, Gemma, MiniMax, GLM, image/audio/video generation, embedding, and reranker identifiers exposed by the in-app catalog |
+| Custom | Any bounded model identifier served by an explicitly configured OpenAI-compatible HTTPS chat-completions endpoint |
+
+The exact picker catalog lives in
+[`lib/model/provider_gateway.dart`](lib/model/provider_gateway.dart). Provider
+availability, account access, and regional support remain controlled by the
+provider; displaying an identifier does not guarantee that an account can use
+it. Image, audio, embedding, and generation identifiers may require a
+provider-specific API shape and are listed for routing/configuration parity;
+the shared text gateway itself uses chat-completions-compatible response text.
+
+### Using a custom inference endpoint
+
+1. Open **Settings → Models / Provider routing** and add a provider profile.
+2. Select **Custom OpenAI-compatible**.
+3. Enter an HTTPS endpoint that implements the OpenAI-style
+   chat-completions request and response shape.
+4. Enter its bounded model identifier and API credential, then explicitly
+   enable custom-endpoint use.
+5. Save the profile. Naza writes the profile and key only to the authenticated
+   encrypted vault.
+6. Assign that profile to the desired feature route. Features not explicitly
+   routed continue to use local Gemma.
+
+Custom endpoints must use HTTPS, cannot contain URL credentials or fragments,
+do not follow redirects, and receive bounded JSON requests. Official provider
+profiles are restricted to their allowlisted origin on port 443; only the
+Custom profile can opt into another HTTPS origin. Responses have an 8 MiB hard
+limit and a 45-second gateway timeout.
+
+Before remote model egress, text is normalized, invisible/bidirectional control
+characters are removed, and prompt/system lengths are bounded. The outbound
+body redacts configured credentials plus recognizable OpenAI, Anthropic,
+xAI/Grok, Gemini/Google, DigitalOcean, GitHub, GitLab, Hugging Face, AWS, Slack,
+npm, JWT, bearer, API-key, password, and PEM private-key forms.
+Endpoint query strings are rejected so credentials cannot be smuggled into the
+URL. The selected provider credential is allowed only in its authentication
+header and an invariant check rejects any request body still containing it.
+Returned remote-model text receives secret redaction and control-character
+cleanup before display or encrypted persistence. Local Gemma input/output and
+agentic remote-node profile text pass through the shared sanitizer as well.
+
+An enabled custom endpoint is a deliberate trust decision: that server can see
+the prompt content sent to it. Vault encryption protects stored configuration
+and credentials, not plaintext after the user authorizes transmission to a
+remote provider. Never route sensitive features to a server you do not trust.
 
 ## Vault, backup, and recovery
 
@@ -987,3 +1062,48 @@ Settings includes:
 - Pinned WiX package version for Windows MSI builds.
 - Retry handling for transient native SQLite asset downloads.
 - Flutter analyzer and focused security/regression suites run after changes.
+## Hardware keys, passkeys, and IPFS signatures
+
+Security-sensitive sign-in and remote-operation flows can use the
+`NazaPasskeyPlatform` boundary in `lib/security/hardware_passkey.dart`. Native
+adapters must call the operating-system WebAuthn/FIDO2 implementation: Android
+Credential Manager, iOS AuthenticationServices, Windows WebAuthn, or Linux
+libfido2. The default adapter is deliberately unavailable and fails closed;
+raw client assertions are never accepted as verified. Challenges are 256-bit,
+single-use, RP- and purpose-bound, expire within two minutes by default, require
+user verification, and enforce authenticator counters when the key supplies
+one.
+
+Passkeys are not described as post-quantum. For IPFS chat, hardware user
+presence can instead be bound into a separate ML-DSA-87 signature. The
+`NazaIpfsMlDsa87Signer` signs a canonical, domain-separated transcript covering
+the room, sender, ciphertext CID, authenticated-data digest, sequence,
+timestamps, attachments, reply reference, and optional passkey proof. Peers
+call `verifyAdvancedSignature()` before trusting the envelope. Private signing
+keys are never serialized into messages and should be kept in the encrypted
+vault or hardware-backed key storage; call `destroy()` when a signer is no
+longer needed. IPFS still stores ciphertext only—this is application identity
+and message authentication, not an IPFS account or a claim that IPFS itself
+provides passkey login.
+
+## Data Pipes / Scraping and progressive security review
+
+Data Pipes is a planning and approval surface, not an unattended cloud
+operator. A valid plan is persisted in the encrypted vault and can be handed
+to a separately configured adapter. That adapter is the only component allowed
+to obtain a DigitalOcean credential, provision a short-lived worker, deploy the
+immutable Chromium image, fetch JSONL, and destroy the worker. The plan itself
+contains no token, private key, cookie, arbitrary shell, or LLM-generated
+Dockerfile. The adapter contract requires robots.txt enforcement, HTTPS and an
+explicit domain allowlist, no cookies, pinned `image@sha256`, rootless/read-only
+containers, dropped capabilities, no-new-privileges, proxy-only egress, bounded
+result bytes/rows, encrypted SQLite ingestion, and teardown after completion.
+
+`NazaProgressiveSecurityLoop` runs deterministic rule families over agentic
+coding output and container manifests. It performs repeated independent passes,
+caps findings and input size, sanitizes evidence, preserves a digest of the
+reviewed text, and treats high/critical findings as a veto signal. LLM review
+can add evidence but cannot lower or delete deterministic findings. The result
+is attached to `NazaAgenticRunResult` (`securityDenied`, findings, iteration
+count) so future patch/check/container dispatchers can require a clean review
+before side effects.

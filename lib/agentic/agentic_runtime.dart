@@ -15,6 +15,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 
+import '../security/boundary_sanitizer.dart';
 import '../security/secure_database.dart';
 
 enum NazaAgenticModelMode { localGemma, routedProvider, shardedFabric }
@@ -202,6 +203,19 @@ final class NazaAgenticNodeProfile {
     'enabled': enabled,
     'trustWeight': trustWeight,
     'hasCredential': hasCredential,
+    if (kind == NazaExecutionTargetKind.ociContainer)
+      'containerSecurity': const <String, Object?>{
+        'rootless': true,
+        'runAsNonRoot': true,
+        'readOnlyRootFilesystem': true,
+        'noNewPrivileges': true,
+        'dropCapabilities': <String>['ALL'],
+        'seccomp': 'runtime/default',
+        'networkMode': 'none',
+        'pidsLimit': 128,
+        'memoryLimitMiB': 1024,
+        'cpuLimit': 2,
+      },
   };
 
   static NazaAgenticNodeProfile? fromJson(Object? value) {
@@ -219,7 +233,8 @@ final class NazaAgenticNodeProfile {
     if (kind == NazaExecutionTargetKind.remoteSsh &&
         (!_validHost(host) ||
             !_validUsername(username) ||
-            !_validHostKey(hostKey))) {
+            !_validHostKey(hostKey) ||
+            !_validWorkspaceRoot(value['workspaceRoot']?.toString() ?? ''))) {
       return null;
     }
     final rawPort = value['port'];
@@ -272,14 +287,18 @@ final class NazaAgenticNodeProfile {
     final cleanHost = host.trim();
     final cleanUser = username.trim();
     final cleanHostKey = hostKeySha256.trim();
+    final cleanWorkspace = NazaBoundarySanitizer.remoteText(
+      workspaceRoot,
+      maxCharacters: maxPathCharacters,
+      redactSecrets: false,
+    );
     if (!_validId(cleanId) ||
         !_validHost(cleanHost) ||
         !_validUsername(cleanUser) ||
         !_validHostKey(cleanHostKey)) {
       throw const FormatException('The remote node profile is malformed.');
     }
-    if (workspaceRoot.trim().isEmpty ||
-        workspaceRoot.length > maxPathCharacters) {
+    if (!_validWorkspaceRoot(cleanWorkspace)) {
       throw const FormatException('The remote workspace path is invalid.');
     }
     return NazaAgenticNodeProfile(
@@ -294,7 +313,7 @@ final class NazaAgenticNodeProfile {
       port: port.clamp(1, 65535),
       username: cleanUser,
       hostKeySha256: cleanHostKey,
-      workspaceRoot: workspaceRoot.trim(),
+      workspaceRoot: cleanWorkspace,
       trustWeight: trustWeight.clamp(0.05, 1),
       hasCredential: hasCredential,
     );
@@ -315,14 +334,32 @@ final class NazaAgenticNodeProfile {
   static bool _validHostKey(String value) =>
       RegExp(r'^SHA256:[A-Za-z0-9+/]{32,88}={0,2}$').hasMatch(value);
 
-  static bool isImmutableContainerImage(String value) => RegExp(
-    r'^[A-Za-z0-9._:/-]+@sha256:[A-Fa-f0-9]{64}$',
-  ).hasMatch(value.trim());
+  static bool _validWorkspaceRoot(String value) {
+    final clean = value.trim();
+    if (clean.isEmpty ||
+        clean.length > maxPathCharacters ||
+        RegExp(r'[\u0000-\u001f;&|`$<>]').hasMatch(clean) ||
+        RegExp(r'(^|[/\\])\.\.([/\\]|$)').hasMatch(clean)) {
+      return false;
+    }
+    final posix = clean.startsWith('/') && clean != '/';
+    final windows = RegExp(r'^[A-Za-z]:[/\\].+').hasMatch(clean);
+    return posix || windows;
+  }
+
+  static bool isImmutableContainerImage(String value) {
+    final clean = value.trim();
+    return clean.length <= maxImageCharacters &&
+        !clean.contains('..') &&
+        RegExp(
+          r'^[A-Za-z0-9](?:[A-Za-z0-9._:/-]*[A-Za-z0-9])?@sha256:[A-Fa-f0-9]{64}$',
+        ).hasMatch(clean);
+  }
 
   static String _boundedText(String value, int max, {String fallback = ''}) {
-    final clean = value.replaceAll(RegExp(r'[\u0000-\u001f]'), ' ').trim();
+    final clean = NazaBoundarySanitizer.databaseText(value, maxCharacters: max);
     if (clean.isEmpty) return fallback;
-    return clean.length <= max ? clean : clean.substring(0, max);
+    return clean;
   }
 }
 
@@ -777,15 +814,19 @@ final class NazaRepositoryContextCollector {
         truncated = true;
         break;
       }
-      final absolute = file.absolute.path;
-      if (!absolute.startsWith(rootPrefix)) {
-        excluded++;
-        continue;
-      }
-      final relative = absolute.substring(rootPrefix.length);
       RandomAccessFile? handle;
       try {
-        final length = await file.length();
+        // Enumeration uses followLinks:false, but an entry could be replaced
+        // before it is opened. Resolve it again and open only that canonical,
+        // still-in-root path.
+        final resolvedPath = await file.resolveSymbolicLinks();
+        if (!resolvedPath.startsWith(rootPrefix)) {
+          excluded++;
+          continue;
+        }
+        final safeFile = File(resolvedPath);
+        final relative = resolvedPath.substring(rootPrefix.length);
+        final length = await safeFile.length();
         final readLimit = math.min(
           math.min(length, maxBytesPerFile),
           math.max(0, remaining - relative.length - 16),
@@ -794,7 +835,7 @@ final class NazaRepositoryContextCollector {
           truncated = true;
           break;
         }
-        handle = await file.open();
+        handle = await safeFile.open();
         final bytes = await handle.read(readLimit);
         if (bytes.contains(0)) {
           excluded++;
@@ -875,18 +916,10 @@ final class NazaRepositoryContextCollector {
   static String _basename(String path) => path.split(RegExp(r'[/\\]')).last;
 
   static String _redactCredentialLiterals(String text) {
-    var redacted = text;
-    final patterns = <RegExp>[
-      RegExp(r'\bsk-[A-Za-z0-9_-]{16,}'),
-      RegExp(r'\bgh[opusr]_[A-Za-z0-9]{20,}'),
-      RegExp(r'\bxox[baprs]-[A-Za-z0-9-]{16,}'),
-      RegExp(r'\bAKIA[A-Z0-9]{16}\b'),
-      RegExp(r'\bAIza[A-Za-z0-9_-]{24,}'),
-    ];
-    for (final pattern in patterns) {
-      redacted = redacted.replaceAll(pattern, '[REDACTED_CREDENTIAL]');
-    }
-    return redacted;
+    return NazaBoundarySanitizer.remoteText(
+      text,
+      maxCharacters: maxBytesPerFile,
+    ).replaceAll('[REDACTED_TOKEN]', '[REDACTED_CREDENTIAL]');
   }
 }
 
@@ -1061,6 +1094,12 @@ final class NazaAgenticPolicyEngine {
     if (request.node.kind == NazaExecutionTargetKind.remoteSsh &&
         !NazaAgenticNodeProfile._validHostKey(request.node.hostKeySha256)) {
       blockers.add('The remote node has no valid pinned host-key fingerprint.');
+    }
+    if (request.node.kind == NazaExecutionTargetKind.remoteSsh &&
+        !NazaAgenticNodeProfile._validWorkspaceRoot(
+          request.node.workspaceRoot,
+        )) {
+      blockers.add('The remote workspace must be a bounded absolute path.');
     }
     if (request.node.kind == NazaExecutionTargetKind.ociContainer &&
         !NazaAgenticNodeProfile.isImmutableContainerImage(
@@ -1292,6 +1331,9 @@ final class NazaAgenticRunResult {
     required this.provenance,
     required this.weave,
     required this.memoryIndexed,
+    required this.securityDenied,
+    required this.securityIterations,
+    required this.securityFindings,
     this.fallbackReason,
   });
 
@@ -1301,6 +1343,9 @@ final class NazaAgenticRunResult {
   final NazaEntropyWeaveSnapshot weave;
   final bool memoryIndexed;
   final String? fallbackReason;
+  final bool securityDenied;
+  final int securityIterations;
+  final List<String> securityFindings;
 
   factory NazaAgenticRunResult.fromContributions({
     required String text,
@@ -1308,6 +1353,9 @@ final class NazaAgenticRunResult {
     required String taskSeed,
     bool memoryIndexed = false,
     String? fallbackReason,
+    bool securityDenied = false,
+    int securityIterations = 0,
+    List<String> securityFindings = const <String>[],
   }) {
     final bounded = contributions.take(8).toList(growable: false);
     if (text.trim().isEmpty || bounded.isEmpty) {
@@ -1334,8 +1382,27 @@ final class NazaAgenticRunResult {
       weave: const NazaEntropyWeave().analyze(bounded, seed: taskSeed),
       memoryIndexed: memoryIndexed,
       fallbackReason: fallbackReason,
+      securityDenied: securityDenied,
+      securityIterations: securityIterations,
+      securityFindings: List<String>.unmodifiable(securityFindings.take(48)),
     );
   }
+
+  NazaAgenticRunResult withSecurityReview({
+    required bool denied,
+    required int iterations,
+    required List<String> findings,
+  }) => NazaAgenticRunResult._(
+    text: text,
+    contributions: contributions,
+    provenance: provenance,
+    weave: weave,
+    memoryIndexed: memoryIndexed,
+    fallbackReason: fallbackReason,
+    securityDenied: denied,
+    securityIterations: iterations,
+    securityFindings: List<String>.unmodifiable(findings.take(48)),
+  );
 }
 
 final class NazaAgenticRunReceipt {

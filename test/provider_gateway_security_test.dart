@@ -7,6 +7,7 @@
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -114,5 +115,52 @@ void main() {
       ),
       throwsA(isA<FormatException>()),
     );
+  });
+
+  test('provider endpoints reject query-string credentials', () {
+    expect(
+      () => NazaProviderGateway.validateEndpoint(
+        provider: NazaRemoteProvider.custom,
+        endpoint: 'https://models.example/v1/chat?api_key=secret',
+        allowCustomEndpoint: true,
+      ),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('provider boundary sanitizes outbound and inbound model text', () async {
+    late http.BaseRequest captured;
+    final client = _TestClient((request) async {
+      captured = request;
+      return http.StreamedResponse(
+        Stream<List<int>>.value(
+          utf8.encode(
+            jsonEncode(<String, Object?>{
+              'choices': <Object?>[
+                <String, Object?>{
+                  'message': <String, String>{
+                    'content': 'safe\u0000\u202Eresponse secret-test-key',
+                  },
+                },
+              ],
+            }),
+          ),
+        ),
+        200,
+      );
+    });
+    final gateway = NazaProviderGateway(client: client);
+    addTearDown(gateway.close);
+
+    final response = await gateway.send(
+      profile: _profile,
+      prompt:
+          'hello\u0000 api_key=sk-abcdefghijklmnopqrstuvwxyz123456 secret-test-key',
+    );
+
+    final requestBody = (captured as http.Request).body;
+    expect(requestBody, isNot(contains('abcdefghijklmnopqrstuvwxyz')));
+    expect(requestBody, isNot(contains(r'\u0000')));
+    expect(response.text, 'saferesponse [REDACTED_CONFIGURED_SECRET]');
   });
 }

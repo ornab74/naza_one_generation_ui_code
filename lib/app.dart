@@ -29,6 +29,8 @@ import 'food/models.dart';
 import 'food/photo_picker.dart';
 import 'food/prompts.dart';
 import 'food/repository.dart';
+import 'agentic/data_pipes_surface.dart';
+import 'agentic/progressive_security_loop.dart';
 import 'navigation/unified_feature_drawer.dart';
 import 'model/provider_gateway.dart';
 import 'model/model_assembly.dart';
@@ -42,6 +44,7 @@ import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
 import 'security/post_quantum_recovery.dart';
 import 'security/bounded_input.dart';
+import 'security/boundary_sanitizer.dart';
 import 'security/secure_database.dart';
 import 'naza_healthdash_monolith.dart';
 import 'naza_bookforge.dart';
@@ -11203,7 +11206,10 @@ final class NazaLocalGemma {
     Set<String> excludedMemoryTurnIds = const <String>{},
     String? systemInstructionOverride,
   }) async {
-    final trimmed = userText.trim();
+    final trimmed = NazaBoundarySanitizer.modelInput(
+      userText,
+      maxCharacters: 120000,
+    );
     if (trimmed.isEmpty) {
       return NazaResponse(
         text: 'Send a message first.',
@@ -11218,7 +11224,12 @@ final class NazaLocalGemma {
         ? routeOverride!.trim()
         : route.label;
     final actionProfile = NazaActionSelector.select(trimmed, route);
-    final requestedModeInstruction = systemInstructionOverride?.trim();
+    final requestedModeInstruction = systemInstructionOverride == null
+        ? null
+        : NazaBoundarySanitizer.modelInput(
+            systemInstructionOverride,
+            maxCharacters: 24000,
+          );
     final turnSystemInstruction = requestedModeInstruction?.isNotEmpty == true
         ? requestedModeInstruction!
         : scannerMode
@@ -13464,7 +13475,11 @@ final class NazaLocalGemma {
     if (stripContinuationMarkers) {
       s = NazaContinuationEngine.stripDoneMarker(s);
     }
-    return preserveLeadingWhitespace ? s.trimRight() : s.trim();
+    final safe = NazaBoundarySanitizer.modelOutput(
+      s,
+      maxCharacters: 1024 * 1024,
+    );
+    return preserveLeadingWhitespace ? safe.trimRight() : safe.trim();
   }
 
   Future<void> _persistRuntimeSnapshot() async {
@@ -13485,9 +13500,17 @@ final class NazaLocalGemma {
     bool remember = true,
   }) async {
     try {
+      final safeUser = NazaBoundarySanitizer.databaseText(
+        user,
+        maxCharacters: 120000,
+      );
+      final safeAssistant = NazaBoundarySanitizer.databaseText(
+        response.text,
+        maxCharacters: 1024 * 1024,
+      );
       await NazaVault.instance.appendMessagePair(
-        user: user,
-        assistant: response.text,
+        user: safeUser,
+        assistant: safeAssistant,
         route: response.route,
         score: response.score,
         threadId: threadId,
@@ -13495,8 +13518,8 @@ final class NazaLocalGemma {
       );
       if (remember) {
         await NazaVectorMemory.instance.rememberMessagePair(
-          user: user,
-          assistant: response.text,
+          user: safeUser,
+          assistant: safeAssistant,
           route: response.route,
           score: response.score,
           turnId: turnId,
@@ -18759,6 +18782,7 @@ enum NazaPanel {
   history,
   intelligence,
   agenticCoding,
+  dataPipes,
 }
 
 class _NazaThemeSurface extends StatelessWidget {
@@ -20093,7 +20117,19 @@ class _NazaStableHomeState extends State<NazaStableHome>
       });
     }
     try {
-      return await _runAgenticTaskNow(request);
+      final result = await _runAgenticTaskNow(request);
+      final review = const NazaProgressiveSecurityLoop().review(result.text);
+      return result.withSecurityReview(
+        denied: review.denied,
+        iterations: review.iterations,
+        findings: review.findings
+            .map(
+              (finding) =>
+                  '${finding.severity.name.toUpperCase()} ${finding.ruleId} '
+                  '(line ${finding.line}): ${finding.remediation}',
+            )
+            .toList(growable: false),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -20698,6 +20734,18 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         onOpen: () => _setPanel(NazaPanel.agenticCoding),
       ),
       NazaFeatureDestination(
+        id: 'data-pipes',
+        label: 'Data Pipes',
+        title: 'Secure Data Pipes / Scraping',
+        subzone: 'Execution Intelligence',
+        description:
+            'Build approval-gated, ephemeral and encrypted scraping pipelines.',
+        category: 'Core',
+        icon: Icons.account_tree_rounded,
+        accent: Color(0xFF62D9F7),
+        onOpen: () => _setPanel(NazaPanel.dataPipes),
+      ),
+      NazaFeatureDestination(
         id: 'road-scanner',
         label: 'Road',
         title: 'Roadway Risk Observatory',
@@ -21294,6 +21342,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         NazaIntelligenceWorkspace.workflows => 'workflow-builder',
       },
       NazaPanel.agenticCoding => 'agentic-coding',
+      NazaPanel.dataPipes => 'data-pipes',
     };
   }
 
@@ -21465,6 +21514,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           runTask: _runAgenticTask,
           pickImage: _pickAgenticImage,
         );
+      case NazaPanel.dataPipes:
+        return const NazaDataPipesSurface();
     }
   }
 
@@ -21492,6 +21543,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         NazaPanel.agenticCoding,
         _panelForStack(NazaPanel.agenticCoding),
       ),
+      _tickerPanel(NazaPanel.dataPipes, _panelForStack(NazaPanel.dataPipes)),
     ];
     return IndexedStack(index: activeIndex, children: children);
   }
@@ -21523,6 +21575,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
       NazaPanel.history => 9,
       NazaPanel.intelligence => 10,
       NazaPanel.agenticCoding => 11,
+      NazaPanel.dataPipes => 12,
     };
   }
 
@@ -21552,6 +21605,8 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
         return 'intelligence';
       case NazaPanel.agenticCoding:
         return 'agentic code foundry';
+      case NazaPanel.dataPipes:
+        return 'secure data pipes';
     }
   }
 }
@@ -21879,6 +21934,8 @@ class _TopBar extends StatelessWidget {
         return 'Naza Intelligence';
       case NazaPanel.agenticCoding:
         return 'Agentic Code Foundry';
+      case NazaPanel.dataPipes:
+        return 'Data Pipes / Scraping';
     }
   }
 }

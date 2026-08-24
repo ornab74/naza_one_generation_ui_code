@@ -42,6 +42,10 @@ void main() {
       apiBaseUrl: 'http://user:secret@127.0.0.1:5001',
     );
     expect(credentialInUrl.validate(), isNotEmpty);
+    expect(
+      defaults.copyWith(apiBaseUrl: 'http://localhost:5001').validate(),
+      isNotEmpty,
+    );
     final configured = defaults.copyWith(remoteNodeId: 'remote-kubo-01');
     expect(configured.remoteNodeId, 'remote-kubo-01');
     expect(configured.copyWith(clearRemoteNodeId: true).remoteNodeId, isNull);
@@ -148,6 +152,41 @@ void main() {
     },
   );
 
+  test(
+    'dispatch approvals are short-lived and cannot be minted for hours',
+    () async {
+      final now = DateTime.now().toUtc();
+      final transport = NazaKuboChatTransport(
+        settings: NazaKuboNodeSettings.defaults.copyWith(
+          enabled: true,
+          pubSubEnabled: true,
+        ),
+        harmGate: RecordingHarmGate(),
+      );
+      addTearDown(transport.close);
+      final room = NazaChatRoom(
+        id: 'room-long-approval',
+        name: 'Bounded approval',
+        kind: NazaChatRoomKind.agent,
+        topic: 'naza-chat/v1/bounded-approval',
+        peerGroup: 'agent-mesh',
+        createdAt: now,
+      );
+
+      await expectLater(
+        transport.connect(
+          room,
+          approval: NazaChatDispatchApproval(
+            approvalId: 'approval-too-long',
+            approvedAt: now,
+            expiresAt: now.add(const Duration(hours: 1)),
+          ),
+        ),
+        throwsStateError,
+      );
+    },
+  );
+
   test('human and agent rooms have distinct encrypted transport envelopes', () {
     final human = NazaChatRoom(
       id: 'room-human',
@@ -218,6 +257,38 @@ void main() {
           sequence: 1,
           createdAt: DateTime.utc(2026, 1, 1),
         ),
+      );
+      await expectLater(
+        rooms.appendMessage(
+          NazaChatMessageEnvelope(
+            id: 'chat-roundtrip',
+            roomId: room.id,
+            senderId: 'agent-bond-01',
+            senderKind: NazaChatRoomKind.agent,
+            ciphertextCid: 'bafybeigdifferentciphertext',
+            aadDigest: digest,
+            signatureKeyId: 'sig-key-01',
+            sequence: 1,
+            createdAt: DateTime.utc(2026, 1, 1),
+          ),
+        ),
+        throwsFormatException,
+      );
+      await expectLater(
+        rooms.appendMessage(
+          NazaChatMessageEnvelope(
+            id: 'chat-sequence-collision',
+            roomId: room.id,
+            senderId: 'agent-bond-01',
+            senderKind: NazaChatRoomKind.agent,
+            ciphertextCid: 'bafybeigdifferentciphertext',
+            aadDigest: digest,
+            signatureKeyId: 'sig-key-01',
+            sequence: 1,
+            createdAt: DateTime.utc(2026, 1, 1),
+          ),
+        ),
+        throwsFormatException,
       );
       await rooms.saveMonitor(
         NazaChatRoomMonitorSnapshot(

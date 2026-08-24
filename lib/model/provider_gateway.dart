@@ -12,6 +12,7 @@ import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
+import '../security/boundary_sanitizer.dart';
 import '../security/secure_database.dart';
 
 enum NazaRemoteProvider {
@@ -460,18 +461,27 @@ final class NazaRemoteModelProfile {
     final endpoint = value['endpoint']?.toString().trim() ?? '';
     if (id.isEmpty || model.isEmpty || endpoint.isEmpty || provider.isEmpty)
       return null;
-    return NazaRemoteModelProfile(
+    final profile = NazaRemoteModelProfile(
       id: id,
       provider: provider.first,
-      displayName: value['displayName']?.toString().trim().isNotEmpty == true
-          ? value['displayName'].toString().trim()
-          : model,
+      displayName: NazaBoundarySanitizer.databaseText(
+        value['displayName']?.toString().trim().isNotEmpty == true
+            ? value['displayName'].toString()
+            : model,
+        maxCharacters: 120,
+      ),
       model: model,
       endpoint: endpoint,
       apiKey: value['apiKey']?.toString() ?? '',
       enabled: value['enabled'] != false,
       allowCustomEndpoint: value['allowCustomEndpoint'] == true,
     );
+    try {
+      NazaRemoteModelCatalog._validateProfile(profile);
+      return profile;
+    } on FormatException {
+      return null;
+    }
   }
 }
 
@@ -500,7 +510,16 @@ final class NazaRemoteModelCatalog {
         .take(maxProfiles)
         .map((profile) {
           _validateProfile(profile);
-          return profile.toJson();
+          return profile
+              .copyWith(
+                displayName: NazaBoundarySanitizer.databaseText(
+                  profile.displayName,
+                  maxCharacters: 120,
+                ),
+                model: profile.model.trim(),
+                endpoint: profile.endpoint.trim(),
+              )
+              .toJson();
         })
         .toList(growable: false);
     await _database.writeJson(_namespace, _key, bounded);
@@ -522,14 +541,21 @@ final class NazaRemoteModelCatalog {
   }
 
   static void _validateProfile(NazaRemoteModelProfile profile) {
-    if (profile.id.trim().isEmpty || profile.id.length > 100) {
+    if (!RegExp(
+      r'^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$',
+    ).hasMatch(profile.id.trim())) {
       throw const FormatException('Invalid remote model profile id.');
     }
     if (profile.model.trim().isEmpty ||
-        profile.model.length > maxModelIdLength) {
+        profile.model.length > maxModelIdLength ||
+        !RegExp(
+          r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$',
+        ).hasMatch(profile.model.trim())) {
       throw const FormatException('Invalid remote model identifier.');
     }
-    if (profile.apiKey.trim().isEmpty) {
+    if (profile.apiKey.trim().length < 8 ||
+        profile.apiKey.length > 4096 ||
+        profile.apiKey.contains(RegExp(r'[\u0000-\u001f\u007f]'))) {
       throw const FormatException('Remote model profile has no API key.');
     }
     NazaProviderGateway.validateEndpoint(
@@ -566,26 +592,43 @@ final class NazaProviderGateway {
     String? systemInstruction,
   }) async {
     NazaRemoteModelCatalog._validateProfile(profile);
-    final cleanPrompt = prompt.trim();
-    if (cleanPrompt.isEmpty || cleanPrompt.length > maxPromptCharacters) {
+    if (prompt.length > maxPromptCharacters) {
       throw const FormatException(
         'Prompt is empty or exceeds the remote limit.',
       );
     }
+    final cleanPrompt = NazaBoundarySanitizer.redactExactSecrets(
+      NazaBoundarySanitizer.modelInput(
+        prompt,
+        maxCharacters: maxPromptCharacters,
+        redactSecrets: true,
+      ),
+      <String>[profile.apiKey],
+    );
+    final cleanSystem = systemInstruction == null
+        ? null
+        : NazaBoundarySanitizer.redactExactSecrets(
+            NazaBoundarySanitizer.modelInput(
+              systemInstruction,
+              maxCharacters: 24000,
+              redactSecrets: true,
+            ),
+            <String>[profile.apiKey],
+          );
     final uri = Uri.parse(profile.endpoint);
     final headers = <String, String>{'content-type': 'application/json'};
     final body = switch (profile.provider) {
       NazaRemoteProvider.anthropic => _anthropicBody(
         profile,
         cleanPrompt,
-        systemInstruction,
+        cleanSystem,
       ),
       NazaRemoteProvider.gemini => _geminiBody(
         profile,
         cleanPrompt,
-        systemInstruction,
+        cleanSystem,
       ),
-      _ => _openAiBody(profile, cleanPrompt, systemInstruction),
+      _ => _openAiBody(profile, cleanPrompt, cleanSystem),
     };
     if (profile.provider == NazaRemoteProvider.gemini) {
       headers['x-goog-api-key'] = profile.apiKey;
@@ -595,17 +638,29 @@ final class NazaProviderGateway {
     } else {
       headers['authorization'] = 'Bearer ${profile.apiKey}';
     }
+    final encodedBody = jsonEncode(body);
+    if (encodedBody.contains(profile.apiKey)) {
+      throw const FormatException(
+        'A configured credential was detected in the model request body.',
+      );
+    }
     final request = http.Request('POST', uri)
       ..followRedirects = false
       ..headers.addAll(headers)
-      ..body = jsonEncode(body);
+      ..body = encodedBody;
     final responseBytes = await _sendBounded(
       request,
     ).timeout(const Duration(seconds: 45));
     final decoded = jsonDecode(
       utf8.decode(responseBytes, allowMalformed: false),
     );
-    final text = _extractText(profile.provider, decoded).trim();
+    final text = NazaBoundarySanitizer.redactExactSecrets(
+      NazaBoundarySanitizer.remoteText(
+        _extractText(profile.provider, decoded),
+        maxCharacters: maxResponseBytes,
+      ),
+      <String>[profile.apiKey],
+    );
     if (text.isEmpty)
       throw const FormatException('Remote provider returned no text.');
     return NazaRemoteModelResponse(
@@ -630,9 +685,10 @@ final class NazaProviderGateway {
         uri.scheme != 'https' ||
         uri.host.isEmpty ||
         uri.userInfo.isNotEmpty ||
-        uri.fragment.isNotEmpty) {
+        uri.fragment.isNotEmpty ||
+        uri.hasQuery) {
       throw const FormatException(
-        'Remote model endpoints must use HTTPS without embedded credentials.',
+        'Remote model endpoints must use HTTPS without credentials or query parameters.',
       );
     }
     final allowed = switch (provider) {

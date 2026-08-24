@@ -48,6 +48,10 @@ void main() {
     );
     expect(valid.validate(), isEmpty);
     expect(valid.toAdapterPlan()['workerNodeId'], 'do-scraper-1');
+    expect(
+      (valid.toAdapterPlan()['runtimeSecurity'] as Map)['dropCapabilities'],
+      <String>['ALL'],
+    );
 
     final unsafe = NazaChromiumScrapePlan(
       targetUrl: 'http://example.org/start',
@@ -66,6 +70,20 @@ void main() {
       unsafe.validate().any((error) => error.contains('immutable image')),
       isTrue,
     );
+
+    for (final target in <String>[
+      'https://127.0.0.1/admin',
+      'https://user:password@example.org/start',
+      'https://example.org/start?access_token=secret-value',
+      'https://metadata.internal/latest',
+    ]) {
+      final plan = NazaChromiumScrapePlan(
+        targetUrl: target,
+        allowedDomains: const <String>['example.org'],
+        image: validImage,
+      );
+      expect(plan.validate(), isNotEmpty, reason: target);
+    }
   });
 
   test('IPFS public exposure and payload encryption are explicit', () {

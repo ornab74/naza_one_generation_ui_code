@@ -12,15 +12,20 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
+import 'package:pqcrypto/pqcrypto.dart';
 
 import '../model/sentinel_model_runtime.dart';
+import '../security/boundary_sanitizer.dart';
 import '../security/probabilistic_harm_filter.dart';
 import '../security/secure_database.dart';
 
 const String nazaChatHybridSuite =
     'ML-KEM-1024+X25519+ML-DSA-87+HKDF-SHA512+AES-256-GCM';
+const String nazaIpfsSignatureAlgorithm = 'ML-DSA-87';
+const String _nazaIpfsSignatureContext = 'NazaOne/IPFSMessage/v1';
 
 enum NazaChatRoomKind { human, agent }
 
@@ -171,6 +176,10 @@ final class NazaChatMessageEnvelope {
     required this.createdAt,
     this.replyTo,
     this.attachmentCids = const <String>[],
+    this.mlDsa87PublicKey,
+    this.mlDsa87Signature,
+    this.passkeyCredentialId,
+    this.passkeyAssertionDigest,
   });
 
   final String id;
@@ -184,6 +193,13 @@ final class NazaChatMessageEnvelope {
   final String? replyTo;
   final List<String> attachmentCids;
   final DateTime createdAt;
+  final String? mlDsa87PublicKey;
+  final String? mlDsa87Signature;
+  final String? passkeyCredentialId;
+  final String? passkeyAssertionDigest;
+
+  bool get hasAdvancedSignature =>
+      mlDsa87PublicKey != null && mlDsa87Signature != null;
 
   List<String> validate() {
     final errors = <String>[];
@@ -205,6 +221,27 @@ final class NazaChatMessageEnvelope {
         attachmentCids.any((cid) => !_validCid(cid))) {
       errors.add('Attachment CID list is invalid.');
     }
+    if ((mlDsa87PublicKey == null) != (mlDsa87Signature == null)) {
+      errors.add('Post-quantum signature material is incomplete.');
+    }
+    if (hasAdvancedSignature &&
+        (!_validBase64Length(
+              mlDsa87PublicKey!,
+              DilithiumParams.mlDsa87.publicKeyBytes,
+            ) ||
+            !_validBase64Length(
+              mlDsa87Signature!,
+              DilithiumParams.mlDsa87.signatureBytes,
+            ))) {
+      errors.add('ML-DSA-87 signature material is invalid.');
+    }
+    if ((passkeyCredentialId == null) != (passkeyAssertionDigest == null) ||
+        (passkeyCredentialId != null &&
+            !_validPasskeyCredential(passkeyCredentialId!)) ||
+        (passkeyAssertionDigest != null &&
+            !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(passkeyAssertionDigest!))) {
+      errors.add('Passkey proof binding is invalid.');
+    }
     return List<String>.unmodifiable(errors);
   }
 
@@ -220,6 +257,11 @@ final class NazaChatMessageEnvelope {
     if (replyTo != null) 'replyTo': replyTo,
     'attachmentCids': attachmentCids,
     'createdAt': createdAt.toUtc().toIso8601String(),
+    if (mlDsa87PublicKey != null) 'mlDsa87PublicKey': mlDsa87PublicKey,
+    if (mlDsa87Signature != null) 'mlDsa87Signature': mlDsa87Signature,
+    if (passkeyCredentialId != null) 'passkeyCredentialId': passkeyCredentialId,
+    if (passkeyAssertionDigest != null)
+      'passkeyAssertionDigest': passkeyAssertionDigest,
   };
 
   static NazaChatMessageEnvelope? fromJson(Object? value) {
@@ -244,8 +286,125 @@ final class NazaChatMessageEnvelope {
       replyTo: _nullable(value['replyTo']?.toString()),
       attachmentCids: _strings(value['attachmentCids'], 16),
       createdAt: createdAt.toUtc(),
+      mlDsa87PublicKey: _nullable(value['mlDsa87PublicKey']?.toString()),
+      mlDsa87Signature: _nullable(value['mlDsa87Signature']?.toString()),
+      passkeyCredentialId: _nullable(value['passkeyCredentialId']?.toString()),
+      passkeyAssertionDigest: _nullable(
+        value['passkeyAssertionDigest']?.toString(),
+      ),
     );
     return envelope.validate().isEmpty ? envelope : null;
+  }
+
+  Uint8List signatureTranscript() => Uint8List.fromList(
+    utf8.encode(
+      jsonEncode(<String, Object?>{
+        'context': _nazaIpfsSignatureContext,
+        'id': id,
+        'roomId': roomId,
+        'senderId': senderId,
+        'senderKind': senderKind.name,
+        'ciphertextCid': ciphertextCid,
+        'aadDigest': aadDigest,
+        'signatureKeyId': signatureKeyId,
+        'sequence': sequence,
+        'replyTo': replyTo,
+        'attachmentCids': attachmentCids,
+        'createdAt': createdAt.toUtc().toIso8601String(),
+        'passkeyCredentialId': passkeyCredentialId,
+        'passkeyAssertionDigest': passkeyAssertionDigest,
+      }),
+    ),
+  );
+
+  Future<bool> verifyAdvancedSignature() async {
+    if (!hasAdvancedSignature || validate().isNotEmpty) return false;
+    final publicKey = base64Decode(mlDsa87PublicKey!);
+    final signature = base64Decode(mlDsa87Signature!);
+    final transcript = signatureTranscript();
+    try {
+      return await Isolate.run(
+        () => MlDsa.verify(
+          Uint8List.fromList(publicKey),
+          transcript,
+          Uint8List.fromList(signature),
+          DilithiumParams.mlDsa87,
+          ctx: Uint8List.fromList(utf8.encode(_nazaIpfsSignatureContext)),
+        ),
+      );
+    } finally {
+      publicKey.fillRange(0, publicKey.length, 0);
+      signature.fillRange(0, signature.length, 0);
+      transcript.fillRange(0, transcript.length, 0);
+    }
+  }
+}
+
+final class NazaIpfsMlDsa87Signer {
+  NazaIpfsMlDsa87Signer._(this._publicKey, this._privateKey);
+  final Uint8List _publicKey;
+  final Uint8List _privateKey;
+  bool _destroyed = false;
+
+  static Future<NazaIpfsMlDsa87Signer> generate() async {
+    final pair = await Isolate.run(
+      () => MlDsa.generateKeyPair(DilithiumParams.mlDsa87),
+    );
+    return NazaIpfsMlDsa87Signer._(pair.$1, pair.$2);
+  }
+
+  String get publicKeyBase64 {
+    if (_destroyed) throw StateError('Signing key has been destroyed.');
+    return base64Encode(_publicKey);
+  }
+
+  Future<NazaChatMessageEnvelope> sign(NazaChatMessageEnvelope envelope) async {
+    if (_destroyed) throw StateError('Signing key has been destroyed.');
+    if (envelope.validate().isNotEmpty || envelope.hasAdvancedSignature) {
+      throw const FormatException(
+        'Only a valid unsigned IPFS envelope can be signed.',
+      );
+    }
+    final transcript = envelope.signatureTranscript();
+    final privateCopy = Uint8List.fromList(_privateKey);
+    try {
+      final signature = await Isolate.run(() {
+        try {
+          return MlDsa.sign(
+            privateCopy,
+            transcript,
+            DilithiumParams.mlDsa87,
+            ctx: Uint8List.fromList(utf8.encode(_nazaIpfsSignatureContext)),
+          );
+        } finally {
+          privateCopy.fillRange(0, privateCopy.length, 0);
+        }
+      });
+      return NazaChatMessageEnvelope(
+        id: envelope.id,
+        roomId: envelope.roomId,
+        senderId: envelope.senderId,
+        senderKind: envelope.senderKind,
+        ciphertextCid: envelope.ciphertextCid,
+        aadDigest: envelope.aadDigest,
+        signatureKeyId: envelope.signatureKeyId,
+        sequence: envelope.sequence,
+        createdAt: envelope.createdAt,
+        replyTo: envelope.replyTo,
+        attachmentCids: envelope.attachmentCids,
+        passkeyCredentialId: envelope.passkeyCredentialId,
+        passkeyAssertionDigest: envelope.passkeyAssertionDigest,
+        mlDsa87PublicKey: base64Encode(_publicKey),
+        mlDsa87Signature: base64Encode(signature),
+      );
+    } finally {
+      transcript.fillRange(0, transcript.length, 0);
+    }
+  }
+
+  void destroy() {
+    _privateKey.fillRange(0, _privateKey.length, 0);
+    _destroyed = true;
   }
 }
 
@@ -510,6 +669,8 @@ final class NazaKuboRpcClient {
     final errors = settings.validate();
     if (errors.isNotEmpty) throw FormatException(errors.join(' '));
     _http.connectionTimeout = const Duration(seconds: 8);
+    _http.idleTimeout = const Duration(seconds: 15);
+    _http.autoUncompress = false;
   }
 
   final NazaKuboNodeSettings _settings;
@@ -529,7 +690,8 @@ final class NazaKuboRpcClient {
     final values = result['Strings'];
     if (values is! List) return const <String>[];
     return values
-        .map((value) => value.toString())
+        .map((value) => value.toString().trim())
+        .where(_validPeerId)
         .take(1000)
         .toList(growable: false);
   }
@@ -550,6 +712,7 @@ final class NazaKuboRpcClient {
     final boundary = 'naza${DateTime.now().microsecondsSinceEpoch}';
     final body = utf8.encode(jsonEncode(envelope.toJson()));
     final request = await _http.postUrl(uri);
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     request.headers.set(
       HttpHeaders.contentTypeHeader,
       'multipart/form-data; boundary=$boundary',
@@ -563,11 +726,13 @@ final class NazaKuboRpcClient {
     request.add(utf8.encode('Content-Type: application/json\r\n\r\n'));
     request.add(body);
     request.add(utf8.encode('\r\n--$boundary--\r\n'));
-    final response = await request.close();
-    final text = await _boundedResponse(response);
+    final response = await request.close().timeout(const Duration(seconds: 12));
+    final text = await _boundedResponse(
+      response,
+    ).timeout(const Duration(seconds: 15));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException(
-        'Kubo publish failed (${response.statusCode}): $text',
+        'Kubo publish failed (${response.statusCode}): ${_safeDaemonText(text)}',
       );
     }
   }
@@ -581,16 +746,16 @@ final class NazaKuboRpcClient {
     });
     await _harmGate.requireAllowed('ipfs.data.pull');
     final request = await _http.postUrl(uri);
-    final response = await request.close();
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+    final response = await request.close().timeout(const Duration(seconds: 12));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final text = await _boundedResponse(response);
       throw HttpException(
-        'Kubo subscribe failed (${response.statusCode}): $text',
+        'Kubo subscribe failed (${response.statusCode}): ${_safeDaemonText(text)}',
       );
     }
-    await for (final line
-        in response.transform(utf8.decoder).transform(const LineSplitter())) {
-      if (line.trim().isEmpty || line.length > 512 * 1024) continue;
+    await for (final line in _boundedUtf8Lines(response, 512 * 1024)) {
+      if (line.trim().isEmpty) continue;
       try {
         final decoded = jsonDecode(line);
         final rawData = decoded is Map ? decoded['data'] : decoded;
@@ -615,11 +780,16 @@ final class NazaKuboRpcClient {
     final uri = _rpcUri(Uri.parse(_settings.apiBaseUrl), path, query);
     await _harmGate.requireAllowed(_sentinelCommandForPath(path));
     final request = await _http.postUrl(uri);
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
     request.headers.contentType = ContentType.json;
-    final response = await request.close();
-    final text = await _boundedResponse(response);
+    final response = await request.close().timeout(const Duration(seconds: 12));
+    final text = await _boundedResponse(
+      response,
+    ).timeout(const Duration(seconds: 15));
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException('Kubo RPC failed (${response.statusCode}): $text');
+      throw HttpException(
+        'Kubo RPC failed (${response.statusCode}): ${_safeDaemonText(text)}',
+      );
     }
     final decoded = jsonDecode(text);
     if (decoded is! Map)
@@ -630,6 +800,10 @@ final class NazaKuboRpcClient {
   }
 
   Future<String> _boundedResponse(HttpClientResponse response) async {
+    final declared = response.contentLength;
+    if (declared > 1024 * 1024) {
+      throw const FormatException('Kubo response exceeded the bounded limit.');
+    }
     final bytes = <int>[];
     await for (final chunk in response) {
       if (bytes.length + chunk.length > 1024 * 1024) {
@@ -659,6 +833,39 @@ final class NazaKuboRpcClient {
     '/api/v0/pubsub/peers' => 'ipfs.pubsub.peers',
     _ => 'ipfs.rpc.request',
   };
+
+  static String _safeDaemonText(String value) =>
+      NazaBoundarySanitizer.remoteText(value, maxCharacters: 600);
+
+  static Stream<String> _boundedUtf8Lines(
+    Stream<List<int>> source,
+    int maximumLineBytes,
+  ) async* {
+    var bytes = <int>[];
+    var discarding = false;
+    await for (final chunk in source) {
+      for (final byte in chunk) {
+        if (byte == 0x0A) {
+          if (!discarding && bytes.isNotEmpty) {
+            yield utf8.decode(bytes, allowMalformed: false);
+          }
+          bytes = <int>[];
+          discarding = false;
+          continue;
+        }
+        if (discarding) continue;
+        if (bytes.length >= maximumLineBytes) {
+          bytes = <int>[];
+          discarding = true;
+          continue;
+        }
+        bytes.add(byte);
+      }
+    }
+    if (!discarding && bytes.isNotEmpty) {
+      yield utf8.decode(bytes, allowMalformed: false);
+    }
+  }
 }
 
 /// Adapter implementation using the Kubo RPC client. Construction is opt-in;
@@ -697,6 +904,12 @@ final class NazaKuboChatTransport implements NazaIpfsChatTransport {
     if (envelope.senderKind != room.kind) {
       throw StateError('Envelope sender kind does not match the room.');
     }
+    if (room.requiresSignedReceipts &&
+        !await envelope.verifyAdvancedSignature()) {
+      throw StateError(
+        'This room requires a valid ML-DSA-87 envelope signature.',
+      );
+    }
     await _client.publishEnvelope(room.topic, envelope);
   }
 
@@ -710,6 +923,13 @@ final class NazaKuboChatTransport implements NazaIpfsChatTransport {
     _requireApproval(room, approval);
     await for (final envelope in _client.subscribe(room.topic)) {
       _requireApproval(room, approval);
+      if (envelope.roomId != room.id || envelope.senderKind != room.kind) {
+        continue;
+      }
+      if (room.requiresSignedReceipts &&
+          !await envelope.verifyAdvancedSignature()) {
+        continue;
+      }
       yield envelope;
     }
   }
@@ -746,9 +966,12 @@ final class NazaKuboChatTransport implements NazaIpfsChatTransport {
     NazaChatDispatchApproval approval,
   ) {
     final now = DateTime.now().toUtc();
+    final lifetime = approval.expiresAt.difference(approval.approvedAt);
     if (!_validId(approval.approvalId) ||
         approval.approvedAt.isAfter(now) ||
+        now.difference(approval.approvedAt) > const Duration(minutes: 5) ||
         !approval.expiresAt.isAfter(approval.approvedAt) ||
+        lifetime > const Duration(minutes: 10) ||
         !approval.isActive) {
       throw StateError('Chat dispatch approval is invalid or expired.');
     }
@@ -801,6 +1024,7 @@ final class NazaIpfsChatRoomStore {
   static const int maxMonitors = 64;
 
   final NazaSecureDatabase _database;
+  Future<void> _messageMutationTail = Future<void>.value();
 
   Future<List<NazaChatRoom>> loadRooms() async {
     final raw = await _database.readJson(_namespace, _roomsKey);
@@ -849,7 +1073,20 @@ final class NazaIpfsChatRoomStore {
     );
   }
 
-  Future<void> appendMessage(NazaChatMessageEnvelope message) async {
+  Future<void> appendMessage(NazaChatMessageEnvelope message) {
+    final completer = Completer<void>();
+    _messageMutationTail = _messageMutationTail.then((_) async {
+      try {
+        await _appendMessageNow(message);
+        completer.complete();
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _appendMessageNow(NazaChatMessageEnvelope message) async {
     _throwIfInvalid(message.validate());
     final rooms = await loadRooms();
     final roomMatches = rooms.where((room) => room.id == message.roomId);
@@ -867,10 +1104,26 @@ final class NazaIpfsChatRoomStore {
               .whereType<NazaChatMessageEnvelope>()
               .toList()
         : <NazaChatMessageEnvelope>[];
-    final next = <NazaChatMessageEnvelope>[
-      ...current.where((item) => item.id != message.id),
-      message,
-    ];
+    final sameId = current.where((item) => item.id == message.id);
+    if (sameId.isNotEmpty) {
+      if (jsonEncode(sameId.first.toJson()) != jsonEncode(message.toJson())) {
+        throw const FormatException(
+          'A message identity cannot be rebound to different ciphertext.',
+        );
+      }
+      return;
+    }
+    if (current.any(
+      (item) =>
+          item.roomId == message.roomId &&
+          item.senderId == message.senderId &&
+          item.sequence == message.sequence,
+    )) {
+      throw const FormatException(
+        'A sender sequence cannot identify multiple messages.',
+      );
+    }
+    final next = <NazaChatMessageEnvelope>[...current, message];
     final bounded = next.length <= maxMessages
         ? next
         : next.sublist(next.length - maxMessages);
@@ -910,8 +1163,7 @@ final class NazaIpfsChatRoomStore {
 }
 
 String _bounded(String value, int max) {
-  final clean = value.trim();
-  return clean.length <= max ? clean : clean.substring(0, max);
+  return NazaBoundarySanitizer.databaseText(value, maxCharacters: max);
 }
 
 String? _nullable(String? value) {
@@ -923,8 +1175,9 @@ bool _validId(String value) =>
     RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{1,95}$').hasMatch(value.trim());
 
 bool _validLabel(String value, int max) {
-  final clean = value.trim();
-  return clean.isNotEmpty && clean.length <= max && !clean.contains('\u0000');
+  final raw = value.trim();
+  final clean = NazaBoundarySanitizer.databaseText(value, maxCharacters: max);
+  return clean.isNotEmpty && raw.length <= max && clean == raw;
 }
 
 bool _validTopic(String value) {
@@ -953,11 +1206,34 @@ bool _validDigest(String value) {
   return RegExp(r'^(?:sha256:)?[a-fA-F0-9]{32,128}$').hasMatch(value.trim());
 }
 
+bool _validBase64Length(String value, int expectedLength) {
+  if (value.length > ((expectedLength + 2) ~/ 3) * 4 + 4) return false;
+  try {
+    return base64Decode(value).length == expectedLength;
+  } on FormatException {
+    return false;
+  }
+}
+
 bool _validKeyReference(String value) {
   final clean = value.trim();
   return clean.length >= 8 &&
       clean.length <= 160 &&
       RegExp(r'^[A-Za-z0-9._:+/-]+$').hasMatch(clean);
+}
+
+bool _validPasskeyCredential(String value) {
+  final clean = value.trim();
+  return clean.length >= 8 &&
+      clean.length <= 512 &&
+      RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(clean);
+}
+
+bool _validPeerId(String value) {
+  final clean = value.trim();
+  return clean.length >= 10 &&
+      clean.length <= 128 &&
+      RegExp(r'^[A-Za-z0-9]+$').hasMatch(clean);
 }
 
 List<String> _strings(Object? value, int max) {
@@ -989,7 +1265,7 @@ bool _loopbackEndpoint(String value) {
     return false;
   }
   final host = uri.host.toLowerCase();
-  return host == 'localhost' || host == '127.0.0.1' || host == '::1';
+  return host == '127.0.0.1' || host == '::1';
 }
 
 Uri _rpcUri(Uri base, String path, Map<String, String> query) {
