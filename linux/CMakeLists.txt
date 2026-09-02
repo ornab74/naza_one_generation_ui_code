@@ -114,6 +114,23 @@ install(DIRECTORY "${NATIVE_ASSETS_DIR}"
    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
    COMPONENT Runtime)
 
+# LlamaDart's published Linux bundle is built on a newer glibc than Debian 12
+# and Crostini provide. The pinned-source helper builds the same ABI locally;
+# install it after native assets so these platform-compatible libraries win.
+set(NAZA_LOCAL_LLAMADART_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/bin/linux-x64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+  if(NOT EXISTS "${NAZA_LOCAL_LLAMADART_DIR}/libllamadart.so")
+    message(FATAL_ERROR
+      "Missing compatible LlamaDart runtime. Run "
+      "tool/prepare_linux_llamadart_native.sh before building Linux.")
+  endif()
+  install(DIRECTORY "${NAZA_LOCAL_LLAMADART_DIR}/"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime
+    FILES_MATCHING PATTERN "*.so*")
+endif()
+
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.
 set(FLUTTER_ASSET_DIR_NAME "flutter_assets")

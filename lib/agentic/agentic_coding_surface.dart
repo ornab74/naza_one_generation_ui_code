@@ -2996,35 +2996,38 @@ class _NazaAgenticCodingSurfaceState extends State<NazaAgenticCodingSurface> {
               for (final edit in edits)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
-                  child: ListTile(
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 9),
-                    tileColor: _ink.withValues(alpha: 0.68),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(11),
-                      side: const BorderSide(color: _border),
-                    ),
-                    leading: const Icon(
-                      Icons.code_rounded,
-                      color: _cyan,
-                      size: 19,
-                    ),
-                    title: Text(
-                      '${edit.relativePath} · ${edit.sector}',
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: _text,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 9),
+                      tileColor: _ink.withValues(alpha: 0.68),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(11),
+                        side: const BorderSide(color: _border),
                       ),
+                      leading: const Icon(
+                        Icons.code_rounded,
+                        color: _cyan,
+                        size: 19,
+                      ),
+                      title: Text(
+                        '${edit.relativePath} · ${edit.sector}',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _text,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      subtitle: Text(
+                        edit.goal,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _subtext, fontSize: 10),
+                      ),
+                      trailing: _TinyState(edit.state.label, _cyan),
                     ),
-                    subtitle: Text(
-                      edit.goal,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: _subtext, fontSize: 10),
-                    ),
-                    trailing: _TinyState(edit.state.label, _cyan),
                   ),
                 ),
             Text(

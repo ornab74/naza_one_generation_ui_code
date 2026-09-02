@@ -140,4 +140,44 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets('message actions wrap instead of overflowing a long route', (
+    tester,
+  ) async {
+    final response = Completer<NazaResponse>();
+    final route = List<String>.filled(40, 'local-fallback').join('-');
+
+    await tester.pumpWidget(
+      NazaOneApp(
+        requireVaultUnlock: false,
+        chatPromptSender: (_) => response.future,
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(
+      find.byType(TextField, skipOffstage: true),
+      'Keep a long route footer responsive.',
+    );
+    await tester.tap(find.text('Send'));
+    await tester.pump();
+
+    response.complete(
+      NazaResponse(
+        text: 'The footer actions should remain visible.',
+        score: 1,
+        route: route,
+        cancelled: false,
+        createdAt: DateTime(2026, 9, 2),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byTooltip('Copy message'), findsWidgets);
+    expect(find.text('Read aloud'), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }

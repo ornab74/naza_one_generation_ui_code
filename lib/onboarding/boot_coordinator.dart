@@ -716,46 +716,41 @@ final class _NazaBootCoordinatorState extends State<NazaBootCoordinator> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = _themeData;
-    if (_stage == _BootStage.home) {
-      return ValueListenableBuilder<String>(
-        valueListenable: app.NazaThemeStore.selectedId,
-        builder: (_, themeId, _) {
-          return MaterialApp(
-            debugShowCheckedModeBanner: false,
-            title: 'Naza One',
-            theme: NazaBootThemeCatalog.byId(themeId).build(),
-            home: const app.NazaStableHome(),
-          );
-        },
-      );
-    }
-
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Naza One · First Run',
-      theme: theme,
-      home: Scaffold(
-        body: Stack(
-          children: <Widget>[
-            Positioned.fill(child: _BootBackdrop(theme: _theme)),
-            SafeArea(
-              // The boot route is short-lived. A cross-fade here creates an
-              // opacity layer during the same first frames in which Skia is
-              // compiling the shell shaders, so stage changes stay direct.
-              child: switch (_stage) {
-                _BootStage.loading => _loadingScreen(),
-                _BootStage.security => _securityScreen(),
-                _BootStage.model => _modelScreen(),
-                _BootStage.guide => _guideScreen(),
-                _BootStage.themes => _themeScreen(),
-                _BootStage.preparing => _preparingScreen(),
-                _BootStage.home => const SizedBox.shrink(),
-              },
-            ),
-          ],
-        ),
-      ),
+    return ValueListenableBuilder<String>(
+      valueListenable: app.NazaThemeStore.selectedId,
+      builder: (_, selectedThemeId, _) {
+        final atHome = _stage == _BootStage.home;
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: atHome ? 'Naza One' : 'Naza One · First Run',
+          theme: atHome
+              ? NazaBootThemeCatalog.byId(selectedThemeId).build()
+              : _themeData,
+          home: atHome
+              ? const app.NazaStableHome()
+              : Scaffold(
+                  body: Stack(
+                    children: <Widget>[
+                      Positioned.fill(child: _BootBackdrop(theme: _theme)),
+                      SafeArea(
+                        // Keep MaterialApp mounted across the boot handoff.
+                        // Replacing the complete inherited-widget tree here
+                        // can deactivate it before its dependents are removed.
+                        child: switch (_stage) {
+                          _BootStage.loading => _loadingScreen(),
+                          _BootStage.security => _securityScreen(),
+                          _BootStage.model => _modelScreen(),
+                          _BootStage.guide => _guideScreen(),
+                          _BootStage.themes => _themeScreen(),
+                          _BootStage.preparing => _preparingScreen(),
+                          _BootStage.home => const SizedBox.shrink(),
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+        );
+      },
     );
   }
 

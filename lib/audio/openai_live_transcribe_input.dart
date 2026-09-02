@@ -17,6 +17,8 @@ final class OpenAiLiveTranscribeInput {
   StreamSubscription<Uint8List>? _audioSubscription;
   StreamSubscription<dynamic>? _socketSubscription;
   final StringBuffer _transcript = StringBuffer();
+  static const int _maxEventCharacters = 256 * 1024;
+  static const int _maxTranscriptCharacters = 100000;
 
   static Future<bool> isConfigured() async {
     try {
@@ -36,6 +38,9 @@ final class OpenAiLiveTranscribeInput {
 
   Future<void> start({required ValueChanged<String> onText}) async {
     await stop();
+    if (!await _recorder.hasPermission()) {
+      throw StateError('Microphone permission was not granted.');
+    }
     final profiles = await NazaRemoteModelCatalog().load();
     final profile = profiles.where(
       (candidate) =>
@@ -51,15 +56,20 @@ final class OpenAiLiveTranscribeInput {
     );
     _socket = socket;
     _socketSubscription = socket.listen((data) {
-      if (data is! String) return;
-      final event = jsonDecode(data);
-      if (event is! Map) return;
-      final type = event['type']?.toString() ?? '';
-      final delta = event['delta']?.toString() ?? '';
-      if ((type.contains('transcription') || type.contains('text')) &&
-          delta.isNotEmpty) {
-        _transcript.write(delta);
-        onText(_transcript.toString());
+      if (data is! String || data.length > _maxEventCharacters) return;
+      try {
+        final event = jsonDecode(data);
+        if (event is! Map) return;
+        final type = event['type']?.toString() ?? '';
+        final delta = event['delta']?.toString() ?? '';
+        if ((type.contains('transcription') || type.contains('text')) &&
+            delta.isNotEmpty &&
+            _transcript.length + delta.length <= _maxTranscriptCharacters) {
+          _transcript.write(delta);
+          onText(_transcript.toString());
+        }
+      } on FormatException {
+        // Ignore malformed remote events without terminating microphone cleanup.
       }
     });
     socket.add(
@@ -76,10 +86,6 @@ final class OpenAiLiveTranscribeInput {
         },
       }),
     );
-    if (!await _recorder.hasPermission()) {
-      await stop();
-      throw StateError('Microphone permission was not granted.');
-    }
     final stream = await _recorder.startStream(
       const RecordConfig(
         encoder: AudioEncoder.pcm16bits,

@@ -45,6 +45,9 @@ dependencies:
   shared_preferences: ^2.5.5
   xml: ^7.0.1
   flutter_markdown: ^0.7.7+1
+  # FIPS 202 SHA3-256 for scanner defense-capsule digests. Keep the audited
+  # implementation pinned; update deliberately after reviewing its changelog.
+  pointycastle: 4.0.0
 
 dev_dependencies:
   flutter_test:

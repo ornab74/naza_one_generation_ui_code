@@ -17,6 +17,22 @@ final class OpenAiRealtimeVoiceSession {
       StreamController<Map<String, dynamic>>.broadcast();
   final BytesBuilder _pcm = BytesBuilder(copy: false);
   bool _paused = false;
+  int _pcmBytes = 0;
+
+  static const int _maxTextCharacters = 50000;
+  static const int _maxEventCharacters = 512 * 1024;
+  static const int _maxPcmBytes = 48 * 1024 * 1024;
+  static const Set<String> _allowedVoices = {
+    'alloy',
+    'ash',
+    'ballad',
+    'coral',
+    'echo',
+    'marin',
+    'sage',
+    'shimmer',
+    'verse',
+  };
 
   Stream<Map<String, dynamic>> get events => _events.stream;
   bool get connected => _socket != null;
@@ -28,6 +44,12 @@ final class OpenAiRealtimeVoiceSession {
     String instructions =
         'Read naturally, warmly, and clearly. Preserve the supplied text exactly; do not summarize.',
   }) async {
+    if (model != 'gpt-realtime-2.1') {
+      throw ArgumentError.value(model, 'model', 'Unsupported realtime model.');
+    }
+    if (!_allowedVoices.contains(voice)) {
+      throw ArgumentError.value(voice, 'voice', 'Unsupported voice.');
+    }
     await close();
     final profile = await _openAiProfile();
     if (profile == null) {
@@ -70,6 +92,11 @@ final class OpenAiRealtimeVoiceSession {
   void speak(String text) {
     final value = text.trim();
     if (value.isEmpty || !connected) return;
+    if (value.length > _maxTextCharacters) {
+      throw StateError(
+        'Realtime speech text exceeds the 50,000 character limit.',
+      );
+    }
     _paused = false;
     _send({
       'type': 'conversation.item.create',
@@ -105,10 +132,15 @@ final class OpenAiRealtimeVoiceSession {
     if (!connected) return;
     _send({'type': 'response.cancel'});
     _pcm.clear();
+    _pcmBytes = 0;
     _events.add({'type': 'session.stopped'});
   }
 
-  Uint8List get pcm16 => _pcm.takeBytes();
+  Uint8List get pcm16 {
+    final bytes = _pcm.takeBytes();
+    _pcmBytes = 0;
+    return bytes;
+  }
 
   Future<void> close() async {
     final socket = _socket;
@@ -124,16 +156,31 @@ final class OpenAiRealtimeVoiceSession {
   void _send(Map<String, dynamic> event) => _socket?.add(jsonEncode(event));
 
   void _handle(Object? data) {
-    if (data is! String) return;
-    final decoded = jsonDecode(data);
-    if (decoded is! Map) return;
-    final event = Map<String, dynamic>.from(decoded);
-    final type = event['type']?.toString() ?? '';
-    final delta = event['delta']?.toString();
-    if (type == 'response.output_audio.delta' && delta != null) {
-      _pcm.add(base64Decode(delta));
+    if (data is! String || data.length > _maxEventCharacters) return;
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is! Map) return;
+      final event = Map<String, dynamic>.from(decoded);
+      final type = event['type']?.toString() ?? '';
+      final delta = event['delta']?.toString();
+      if (type == 'response.output_audio.delta' && delta != null) {
+        final bytes = base64Decode(delta);
+        if (_pcmBytes + bytes.length > _maxPcmBytes) {
+          pause();
+          if (!_events.isClosed) {
+            _events.addError(
+              StateError('Realtime audio exceeded its memory limit.'),
+            );
+          }
+          return;
+        }
+        _pcm.add(bytes);
+        _pcmBytes += bytes.length;
+      }
+      if (!_events.isClosed) _events.add(event);
+    } on FormatException {
+      // Ignore malformed remote events while preserving session cleanup.
     }
-    if (!_events.isClosed) _events.add(event);
   }
 
   Future<NazaRemoteModelProfile?> _openAiProfile() async {

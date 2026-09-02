@@ -98,8 +98,11 @@ Ubuntu dependencies:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev
+sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev gstreamer1.0-plugins-good
 ```
+
+The GStreamer plug-in package is a runtime dependency for WAV playback through
+Read Aloud, not only a build dependency.
 
 Build:
 

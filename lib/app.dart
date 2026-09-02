@@ -38,14 +38,17 @@ import 'model/embedding_runtime.dart';
 import 'model/sentinel_model_runtime.dart';
 import 'audio/openai_reading_service.dart';
 import 'audio/openai_live_transcribe_input.dart';
+import 'audio/voice_settings_card.dart';
 import 'chat/history_metadata_repository.dart';
 import 'onboarding/boot_theme_catalog.dart';
 import 'performance/naza_shader_warm_up.dart';
 import 'security/post_quantum_export.dart';
 import 'security/post_quantum_recovery.dart';
+import 'security/probabilistic_harm_filter.dart';
 import 'security/bounded_input.dart';
 import 'security/boundary_sanitizer.dart';
 import 'security/secure_database.dart';
+import 'scanner/pennylane_surface.dart';
 import 'naza_healthdash_monolith.dart';
 import 'naza_bookforge.dart';
 import 'naza_exploration_hub.dart';
@@ -14474,6 +14477,7 @@ final class NazaScannerTrace {
   final String rgbTiming;
   final String nonlocalRibbon;
   final String checksum;
+  final String systemMetrics;
   final int defensePasses;
 
   const NazaScannerTrace({
@@ -14486,6 +14490,7 @@ final class NazaScannerTrace {
     required this.rgbTiming,
     required this.nonlocalRibbon,
     required this.checksum,
+    this.systemMetrics = 'sys_metrics: disabled',
     required this.defensePasses,
   });
 
@@ -14500,6 +14505,7 @@ final class NazaScannerTrace {
       'rgbTiming': rgbTiming,
       'nonlocalRibbon': nonlocalRibbon,
       'checksum': checksum,
+      'systemMetrics': systemMetrics,
       'defensePasses': defensePasses,
     };
   }
@@ -14520,6 +14526,7 @@ final class NazaScannerTrace {
       rgbTiming: field('rgbTiming'),
       nonlocalRibbon: field('nonlocalRibbon'),
       checksum: field('checksum', 'legacy'),
+      systemMetrics: field('systemMetrics', 'sys_metrics: disabled'),
       defensePasses: ((json['defensePasses'] as num?) ?? 0).toInt().clamp(
         0,
         NazaScannerPrompts.maxDefensePasses,
@@ -15038,6 +15045,57 @@ Hazards: ${_value(data, 'nearby_hazards', 'none supplied')}
 ''';
   }
 
+  /// Exact Dart rendering of `build_road_scanner_prompt` in the supplied
+  /// Python reference. Keep snapshot-tested; whitespace is model input.
+  static String buildReferenceRoadLlama(
+    Map<String, String> data,
+    NazaScannerTrace trace,
+  ) =>
+      '''You are a Hypertime Nanobot specialized Road Risk Classification AI trained to evaluate real-world driving scenes.
+Analyze and Triple Check for validating accuracy the environmental and sensor data and determine the overall road risk level.
+Your reply must be only one word: Low, Medium, or High.
+
+[tuning]
+Scene details:
+Location: ${_referenceValue(data, 'location', 'unspecified location')}
+Road type: ${_referenceValue(data, 'road_type', 'highway')}
+Weather: ${_referenceValue(data, 'weather', 'clear')}
+Traffic: ${_referenceValue(data, 'traffic_density', 'low')}
+Obstacles: ${_referenceValue(data, 'nearby_hazards', 'none')}
+Sensor notes: ${_referenceValue(data, 'sensor_notes', 'none')}
+${trace.systemMetrics}
+Quantum State: ${trace.entropy}
+[/tuning]
+
+Follow these strict rules when forming your decision:
+- Think through all scene factors internally but do not show reasoning.
+- Evaluate surface, visibility, weather, traffic, and obstacles holistically.
+- Optionally use the system entropic signal to bias your internal confidence slightly.
+- Choose only one risk level that best fits the entire situation.
+- Output exactly one word, with no punctuation or labels.
+- The valid outputs are only: Low, Medium, High.
+
+[action]
+1) Normalize sensor inputs to comparable scales.
+3) Map environmental risk cues -> discrete label using conservative thresholds.
+4) If sensor integrity anomalies are detected, bias toward higher risk.
+5) PUNKD: detect key tokens and locally adjust attention/temperature slightly to focus decisions.
+6) Do not output internal reasoning or diagnostics; only return the single-word label.
+[/action]
+
+[replytemplate]
+Low | Medium | High
+[/replytemplate]''';
+
+  static String _referenceValue(
+    Map<String, String> data,
+    String key,
+    String fallback,
+  ) {
+    final value = data[key]?.trim() ?? '';
+    return value.isEmpty ? fallback : value;
+  }
+
   static String foodWaterSummary(Map<String, String> data) {
     return '''
 Food / Water Scanner
@@ -15061,50 +15119,30 @@ Max targets: ${_value(data, 'max_targets', '6')}
 
   static NazaScannerTrace _trace(String purpose, Map<String, String> data) {
     final canonical = _canonical(data);
+    final pennyLane = PennyLaneScanner.evaluate(data);
     final chroma = NazaQuantumRouter.chromaticState(
       '$purpose::$canonical',
       purpose: purpose,
       baseRgb: _baseRgbForPurpose(purpose),
     );
-    final entropyScore = chroma.score;
-    final integrityScore = (0.18 + entropyScore * 0.74)
-        .clamp(0.0, 1.0)
-        .toDouble();
-    final multiNodeScore = (0.11 + (1.0 - entropyScore) * 0.41)
-        .clamp(0.0, 1.0)
-        .toDouble();
-    final passes = integrityScore >= 0.70
-        ? 5
-        : integrityScore >= 0.35
-        ? 3
-        : 1;
     final checksum = _checksum('$purpose|$canonical');
-    final capsule = _checksum(
-      '$purpose|$canonical|${DateTime.now().microsecondsSinceEpoch}|${_nonce()}',
-      length: 24,
-    );
     final colorwheel = _checksum(
       'colorwheel|$purpose|$checksum|${_nonce()}',
       length: 16,
     );
 
     return NazaScannerTrace(
-      entropy:
-          'entropic_score=${entropyScore.toStringAsFixed(3)} '
-          '(level=${_level(entropyScore)})',
-      integrity:
-          'local_interference=${integrityScore.toStringAsFixed(2)} '
-          '(level=${_level(integrityScore)}, samples=$metricSamples)',
-      multiNode:
-          'multi_node=${multiNodeScore.toStringAsFixed(2)} '
-          '(level=${_level(multiNodeScore)}, passes=$passes)',
-      defenseCapsule: 'defense_capsule=$capsule',
+      entropy: pennyLane.entropyText,
+      integrity: pennyLane.integrityText,
+      multiNode: pennyLane.multiNodeText,
+      defenseCapsule: pennyLane.capsuleText,
       colorwheel: 'colorwheel=$colorwheel',
       chromaticRibbon: chroma.quantumLine,
       rgbTiming: chroma.timingLine,
       nonlocalRibbon: chroma.ribbonLine,
       checksum: checksum,
-      defensePasses: math.min(maxDefensePasses, math.max(1, passes)),
+      systemMetrics: pennyLane.systemMetricsText,
+      defensePasses: 1,
     );
   }
 
@@ -15141,12 +15179,6 @@ Max targets: ${_value(data, 'max_targets', '6')}
         ? clean
         : '${clean.substring(0, maxFieldChars).trimRight()}...';
     return NazaPromptData.inline(bounded, maxChars: maxFieldChars + 3);
-  }
-
-  static String _level(double score) {
-    if (score >= 0.70) return 'high';
-    if (score >= 0.35) return 'medium';
-    return 'low';
   }
 
   static String _nonce() {
@@ -18501,6 +18533,7 @@ final class NazaScannerResult {
   final int? safetyScore;
   final String riskText;
   final String safetyText;
+  final String rawModelOutput;
   final String route;
   final double routeScore;
   final NazaScannerTrace trace;
@@ -18516,6 +18549,7 @@ final class NazaScannerResult {
     required this.safetyScore,
     required this.riskText,
     required this.safetyText,
+    this.rawModelOutput = '',
     required this.route,
     required this.routeScore,
     required this.trace,
@@ -18530,6 +18564,7 @@ final class NazaScannerResult {
     required NazaResponse riskResponse,
     required NazaResponse safetyResponse,
     required NazaScannerTrace trace,
+    String rawModelOutput = '',
   }) {
     final cancelled =
         riskResponse.cancelled ||
@@ -18548,6 +18583,7 @@ final class NazaScannerResult {
             'The scan was cancelled before the risk classifier completed. Run the scan again while this panel remains active.',
         safetyText:
             'No safety score was produced. The app will not substitute a default score for a cancelled scan.',
+        rawModelOutput: rawModelOutput,
         route: 'scanner-cancelled',
         routeScore: 0,
         trace: trace,
@@ -18573,6 +18609,7 @@ final class NazaScannerResult {
         riskText:
             'Classifier output was incomplete; missing $missing. No risk class or score was inferred.\n\n${riskResponse.text.trim()}',
         safetyText: safetyResponse.text.trim(),
+        rawModelOutput: rawModelOutput,
         route: 'scanner-invalid-output',
         routeScore: riskResponse.score,
         trace: trace,
@@ -18590,6 +18627,7 @@ final class NazaScannerResult {
       safetyScore: parsedScore.clamp(0, 100).toInt(),
       riskText: riskResponse.text,
       safetyText: safetyResponse.text,
+      rawModelOutput: rawModelOutput,
       route: riskResponse.route,
       routeScore: riskResponse.score,
       trace: trace,
@@ -18615,6 +18653,7 @@ final class NazaScannerResult {
       safetyScore: null,
       riskText: response,
       safetyText: response,
+      rawModelOutput: '',
       route: 'scanner-error',
       routeScore: 0,
       trace: trace,
@@ -18635,6 +18674,7 @@ final class NazaScannerResult {
       'safetyScore': safetyScore,
       'riskText': riskText,
       'safetyText': safetyText,
+      'rawModelOutput': rawModelOutput,
       'route': route,
       'routeScore': routeScore,
       'trace': trace.toJson(),
@@ -18663,6 +18703,7 @@ final class NazaScannerResult {
       safetyScore: parsedSafetyScore?.clamp(0, 100).toInt(),
       riskText: json['riskText']?.toString() ?? '',
       safetyText: json['safetyText']?.toString() ?? '',
+      rawModelOutput: json['rawModelOutput']?.toString() ?? '',
       route: json['route']?.toString() ?? 'scanner-history',
       routeScore: double.tryParse(json['routeScore']?.toString() ?? '') ?? 0,
       trace: rawTrace is Map
@@ -19496,6 +19537,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
       trace: trace,
       riskStatus: 'road risk classification',
       safetyStatus: 'road safety score pass',
+      scannerModel: data['_scanner_model'] ?? 'gemma4-e2b-litert',
+      scannerData: data,
     );
     _persistScannerHistory('road', data, result);
     return result;
@@ -19512,6 +19555,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
       trace: trace,
       riskStatus: 'food / water risk classification',
       safetyStatus: 'food / water safety score pass',
+      scannerModel: data['_scanner_model'] ?? 'gemma4-e2b-litert',
+      scannerData: data,
     );
     _persistScannerHistory('food', data, result);
     return result;
@@ -19533,6 +19578,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
       trace: trace,
       riskStatus: 'food / water multi-scan planning',
       safetyStatus: 'multi-scan safety score pass',
+      scannerModel: data['_scanner_model'] ?? 'gemma4-e2b-litert',
+      scannerData: data,
     );
     _persistScannerHistory('foodPlanner', data, result);
     return result;
@@ -19564,6 +19611,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
     required NazaScannerTrace trace,
     required String riskStatus,
     required String safetyStatus,
+    required String scannerModel,
+    required Map<String, String> scannerData,
   }) async {
     if (_sending) {
       return NazaScannerResult.failed(
@@ -19584,31 +19633,37 @@ class _NazaStableHomeState extends State<NazaStableHome>
     await WidgetsBinding.instance.endOfFrame;
 
     try {
-      if (mounted) {
-        setState(() => _status = 'core safety sentinel classification');
-      }
-      final sentinel = await NazaSentinelGuard.instance.classifyScanner(
-        domain: kind.toLowerCase().contains('road')
-            ? 'road-scanner'
-            : 'food-water-scanner',
-        evidence: riskPrompt,
-        lState: <String>[
-          trace.chromaticRibbon,
-          trace.rgbTiming,
-          trace.nonlocalRibbon,
-          trace.entropy,
-          trace.integrity,
-          trace.multiNode,
-          trace.defenseCapsule,
-          trace.colorwheel,
-          'checksum=${trace.checksum}',
-        ].join('\n'),
-        defensePasses: trace.defensePasses.clamp(1, 5),
-      );
-      if (!sentinel.valid) {
-        throw StateError(
-          'The scanner-only safety sentinel did not return a valid classification.',
+      final useLlama = scannerModel == 'llama3-small';
+      NazaScannerSentinelDecision? sentinel;
+      if (useLlama) {
+        if (mounted) {
+          setState(() => _status = 'Llama 3 Small scanner classification');
+        }
+        sentinel = await NazaSentinelGuard.instance.classifyScanner(
+          domain: kind.toLowerCase().contains('road')
+              ? 'road-scanner'
+              : 'food-water-scanner',
+          // Keep the small 2,048-token GGUF classifier aligned with the
+          // reference implementation: send the compact public observation
+          // summary, not the full explanatory Gemma prompt.
+          evidence: kind.toLowerCase().contains('road')
+              ? NazaScannerPrompts.buildReferenceRoadLlama(scannerData, trace)
+              : visibleSummary,
+          lState: <String>[
+            trace.chromaticRibbon,
+            trace.rgbTiming,
+            trace.nonlocalRibbon,
+            trace.entropy,
+            trace.integrity,
+            trace.multiNode,
+            trace.defenseCapsule,
+            trace.colorwheel,
+            'checksum=${trace.checksum}',
+          ].join('\n'),
+          defensePasses: 1,
         );
+      } else if (scannerModel != 'gemma4-e2b-litert') {
+        throw const FormatException('Unsupported scanner model selection.');
       }
       final scannerPrompt = NazaScannerPrompts.buildSinglePassScanner(
         kind: kind,
@@ -19616,15 +19671,13 @@ class _NazaStableHomeState extends State<NazaStableHome>
         primaryPrompt: riskPrompt,
         safetyPrompt: safetyPrompt,
       );
-      final feature = kind.toLowerCase().contains('road')
-          ? NazaModelFeature.roadScanner
-          : NazaModelFeature.foodScanner;
-      final remote = await _sendRemoteIfSelected(
-        feature: feature,
-        prompt: scannerPrompt,
-      );
-      final scannerResponse = remote == null
-          ? await NazaLocalGemma.instance.send(
+      final scannerResponse = sentinel != null
+          ? _localLlamaScannerResponse(
+              decision: sentinel,
+              kind: kind,
+              visibleSummary: visibleSummary,
+            )
+          : await NazaLocalGemma.instance.send(
               scannerPrompt,
               historyUserText: visibleSummary,
               useMemory: false,
@@ -19634,15 +19687,26 @@ class _NazaStableHomeState extends State<NazaStableHome>
               scannerMode: true,
               routeOverride:
                   'scanner-${kind.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-')}',
+            );
+      final calibratedResponse = sentinel == null
+          ? NazaResponse(
+              text: scannerResponse.text,
+              score: scannerResponse.score,
+              route: '${scannerResponse.route}+gemma4-scanner',
+              cancelled: scannerResponse.cancelled,
+              createdAt: scannerResponse.createdAt,
             )
+          : sentinel.valid
+          ? _applyScannerSentinel(scannerResponse, sentinel)
           : NazaResponse(
-              text: remote.text,
-              score: 1,
-              route: 'remote-${remote.provider}-${remote.model}',
+              text:
+                  '''Classifier output was not a valid Low, Medium, or High label.
+Raw CHUNKD output is shown below.''',
+              score: 0,
+              route: 'local-llama3-small-invalid-output',
               cancelled: false,
               createdAt: DateTime.now(),
             );
-      final sentinelResponse = _applyScannerSentinel(scannerResponse, sentinel);
 
       if (mounted) {
         setState(() => _status = safetyStatus);
@@ -19654,9 +19718,10 @@ class _NazaStableHomeState extends State<NazaStableHome>
         title: title,
         kind: kind,
         visibleSummary: visibleSummary,
-        riskResponse: sentinelResponse,
-        safetyResponse: sentinelResponse,
+        riskResponse: calibratedResponse,
+        safetyResponse: calibratedResponse,
         trace: trace,
+        rawModelOutput: sentinel?.rawOutput ?? scannerResponse.text,
       );
     } catch (error) {
       return NazaScannerResult.failed(
@@ -19690,6 +19755,63 @@ class _NazaStableHomeState extends State<NazaStableHome>
       route: '${response.route}+sentinel-${sentinel.risk.name}',
       cancelled: response.cancelled,
       createdAt: response.createdAt,
+    );
+  }
+
+  NazaResponse _localLlamaScannerResponse({
+    required NazaScannerSentinelDecision decision,
+    required String kind,
+    required String visibleSummary,
+  }) {
+    final risk = decision.risk;
+    final matchingVotes = decision.votes.where((vote) => vote == risk).length;
+    final agreement = decision.votes.isEmpty
+        ? 0.0
+        : matchingVotes / decision.votes.length;
+    final confidence = agreement >= 0.999
+        ? 'High'
+        : agreement >= 0.60
+        ? 'Medium'
+        : 'Low';
+    final score = switch (risk) {
+      NazaHarmRisk.low => 85,
+      NazaHarmRisk.medium => 60,
+      NazaHarmRisk.high => 30,
+      NazaHarmRisk.indeterminate => 50,
+    };
+    final safetyBand = switch (risk) {
+      NazaHarmRisk.low => 'High',
+      NazaHarmRisk.medium => 'Medium',
+      NazaHarmRisk.high => 'Low',
+      NazaHarmRisk.indeterminate => 'Medium',
+    };
+    final domain = kind.toLowerCase().contains('road')
+        ? 'road conditions'
+        : 'food or water conditions';
+    final summary = NazaPromptData.inline(visibleSummary, maxChars: 220);
+    final text =
+        '''Risk: ${risk.label}
+Confidence: $confidence
+Primary cues:
+- Local Llama Small classification of the supplied $domain.
+- Supplied observation summary: $summary
+Recommended action:
+- Verify the relevant conditions directly on-site.
+- Use the conservative ${risk.label.toLowerCase()}-risk precautions until verified.
+Safety Score: $score
+Safety Band: $safetyBand
+Score drivers:
+- Result from one bounded local CHUNKD session; voting is disabled.
+- Score is the fixed conservative midpoint for the selected risk band.
+Immediate verification:
+- Confirm current observable conditions before acting.
+- Re-run after adding specific visibility, surface, storage, or hazard details.''';
+    return NazaResponse(
+      text: text,
+      score: agreement,
+      route: 'local-llama3-small-${risk.name}',
+      cancelled: false,
+      createdAt: DateTime.now(),
     );
   }
 
@@ -22837,11 +22959,15 @@ class _StableMessageBubble extends StatelessWidget {
                   compact: false,
                 ),
               const SizedBox(height: 7),
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(
                     '${_clock(message.createdAt)}${isUser ? '' : ' • ${message.route}'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: NazaPalette.subtext,
                       fontSize: 10.5,
@@ -22850,7 +22976,6 @@ class _StableMessageBubble extends StatelessWidget {
                     ),
                   ),
                   if (!message.isWorking) ...[
-                    const SizedBox(width: 8),
                     _CopyIconButton(
                       tooltip: 'Copy message',
                       text: message.text,
@@ -23381,6 +23506,7 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
   NazaScannerResult? _result;
   bool _loading = false;
   bool _applyingDraft = false;
+  String _scannerModel = 'gemma4-e2b-litert';
 
   @override
   void initState() {
@@ -23436,6 +23562,9 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
 
   void _applyData(Map<String, String> data) {
     _applyingDraft = true;
+    _scannerModel = data['_scanner_model'] == 'llama3-small'
+        ? 'llama3-small'
+        : 'gemma4-e2b-litert';
     _setControllerText(_location, data['location'] ?? '');
     _setControllerText(_roadType, data['road_type'] ?? '');
     _setControllerText(_weather, data['weather'] ?? '');
@@ -23469,6 +23598,7 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
       'speed_flow': _speedFlow.text,
       'nearby_hazards': _nearbyHazards.text,
       'sensor_notes': _sensorNotes.text,
+      '_scanner_model': _scannerModel,
     };
   }
 
@@ -23496,10 +23626,48 @@ class _RoadScannerPanelState extends State<_RoadScannerPanel> {
           body:
               'Enter what you can observe. The local model returns Low, Medium, or High with conservative action notes.',
         ),
+        _ScannerModelSelector(
+          value: _scannerModel,
+          onChanged: (value) {
+            setState(() => _scannerModel = value);
+            _handleDraftChanged();
+          },
+        ),
+        const SizedBox(height: 10),
         _NazaTextInput(
           label: 'Travel location or route',
           hint: 'Enter the road, route, or destination to scan...',
           controller: _location,
+        ),
+        const SizedBox(height: 10),
+        _NazaTextInput(
+          label: 'Road type',
+          hint: 'highway, urban, or residential',
+          controller: _roadType,
+        ),
+        const SizedBox(height: 10),
+        _NazaTextInput(
+          label: 'Weather / visibility',
+          hint: 'clear, rain, fog, snow...',
+          controller: _weather,
+        ),
+        const SizedBox(height: 10),
+        _NazaTextInput(
+          label: 'Traffic density',
+          hint: 'low, med, or high',
+          controller: _trafficDensity,
+        ),
+        const SizedBox(height: 10),
+        _NazaTextInput(
+          label: 'Reported obstacles',
+          hint: 'none, debris, stalled vehicle...',
+          controller: _nearbyHazards,
+        ),
+        const SizedBox(height: 10),
+        _NazaTextInput(
+          label: 'Sensor notes',
+          hint: 'none or any observable sensor issue',
+          controller: _sensorNotes,
         ),
         const SizedBox(height: 10),
         _NazaActionButton(
@@ -23584,6 +23752,7 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
   NazaScannerResult? _singleResult;
   NazaScannerResult? _plannerResult;
   bool _applyingDraft = false;
+  String _scannerModel = 'gemma4-e2b-litert';
 
   @override
   void initState() {
@@ -23661,6 +23830,9 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
 
   void _applyScanData(Map<String, String> data) {
     _applyingDraft = true;
+    _scannerModel = data['_scanner_model'] == 'llama3-small'
+        ? 'llama3-small'
+        : 'gemma4-e2b-litert';
     _setControllerText(_location, data['location'] ?? '');
     _setControllerText(_foodWaterType, data['food_water_type'] ?? '');
     _setControllerText(_storageContext, data['storage_context'] ?? '');
@@ -23708,6 +23880,7 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
       'temperature_flow': _temperatureFlow.text,
       'hazards': _hazards.text,
       'sensor_notes': _sensorNotes.text,
+      '_scanner_model': _scannerModel,
     };
   }
 
@@ -23719,6 +23892,7 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
       'seed_item': _seedItem.text,
       'nearby_locations': _nearbyLocations.text,
       'max_targets': boundedTargets.toString(),
+      '_scanner_model': _scannerModel,
     };
   }
 
@@ -23760,6 +23934,15 @@ class _FoodWaterScannerPanelState extends State<_FoodWaterScannerPanel> {
           body:
               'Single scan classifies one source. Multi-scan asks the local model to plan several nearby targets.',
         ),
+        _ScannerModelSelector(
+          value: _scannerModel,
+          onChanged: (value) {
+            setState(() => _scannerModel = value);
+            _handleScanDraftChanged();
+            _handlePlannerDraftChanged();
+          },
+        ),
+        const SizedBox(height: 12),
         Row(
           children: [
             Expanded(
@@ -24193,6 +24376,14 @@ class _ScannerResultSurface extends StatelessWidget {
                 title: 'Separate safety score',
                 text: result.safetyText,
                 color: result.safetyColor,
+              ),
+              const SizedBox(height: 10),
+              _ScannerResultBlock(
+                title: 'Raw model output',
+                text: result.rawModelOutput.trim().isEmpty
+                    ? '(no text returned — classified Medium)'
+                    : result.rawModelOutput,
+                color: NazaPalette.mintSoft,
               ),
             ],
           );
@@ -26869,6 +27060,9 @@ final class _SettingsPanelState extends State<_SettingsPanel> {
                 ..._simpleChildren(),
                 const SizedBox(height: 18),
               ],
+              const _SettingsSectionTitle('Voice & read aloud'),
+              NazaVoiceSettingsCard(advanced: advanced),
+              const SizedBox(height: 14),
               _FeatureSettingsGroupsCard(
                 selected: _featureGroup,
                 onSelected: (value) => setState(() => _featureGroup = value),
@@ -28879,6 +29073,64 @@ class _ScannerModeChip extends StatelessWidget {
             letterSpacing: selected ? 0.15 : 0,
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ScannerModelSelector extends StatelessWidget {
+  const _ScannerModelSelector({required this.value, required this.onChanged});
+
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _NazaGlassCard(
+      margin: EdgeInsets.zero,
+      padding: const EdgeInsets.all(12),
+      radius: 18,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Scanner model',
+            style: TextStyle(
+              color: NazaPalette.text,
+              fontWeight: FontWeight.w900,
+              fontFamily: NazaFonts.display,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment<String>(
+                value: 'gemma4-e2b-litert',
+                icon: Icon(Icons.auto_awesome_rounded),
+                label: Text('Gemma 4'),
+              ),
+              ButtonSegment<String>(
+                value: 'llama3-small',
+                icon: Icon(Icons.shield_outlined),
+                label: Text('Llama Small'),
+              ),
+            ],
+            selected: {value},
+            showSelectedIcon: false,
+            onSelectionChanged: (selection) => onChanged(selection.first),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value == 'llama3-small'
+                ? 'Pinned GGUF classifier with one CHUNKD Low / Medium / High reply.'
+                : 'LiteRT-LM single-pass classifier; compatible with this Linux system.',
+            style: TextStyle(
+              color: NazaPalette.subtext,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }

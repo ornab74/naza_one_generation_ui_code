@@ -99,6 +99,29 @@ the downloaded model, and non-secret runtime files may also remain visible.
 `secure_delete` is enabled, but flash translation layers, snapshots, and backup
 systems prevent a reliable secure-deletion guarantee.
 
+## Encrypted voice recall
+
+Generated Read Aloud WAV data is stored as independently authenticated records
+inside the unlocked vault. The cache does not persist message plaintext. Its
+request identity is SHA-256 over the normalized message hash, instructions
+hash, selected model, voice, speed, and WAV format. Recalled audio must also
+match its separately stored SHA-256 digest, canonical PCM WAV structure,
+authenticated record identity, and encrypted index metadata before playback.
+
+Voice retention is bounded to 64 records, 32 MiB total PCM WAV data, and 16 MiB
+per record. Least-recent records are pruned, and cache parsing fails closed on
+malformed identities, metadata, encodings, or hashes. A matching encrypted
+voice is recalled before any new speech API request is made.
+
+Native Linux and Darwin playback requires a temporary decrypted file. Naza
+creates that file inside a freshly generated private temporary directory rather
+than the shared `/tmp` root, then removes it on completion, stop, error, or
+disposal. Stale files from an interrupted process are removed before the next
+playback attempt. Filesystem snapshots and a process or host compromise while
+the vault is unlocked remain outside this guarantee. The separate **Export
+decrypted WAV file** action intentionally creates a user-visible plaintext
+copy.
+
 ## Model artifact trust
 
 Each model identity is compiled into the app: expected filename, revision,

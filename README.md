@@ -533,9 +533,18 @@ native bundles and source/build trees remain ignored by Git.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev
+sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev gstreamer1.0-plugins-good
 flutter build linux --release --no-pub
 ```
+
+`gstreamer1.0-plugins-good` supplies the WAV parser and automatic audio sink
+used by Read Aloud on Linux.
+
+Read Aloud responses are automatically cached in the authenticated encrypted
+vault and recalled by their message/configuration hash before another speech
+request is sent. The cache verifies a separate WAV SHA-256 on recall and keeps
+at most 64 entries / 32 MiB. The download action is an explicit plaintext WAV
+export; ordinary playback does not require one.
 
 ### Android
 
