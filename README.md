@@ -93,6 +93,351 @@ flowchart TD
 
 Folder maps: [application](lib/mermaid.md) · [chat](lib/chat/mermaid.md) · [food](lib/food/mermaid.md) · [memory](lib/memory/mermaid.md) · [model runtime](lib/model/mermaid.md) · [navigation](lib/navigation/mermaid.md) · [onboarding](lib/onboarding/mermaid.md) · [scanner](lib/scanner/mermaid.md) · [security](lib/security/mermaid.md) · [settings](lib/settings/mermaid.md) · [themes](lib/theme/mermaid.md) · [tests](test/mermaid.md) · [Android](android/mermaid.md) · [iOS](ios/mermaid.md) · [Linux](linux/mermaid.md) · [macOS](macos/mermaid.md) · [native](native/mermaid.md) · [assets](assets/mermaid.md) · [tooling](tool/mermaid.md).
 
+## Build an MSL-PQ optical reader
+
+The repository contains two intentionally separate reader targets:
+
+- **Research reader:** a cheap, buildable ESP32-S3 instrument that exports raw
+  AS7341 spectral measurements for calibration, FAR/FRR research, and dataset
+  construction. It is never authentication evidence.
+- **Locked reader:** a fail-closed firmware target representing the production
+  boundary. The repository build refuses authentication until a reviewed
+  secure-element/native backend is provisioned. Do not remove this guard or
+  insert a plaintext firmware key.
+- **AION virtual lattice:** a hardwareless cryptographic mode using fresh OS
+  CSPRNG output, encrypted device/user roots, an evolving punctured ratchet,
+  sequential work, a high-dimensional lattice, Merkle state commitments,
+  encrypted monotonic counters, one-use capabilities, and mandatory ML-KEM
+  input in maximum mode.
+
+MSL-PQ remains experimental. The optical mechanism has no production security
+claim until the complete [laboratory characterization and security validation
+specification](docs/msl-pq-laboratory-validation-spec.md) passes. “Post-quantum”
+describes the independently implemented ML-KEM hybrid contribution, not a proof
+that a home-built optical surface is quantum-resistant.
+
+### Research-reader bill of materials
+
+| Part | Function | Typical budget |
+|---|---|---:|
+| ESP32-S3 Feather or equivalent | Control and USB serial | $18–$25 |
+| AS7341 breakout | 8 visible bands plus clear/NIR measurements | $19–$25 |
+| 7-pixel RGBW Jewel | Controlled illumination | $7–$12 |
+| 180-degree micro servo | Analyzer-polarizer position | $6–$10 |
+| Two linear polarizer sheets | Source and detector polarization | $8–$15 |
+| Normally closed microswitch | Enclosure interlock | $2–$5 |
+| Regulated 5 V servo supply | Isolated actuator power | $8–$12 |
+| Matte-black enclosure, holder, wiring and references | Geometry and calibration | $15–$30 |
+
+Expected research build total: approximately **$80–$130**, excluding a 3D
+printer and computer. Prices and availability vary. Use LEDs inside an opaque
+interlocked enclosure; the baseline build does not require or recommend an
+exposed laser.
+
+### Mechanical and optical layout
+
+```text
+RGBW Jewel -- fixed source polarizer --\
+                                       \ 30–45 degrees
+                                        [keyed sample]
+                                              |
+                                              | reflected light
+                                              v
+                                  servo analyzer polarizer
+                                              |
+                                           AS7341
+```
+
+The enclosure interior must be matte black. The sample holder must constrain
+translation, rotation, height, and orientation. Add removable dark and diffuse
+white references without changing detector geometry. Power the servo from a
+separate regulated 5 V supply and join grounds; do not power it from a
+microcontroller GPIO. Wire the normally closed lid switch so an open or broken
+switch removes illumination permission.
+
+Default firmware pins are:
+
+| Signal | Pin |
+|---|---:|
+| RGBW Jewel data | GPIO 5 |
+| Polarizer servo | GPIO 6 |
+| Normally closed lid switch | GPIO 9 |
+| AS7341 | Board I2C SDA/SCL |
+
+Confirm the pinout for the exact board before wiring. Pin conflicts and voltage
+limits differ between ESP32-S3 boards.
+
+### Build the research firmware
+
+Install Arduino CLI and its ESP32 platform, then install the required libraries:
+
+```bash
+arduino-cli core update-index
+arduino-cli core install esp32:esp32
+arduino-cli lib install "Adafruit AS7341"
+arduino-cli lib install "Adafruit NeoPixel"
+arduino-cli lib install "ESP32Servo"
+```
+
+Determine the board and serial port:
+
+```bash
+arduino-cli board list
+arduino-cli board listall | grep -i esp32
+```
+
+Compile and upload, replacing the FQBN and port with values for the installed
+board:
+
+```bash
+arduino-cli compile \
+  --fqbn esp32:esp32:adafruit_feather_esp32s3 \
+  tool/msl_pq_lab/research_reader
+
+arduino-cli upload \
+  --fqbn esp32:esp32:adafruit_feather_esp32s3 \
+  --port /dev/ttyACM0 \
+  tool/msl_pq_lab/research_reader
+```
+
+Open the reader at 115200 baud and send newline-terminated commands:
+
+```text
+HELLO
+RESET,30000
+STEP,1,255,0,0,0,64,0,300
+STEP,2,0,255,0,0,64,45,300
+STEP,3,0,0,255,0,64,90,300
+STEP,4,0,0,0,255,64,135,300
+```
+
+`STEP` fields are sequence, red, green, blue, white, global brightness,
+polarization degrees, and pulse duration milliseconds. The firmware bounds all
+fields, shuts the LEDs off after each measurement, rejects an open enclosure,
+and emits one JSON record containing all 12 AS7341 buffer channels. The host
+parser is `lib/security/msl_research_reader.dart`; it deliberately does not
+implement `MslSecureReader`.
+
+Perform dark and white-reference runs before every session. Reject saturated or
+underexposed records; do not silently normalize them into the training set.
+
+### Build the locked target
+
+The locked target can be compiled and uploaded with the same commands after
+replacing the sketch path:
+
+```bash
+arduino-cli compile \
+  --fqbn esp32:esp32:adafruit_feather_esp32s3 \
+  tool/msl_pq_lab/locked_reader
+
+arduino-cli upload \
+  --fqbn esp32:esp32:adafruit_feather_esp32s3 \
+  --port /dev/ttyACM0 \
+  tool/msl_pq_lab/locked_reader
+```
+
+This build should report `authentication_enabled:false`. That is the expected
+safe behavior. Enabling authentication requires a separate reviewed board
+backend providing all of the following:
+
+1. Hardware-rooted secure boot and rollback prevention.
+2. Protected firmware measurement and device identity.
+3. Secure-element attestation over the device/profile, exact executed challenge
+   digest, firmware measurement, health summary, and monotonic state.
+4. Internal calibration, feature extraction, quantization, helper-data
+   verification, and fuzzy reconstruction.
+5. No production command that returns raw spectra, lattice vectors, quantized
+   words, reconstructed secrets, or unrestricted adaptive measurements.
+6. Non-exportable key operations or an authenticated protected channel to the
+   host.
+7. Fault-state zeroization and a measured reset-convergence procedure.
+
+The Flutter-side production contracts are:
+
+- `lib/security/metameric_surface_lattice.dart` — protocol, profile, health,
+  attestation, transcript, replay/rate/dose gates, hybrid extraction, and opaque
+  handles;
+- `lib/security/metameric_surface_lattice_store.dart` — encrypted monotonic
+  counter storage;
+- `tool/msl_pq_lab/locked_reader` — fail-closed board target awaiting the
+  provisioned native backend.
+
+Before enabling the locked reader, run the focused software tests and then the
+full laboratory program:
+
+```bash
+flutter test test/metameric_surface_lattice_test.dart \
+  test/msl_research_reader_test.dart
+flutter analyze
+```
+
+At 95% one-sided confidence, demonstrating FAR below \(10^{-6}\) with zero
+false accepts requires about 2,995,731 independent impostor trials. A small
+home dataset can validate instrumentation and estimate repeatability; it cannot
+support a production-grade rare-event security claim.
+
+### Hardwareless AION-MSL mode
+
+`lib/security/aion_virtual_msl.dart` implements the third option. It translates
+MSL's ordered challenges and evolving hidden state into standard cryptographic
+machinery instead of pretending simulated optics are physically unclonable.
+Maximum mode combines a device root, optional user root, 512 fresh OS-random
+bits, previous ratchet state, authenticated ML-KEM secret, verifier nonce,
+monotonic epoch, software-chaos commitment, and prior Merkle root. It then
+performs bounded sequential HMAC work, expands an 8 KiB virtual lattice,
+punctures the old state, commits the next epoch, and releases a purpose-bound,
+short-lived, one-use capability.
+
+```dart
+final aion = AionVirtualMslEngine(
+  policy: AionPolicy.maximum,
+  counterStore: MslSecureDatabaseCounterStore(),
+  checkpointStore: AionSecureDatabaseCheckpointStore(),
+  deviceRoot: deviceRootFromSecureStorage,
+  userRoot: userDerivedArgon2idRoot,
+);
+
+final proof = await aion.advance(
+  purpose: 'vault/unlock',
+  verifierNonce: freshVerifierNonce,
+  postQuantumSecret: authenticatedMlKemSharedSecret,
+  chaosFrames: boundedSimulationFrames,
+);
+
+final authorizationTag = aion.authorize(proof.capability, requestBytes);
+```
+
+Simulation frames may come from reaction-diffusion fields, Lorenz systems,
+coupled oscillators, cellular automata, scheduler observations, or visual lava
+simulations. They are transcript diversity and tamper evidence only and receive
+**zero entropy credit**. AION's security comes from conventional secret roots,
+fresh CSPRNG output, ML-KEM, authenticated persistence, and key erasure. It is
+strong software compartmentalization, not a substitute for physical possession
+against a fully compromised live host.
+
+The included `AionChaosObservatory` produces a composite frame from four
+structurally different deterministic systems: Lorenz-63 flow, a coupled logistic
+map ring, Gray–Scott reaction diffusion, and rule-30 cellular automata. It uses
+bounded configuration, toroidal boundaries, numerical-fault detection, and a
+cross-model divergence score. Feed its `bundle.frames` into `aion.advance`; its
+reported entropy credit is always zero.
+
+### Federated AION contribution rounds
+
+`lib/security/aion_entropy_federation.dart` adds an optional commit–reveal
+federation for deployments that do not want one machine to control every input.
+Each round accepts at most 16 uniquely named sources, verifies every source's
+signature through an application-supplied trust policy, checks each reveal
+against its domain-separated commitment, sorts the accepted set canonically,
+and enforces both a total quorum and a confidential-source quorum.
+
+Public randomness beacons may enter the transcript commitment to make a round
+fresh and independently auditable, but contribute **zero secret entropy**.
+Only reveals transported confidentially from independently administered,
+authenticated sources enter the secret mix. A public beacon must never be
+relabelled confidential. For a threshold claim, contributor roots must not share
+the same host, image, administrator, hypervisor, backup key, or entropy source.
+
+```dart
+final federation = AionEntropyFederation(
+  verifier: pinnedContributorSignatureVerifier,
+  minimumSources: 3,
+  minimumConfidentialSources: 2,
+);
+
+final mix = await federation.combine(signedCommitRevealContributions);
+final proof = await aion.advance(
+  purpose: 'vault/unlock',
+  verifierNonce: freshVerifierNonce,
+  postQuantumSecret: authenticatedMlKemSharedSecret,
+  chaosFrames: observatoryBundle.frames,
+  federation: mix,
+);
+```
+
+The verifier implementation is a production trust boundary: pin contributor
+identities and algorithms, validate key lifecycle and revocation, bind transport
+sessions to the declared source, and reject stale or future round numbers before
+calling `combine`. Contributions are all-or-nothing; a bad signature, duplicate
+source, mismatched round, substituted reveal, or missing confidential quorum
+rejects the complete round. The federation raises compromise resistance only
+when at least one credited confidential contributor remains secret and honest;
+it does not repair a compromised endpoint that receives the final mix.
+
+The concrete `PinnedMlDsaContributorVerifier` pins each source to an ML-DSA
+public key and parameter set (ML-DSA-65 by default), uses the fixed context
+`NAZA-AION-FEDERATION-v1`, rejects unknown identities and malformed signature
+sizes, and performs verification in a worker isolate. Generate signatures over
+`AionEntropyFederation.signedMessageFor(contribution)` using exactly that
+context. The isolate is workload separation, not an operating-system sandbox.
+Pins also carry inclusive first/last valid rounds for deterministic rotation and
+revocation. Federation outputs are single-use and must match AION's next durable
+epoch, closing stale-round and cross-epoch replay paths.
+
+Use `AionPolicy.federatedMaximum` for the hardened mode. It cannot silently fall
+back to one-host operation and requires five signed sources, three confidential
+sources and three distinct pinned administrative trust domains. Its durable
+state namespace is separate from ordinary maximum mode. This profile now rejects
+host-resident device/user roots and requires `AionBrokerKeySchedule`; root-
+dependent extraction occurs across the authenticated broker boundary and only
+an exact 64-byte active transition key is accepted.
+
+`lib/security/aion_broker_protocol.dart` defines the next isolation boundary: a
+65,536-byte-capped binary IPC protocol with fixed operations, direction binding,
+strict monotonic request sequences and HMAC-SHA-256 authenticated frames. It
+rejects tampering, truncation, response substitution and replay. This is the
+contract for a separately sandboxed native key broker; the codec alone does not
+claim that an OS sandbox has been installed.
+Broker sessions also have bounded invocation counts and operation deadlines.
+Any timeout, rejection, authentication failure or sequence violation poisons the
+entire session, erases its session key on best effort and closes the transport.
+ML-DSA identity keys are defensively copied so callers cannot mutate live pins.
+
+Linux does not require Bubblewrap. Build the direct-kernel launcher:
+
+```bash
+tool/aion_broker/build_linux_sandbox.sh
+```
+
+The build uses PIE, full RELRO, immediate binding, stack protection, fortified
+libc calls and a non-executable stack. Its mandatory self-test proves that the
+active Landlock policy denies unlisted files and the seccomp policy denies
+network sockets. The launcher additionally disables dumps, applies resource
+limits, sets `no_new_privs`, couples broker death to the parent, clears the
+environment and executes an already-open non-symlink broker. Production release
+packaging must install the broker root-owned and non-writable, then pin and sign
+the resulting launcher and broker digests. The launcher closes inherited file
+descriptors, starts a new session and denies ptrace, cross-process memory access,
+kernel keyrings, eBPF, mounts, module loading, kexec and reboot in addition to
+network syscalls.
+
+Normative details and review material:
+
+- [AION-MSL protocol specification](docs/aion-msl-protocol-specification.md)
+- [AION side-channel and process-isolation review](docs/aion-msl-side-channel-and-isolation-review.md)
+- [MSL-PQ laboratory validation specification](docs/msl-pq-laboratory-validation-spec.md)
+
+Checkpoint persistence already uses the repository's standard AES-256-GCM vault
+record format with fresh nonces and associated data binding record identity and
+key version. Run the locked-dependency security gate before merging changes:
+
+```bash
+chmod +x tool/aion_security_gate.sh
+./tool/aion_security_gate.sh
+```
+
+This gate enforces `pubspec.lock`, formatting, static analysis, deterministic
+seeded adversarial-input tests, ML-DSA positive/negative vectors, state/restart
+tests and the chaos-model suite. Reproducible verification does not imply
+bit-for-bit reproducible signed Flutter packages; platform SDK versions,
+toolchains and signing environments must also be pinned for release artifacts.
+
+AION's current suite version is 2. Its extract/expand schedule length-prefixes
+every variable secret input, uses explicit transcript/extract/expand domains,
+zeroes fresh entropy and intermediate key material on best effort, detects
+repeated live CSPRNG blocks, and refuses checkpoints from another suite version.
+
 ## Core idea
 
 Naza One keeps the assistant and user-created state as close to the user as practical. Normal inference runs locally. History, memory, scanner state, settings, onboarding state, and selected-model metadata are stored locally with authenticated encryption. Model files are public model data, so they are integrity-protected rather than encrypted.

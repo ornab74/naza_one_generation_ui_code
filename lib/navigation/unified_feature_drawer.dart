@@ -64,6 +64,11 @@ final class NazaFeaturePinPolicy {
     requiredId,
     'road-scanner',
     'food-scanner',
+    // Keep the BookForge workspaces reachable from the mobile feature strip.
+    // These are separate destinations even though they share one workspace.
+    'bookforge',
+    'bookforge-generate',
+    'bookforge-repository',
   ];
 
   const NazaFeaturePinPolicy._();

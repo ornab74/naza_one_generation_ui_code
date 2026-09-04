@@ -241,6 +241,24 @@ before relying on it. The implementation uses FIPS 203/204-aligned primitives;
 the app does not claim FIPS 140 module validation or resistance to every
 side-channel.
 
+## Experimental MSL-PQ physical root
+
+The Metameric Surface Lattice host protocol is an experimental integration
+boundary for future authenticated optical-reader hardware. It is not enabled as
+a production root of trust, and simulations, cameras, RGB transforms, and
+entropy scores are not accepted as physical possession evidence. Any production
+enablement requires the complete evidence package and every mandatory gate in
+[MSL-PQ Laboratory Characterization and Security Validation
+Specification](docs/msl-pq-laboratory-validation-spec.md).
+
+The host contract enforces bounded challenge profiles, transcript binding,
+reader attestation, health checks, replay rejection, optical-dose/rate limits,
+encrypted monotonic counters, a required independent post-quantum shared-secret
+contribution, and expiring opaque key handles. Physical-surface hardness,
+fuzzy-extractor reliability, conditional entropy, reader side-channel
+resistance, attestation PKI, and DORR/model-extraction resistance remain claims
+that must be established experimentally and independently.
+
 ## Threats outside the design
 
 These controls do not protect against:
