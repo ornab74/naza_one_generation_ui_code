@@ -11,6 +11,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 
+import 'aion_authorization_event.dart';
+
 const String mslProtocolVersion = 'MSL-PQ/host-v2';
 
 enum MslReaderState { reset, ready, executing, reconstructing, complete, fault }
@@ -252,11 +254,31 @@ final class MslAuthenticationRequest {
     required this.verifierNonce,
     required this.purpose,
     required this.issuedAt,
+    required this.authorizationIntent,
   });
 
   final Uint8List verifierNonce;
   final String purpose;
   final DateTime issuedAt;
+  final AionAuthorizationIntent authorizationIntent;
+}
+
+final class MslAuthorizationBinding {
+  const MslAuthorizationBinding._({
+    required this.intent,
+    required this.deviceId,
+    required this.profileId,
+    required this.counter,
+    required this.transcriptDigest,
+    required this.receiptDigest,
+  });
+
+  final AionAuthorizationIntent intent;
+  final String deviceId;
+  final String profileId;
+  final int counter;
+  final Uint8List transcriptDigest;
+  final Uint8List receiptDigest;
 }
 
 final class MslKeyHandle {
@@ -275,6 +297,7 @@ final class MslAuthenticationProof {
     required this.proof,
     required this.keyHandle,
     required this.counter,
+    required this.authorizationBinding,
   });
 
   final String deviceId;
@@ -283,6 +306,7 @@ final class MslAuthenticationProof {
   final Uint8List proof;
   final MslKeyHandle keyHandle;
   final int counter;
+  final MslAuthorizationBinding authorizationBinding;
 }
 
 typedef MslEntropySource = Uint8List Function(int length);
@@ -391,6 +415,12 @@ final class MslProtocolEngine {
       }
       _counter = persistedCounter;
       final nextCounter = _counter + 1;
+      if (request.authorizationIntent.expectedMslCounter != nextCounter) {
+        throw const MslProtocolException(
+          'authorization_event_counter_mismatch',
+          'The authorization intent does not bind the next physical counter.',
+        );
+      }
       final deviceNonce = _entropy(32);
       if (deviceNonce.length != 32) {
         throw const MslProtocolException(
@@ -406,6 +436,7 @@ final class MslProtocolEngine {
           _field(deviceNonce),
           _u64(nextCounter),
           _field(utf8.encode(profile.id)),
+          _field(request.authorizationIntent.commitment),
         ]),
       );
       final program = _generateProgram(seed);
@@ -444,6 +475,9 @@ final class MslProtocolEngine {
         _u64(nextCounter),
         _field(requestedDigest),
         _field(result.firmwareMeasurement),
+        _field(request.authorizationIntent.commitment),
+        _field(request.authorizationIntent.postQuantumContextDigest),
+        _field(request.authorizationIntent.targetDigest),
       ]);
       final transcriptDigest = _sha3(transcript);
       sessionKey = _extractAndExpand(
@@ -477,6 +511,15 @@ final class MslProtocolEngine {
       _sessionKeys[handleId] = _MslStoredKey(sessionKey, now.add(keyLifetime));
       sessionKey = null; // Ownership moved into the opaque handle store.
       _purgeExpiredKeys(now);
+      final receiptDigest = _sha3(
+        _concat([
+          _field(utf8.encode('MSL/authorization-receipt/v1')),
+          _field(request.authorizationIntent.commitment),
+          _field(transcriptDigest),
+          _field(proof),
+          _u64(nextCounter),
+        ]),
+      );
       return MslAuthenticationProof(
         deviceId: reader.deviceId,
         profileId: profile.id,
@@ -484,6 +527,14 @@ final class MslProtocolEngine {
         proof: proof,
         keyHandle: MslKeyHandle._(handleId, now, now.add(keyLifetime)),
         counter: nextCounter,
+        authorizationBinding: MslAuthorizationBinding._(
+          intent: request.authorizationIntent,
+          deviceId: reader.deviceId,
+          profileId: profile.id,
+          counter: nextCounter,
+          transcriptDigest: Uint8List.fromList(transcriptDigest),
+          receiptDigest: receiptDigest,
+        ),
       );
     } catch (_) {
       try {
@@ -529,6 +580,14 @@ final class MslProtocolEngine {
   void _validateRequest(MslAuthenticationRequest request, Uint8List pqSecret) {
     final now = _clock().toUtc();
     final issued = request.issuedAt.toUtc();
+    try {
+      request.authorizationIntent.validateAt(now);
+    } catch (_) {
+      throw const MslProtocolException(
+        'authorization_event_invalid',
+        'The shared authorization intent is expired or not yet valid.',
+      );
+    }
     if (request.verifierNonce.length != 32 ||
         request.purpose.isEmpty ||
         request.purpose.length > 64 ||
@@ -538,6 +597,17 @@ final class MslProtocolEngine {
       throw const MslProtocolException(
         'request_invalid',
         'The verifier request is malformed, expired, or outside policy.',
+      );
+    }
+    final intent = request.authorizationIntent;
+    if (intent.purpose != request.purpose ||
+        !_constantTimeEqual(intent.verifierNonce, request.verifierNonce) ||
+        intent.issuedAt.toUtc() != issued ||
+        intent.mslDeviceId != reader.deviceId ||
+        intent.mslProfileId != profile.id) {
+      throw const MslProtocolException(
+        'authorization_event_mismatch',
+        'The physical request does not match its authorization intent.',
       );
     }
     if (pqSecret.length < 32 || pqSecret.length > 128) {

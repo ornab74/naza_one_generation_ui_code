@@ -156,11 +156,18 @@ final class AionChaosFrame {
 }
 
 final class AionCapability {
-  const AionCapability._(this.id, this.purpose, this.epoch, this.expiresAt);
+  AionCapability._(
+    this.id,
+    this.purpose,
+    this.epoch,
+    this.expiresAt,
+    Uint8List eventCommitment,
+  ) : eventCommitment = Uint8List.fromList(eventCommitment);
   final String id;
   final String purpose;
   final int epoch;
   final DateTime expiresAt;
+  final Uint8List eventCommitment;
 }
 
 final class AionProof {
@@ -171,6 +178,8 @@ final class AionProof {
     required this.proof,
     required this.capability,
     required this.entropyCreditBits,
+    required this.authorizationEventCommitment,
+    required this.physicalReceiptDigest,
   });
   final int epoch;
   final Uint8List transcriptDigest;
@@ -178,6 +187,8 @@ final class AionProof {
   final Uint8List proof;
   final AionCapability capability;
   final int entropyCreditBits;
+  final Uint8List authorizationEventCommitment;
+  final Uint8List physicalReceiptDigest;
 }
 
 typedef AionEntropySource = Uint8List Function(int length);
@@ -189,6 +200,8 @@ abstract interface class AionExternalKeySchedule {
     required Uint8List freshEntropy,
     required Uint8List postQuantumSecret,
     required Uint8List federationSecret,
+    required Uint8List authorizationEventCommitment,
+    required Uint8List physicalReceiptDigest,
   });
 }
 
@@ -260,6 +273,7 @@ final class AionVirtualMslEngine {
     required Uint8List postQuantumSecret,
     required List<AionChaosFrame> chaosFrames,
     AionFederationMix? federation,
+    MslAuthorizationBinding? authorizationBinding,
   }) async {
     if (_busy)
       throw const MslProtocolException(
@@ -292,6 +306,12 @@ final class AionVirtualMslEngine {
       throw const MslProtocolException(
         'aion_federation_required',
         'Federated-maximum AION cannot run without a verified federation.',
+      );
+    }
+    if (policy.requiresFederation && authorizationBinding == null) {
+      throw const MslProtocolException(
+        'authorization_event_required',
+        'Federated maximum requires a physical authorization-event receipt.',
       );
     }
     _busy = true;
@@ -333,6 +353,36 @@ final class AionVirtualMslEngine {
           'The AION counter and encrypted checkpoint disagree.',
         );
       final next = _epoch + 1;
+      final eventCommitment = authorizationBinding?.intent.commitment ??
+          Uint8List(32);
+      final physicalReceipt = authorizationBinding?.receiptDigest ??
+          Uint8List(32);
+      if (authorizationBinding case final binding?) {
+        try {
+          binding.intent.validateAt(_clock().toUtc());
+        } catch (_) {
+          throw const MslProtocolException(
+            'authorization_event_invalid',
+            'The shared authorization event is outside its validity window.',
+          );
+        }
+        if (binding.intent.expectedAionEpoch != next ||
+            binding.counter != binding.intent.expectedMslCounter ||
+            binding.deviceId != binding.intent.mslDeviceId ||
+            binding.profileId != binding.intent.mslProfileId ||
+            binding.intent.purpose != purpose ||
+            !_constantTimeEqual(
+              binding.intent.verifierNonce,
+              verifierNonce,
+            ) ||
+            eventCommitment.length != 32 ||
+            physicalReceipt.length != 32) {
+          throw const MslProtocolException(
+            'authorization_event_mismatch',
+            'MSL, AION, epoch, purpose, nonce, or target event bindings disagree.',
+          );
+        }
+      }
       final federationBinding = federation?.consumeForEpoch(next);
       if (policy.profile == AionProfile.federatedMaximum &&
           (federationBinding == null ||
@@ -373,6 +423,12 @@ final class AionVirtualMslEngine {
         _merkleRoot,
         if (federationBinding != null) federationBinding.transcriptCommitment,
         if (federationBinding != null) _u64(federationBinding.round),
+        eventCommitment,
+        physicalReceipt,
+        if (authorizationBinding != null)
+          authorizationBinding.intent.postQuantumContextDigest,
+        if (authorizationBinding != null)
+          authorizationBinding.intent.targetDigest,
       ]);
       final transcriptDigest = _hash(transcript);
       late Uint8List active;
@@ -390,6 +446,8 @@ final class AionVirtualMslEngine {
             freshEntropy: externalFresh,
             postQuantumSecret: externalPq,
             federationSecret: externalFederation,
+            authorizationEventCommitment: eventCommitment,
+            physicalReceiptDigest: physicalReceipt,
           );
         } finally {
           _zero(externalTranscript);
@@ -446,7 +504,15 @@ final class AionVirtualMslEngine {
       final newMerkle = _hash(
         _join([
           _merkleRoot,
-          _hash(_join([_u64(next), transcriptDigest, latticeDigest])),
+          _hash(
+            _join([
+              _u64(next),
+              eventCommitment,
+              physicalReceipt,
+              transcriptDigest,
+              latticeDigest,
+            ]),
+          ),
         ]),
       );
       await checkpointStore.compareAndCommit(
@@ -482,6 +548,7 @@ final class AionVirtualMslEngine {
         purpose,
         next,
         now.add(policy.handleLifetime),
+        eventCommitment,
       );
       _zero(_ratchet);
       _ratchet = newRatchet;
@@ -501,8 +568,11 @@ final class AionVirtualMslEngine {
           purpose,
           next,
           now.add(policy.handleLifetime),
+          eventCommitment,
         ),
         entropyCreditBits: policy.profile == AionProfile.research ? 0 : 256,
+        authorizationEventCommitment: Uint8List.fromList(eventCommitment),
+        physicalReceiptDigest: Uint8List.fromList(physicalReceipt),
       );
     } finally {
       if (working != null) _zero(working);
@@ -532,6 +602,7 @@ final class AionVirtualMslEngine {
         _join([
           utf8.encode('AION-MSL/use/v1'),
           utf8.encode(stored.purpose),
+          stored.eventCommitment,
           message,
         ]),
       );
@@ -553,16 +624,18 @@ final class AionVirtualMslEngine {
 }
 
 final class _AionStoredCapability {
-  const _AionStoredCapability(
+  _AionStoredCapability(
     this.key,
     this.purpose,
     this.epoch,
     this.expiresAt,
-  );
+    Uint8List eventCommitment,
+  ) : eventCommitment = Uint8List.fromList(eventCommitment);
   final Uint8List key;
   final String purpose;
   final int epoch;
   final DateTime expiresAt;
+  final Uint8List eventCommitment;
 }
 
 Uint8List _hash(List<int> value) =>
