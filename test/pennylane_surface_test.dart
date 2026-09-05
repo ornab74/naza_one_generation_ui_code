@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/scanner/pennylane_surface.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('SHA3-256 matches the FIPS 202 empty-message vector', () {

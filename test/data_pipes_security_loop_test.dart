@@ -1,8 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/agentic/data_pipes.dart';
-import 'package:naza_one/agentic/progressive_security_loop.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('progressive review repeats rule families and vetoes dangerous plans', () {

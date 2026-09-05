@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/msl_research_reader.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('parses a bounded laboratory sample', () {

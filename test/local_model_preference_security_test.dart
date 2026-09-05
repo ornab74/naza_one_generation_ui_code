@@ -2,9 +2,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/model/local_model_preference.dart';
-import 'package:naza_one/model/model_distribution_manifest.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test(

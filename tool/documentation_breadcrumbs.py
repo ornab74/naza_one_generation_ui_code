@@ -36,9 +36,7 @@ COMMENTABLE = {
 # These files carried intentional working-tree behavior before the repository-
 # wide documentation pass. Never reconstruct them from HEAD during diff cleanup.
 PRESERVE_WORKTREE = {
-    "lib/app.dart", "lib/naza_exploration_hub.dart",
-    "lib/naza_healthdash_monolith.dart",
-    "lib/navigation/unified_feature_drawer.dart",
+    "lib/main.dart",
     "test/exploration_hub_test.dart", "test/unified_feature_drawer_test.dart",
 }
 

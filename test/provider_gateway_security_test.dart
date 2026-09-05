@@ -12,7 +12,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:naza_one/model/provider_gateway.dart';
+import 'package:naza_one/main.dart';
 
 final class _TestClient extends http.BaseClient {
   _TestClient(this.handler);

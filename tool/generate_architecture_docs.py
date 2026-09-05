@@ -136,7 +136,7 @@ def write_index() -> None:
     for folder in FOLDERS:
         if (ROOT / folder / "mermaid.md").exists():
             lines.append(f"- [`{folder.as_posix()}`](../{folder.as_posix()}/mermaid.md)")
-    lines.extend(["", "## Repository-wide flow", "", "```mermaid", "flowchart TD", "    Platform[Platform shells] --> App[lib/app.dart]", "    App --> Navigation[Unified feature registry]", "    Navigation --> Features[Chat · scanners · food · health · intelligence]", "    Features --> Runtime[Local model runtime]", "    Features --> Vault[Encrypted local storage]", "    Runtime --> VerifiedModel[Hash-verified model artifact]", "    Vault --> Security[Security kernel + recovery controls]", "    Tests[Tests] -. verify .-> App", "    Tests -. verify .-> Security", "```", ""])
+    lines.extend(["", "## Repository-wide flow", "", "```mermaid", "flowchart TD", "    Platform[Platform shells] --> App[lib/main.dart]", "    App --> Navigation[Unified feature registry]", "    Navigation --> Features[Chat · scanners · food · health · intelligence]", "    Features --> Runtime[Local model runtime]", "    Features --> Vault[Encrypted local storage]", "    Runtime --> VerifiedModel[Hash-verified model artifact]", "    Vault --> Security[Security kernel + recovery controls]", "    Tests[Tests] -. verify .-> App", "    Tests -. verify .-> Security", "```", ""])
     (ROOT / "docs/mermaid-index.md").write_text("\n".join(lines), encoding="utf-8")
 
 

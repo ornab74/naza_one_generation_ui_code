@@ -13,7 +13,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:cryptography/dart.dart' show DartArgon2id;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite;
 
 void main() {

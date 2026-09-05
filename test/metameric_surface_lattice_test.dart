@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/metameric_surface_lattice.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   final profile = MslProfile(
@@ -31,6 +31,7 @@ void main() {
       verifierNonce: Uint8List(32)..fillRange(0, 32, 3),
       purpose: 'vault/unlock',
       issuedAt: DateTime.utc(2026, 9, 4, 11, 59, 30),
+      authorizationIntent: _authorizationIntent(),
     );
     final proof = await engine.authenticate(
       request,
@@ -203,6 +204,21 @@ MslAuthenticationRequest _request() => MslAuthenticationRequest(
   verifierNonce: Uint8List(32)..fillRange(0, 32, 3),
   purpose: 'vault/unlock',
   issuedAt: DateTime.utc(2026, 9, 4, 11, 59, 30),
+  authorizationIntent: _authorizationIntent(),
+);
+
+AionAuthorizationIntent _authorizationIntent() => AionAuthorizationIntent(
+  purpose: 'vault/unlock',
+  eventNonce: Uint8List(32)..fillRange(0, 32, 6),
+  verifierNonce: Uint8List(32)..fillRange(0, 32, 3),
+  issuedAt: DateTime.utc(2026, 9, 4, 11, 59, 30),
+  expiresAt: DateTime.utc(2026, 9, 4, 12, 1),
+  expectedAionEpoch: 1,
+  expectedMslCounter: 1,
+  mslDeviceId: 'surface-device-01',
+  mslProfileId: 'msl-high-v2',
+  postQuantumContextDigest: Uint8List(32)..fillRange(0, 32, 4),
+  targetDigest: Uint8List(32)..fillRange(0, 32, 5),
 );
 
 MslProtocolEngine _engine(_FakeReader reader, MslProfile profile) =>

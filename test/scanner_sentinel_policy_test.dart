@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/model/sentinel_model_runtime.dart';
-import 'package:naza_one/security/probabilistic_harm_filter.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('High sentinel vote overrides optimistic explanatory output', () {

@@ -11,7 +11,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/post_quantum_export.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const password = 'recovery-password';

@@ -18,7 +18,10 @@ case "$(uname -m)" in
 esac
 
 bundle_works() {
-  [[ -f "$BUNDLE/libllamadart.so" ]] || return 1
+  local required
+  for required in libllamadart.so libllama.so libllama-common.so libggml.so libggml-base.so libggml-cpu.so libmtmd.so; do
+    [[ -f "$BUNDLE/$required" ]] || return 1
+  done
   local lib report="/tmp/naza-llamadart-ldd.$$"
   while IFS= read -r -d '' lib; do
     if ! ldd "$lib" >"$report" 2>&1; then
@@ -75,11 +78,15 @@ stage_bundle_from_build() {
 }
 
 finish_success() {
+  # LlamaDart's b10075 asset map includes these versioned aliases even when
+  # a host build emits an unversioned SONAME. Replace upstream .0 binaries as
+  # well, so the final bundle cannot mix incompatible runtime families.
+  ln -sfn libllamadart.so "$BUNDLE/libllamadart.so.0"
+  ln -sfn libggml-cpu.so "$BUNDLE/libggml-cpu.so.0"
   local max_glibc
   max_glibc="$(readelf --version-info "$BUNDLE"/*.so 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -1 || true)"
   echo "NAZA: pinned LlamaDart runtime ready at $BUNDLE"
   echo "NAZA: highest referenced GLIBC symbol: ${max_glibc:-not detected}"
-  rm -rf "$ROOT/.dart_tool/llamadart/native_bundles" 2>/dev/null || true
 }
 
 if bundle_works; then

@@ -7,8 +7,7 @@
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/key_guardian.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('guardian returns opaque non-exportable handles and stable derivations', () async {

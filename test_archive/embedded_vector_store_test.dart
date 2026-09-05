@@ -7,7 +7,7 @@
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/memory/embedded_vector_store.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   List<double> v(double x, double y, {int dimensions = 8}) {

@@ -12,7 +12,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/main.dart';
-import 'package:naza_one/onboarding/boot_theme_catalog.dart';
 
 void main() {
   testWidgets('attaches and removes a bounded Gemma vision image', (

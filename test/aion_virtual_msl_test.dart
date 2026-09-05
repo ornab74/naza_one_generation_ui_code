@@ -1,8 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/aion_entropy_federation.dart';
-import 'package:naza_one/security/aion_virtual_msl.dart';
-import 'package:naza_one/security/metameric_surface_lattice.dart';
+import 'package:naza_one/main.dart';
+import 'support/msl_authorization_fixture.dart';
 
 final class _FederatedVerifier
     implements AionContributionVerifier, AionContributorTrustPolicy {
@@ -44,6 +43,8 @@ final class _ExternalSchedule implements AionExternalKeySchedule {
     required Uint8List freshEntropy,
     required Uint8List postQuantumSecret,
     required Uint8List federationSecret,
+    required Uint8List authorizationEventCommitment,
+    required Uint8List physicalReceiptDigest,
   }) async => Uint8List(64)..fillRange(0, 64, 11);
 }
 
@@ -145,6 +146,8 @@ void main() {
   );
 
   test('federated maximum enforces the independent quorum profile', () async {
+    final now = DateTime.utc(2026, 9, 4, 12);
+    final binding = await createTestMslAuthorizationBinding(now);
     final mix =
         await AionEntropyFederation(
           verifier: _FederatedVerifier(),
@@ -163,7 +166,25 @@ void main() {
       counterStore: MslMemoryCounterStore(),
       checkpointStore: AionMemoryCheckpointStore(),
       externalKeySchedule: _ExternalSchedule(),
+      clock: () => now,
       entropy: (n) => Uint8List(n)..fillRange(0, n, 2),
+    );
+    addTearDown(engine.dispose);
+    await expectLater(
+      engine.advance(
+        purpose: 'vault/unlock',
+        verifierNonce: binding.intent.verifierNonce,
+        postQuantumSecret: Uint8List(32)..fillRange(0, 32, 4),
+        chaosFrames: [AionChaosFrame(List.filled(8, .1))],
+        federation: mix,
+      ),
+      throwsA(
+        isA<MslProtocolException>().having(
+          (error) => error.code,
+          'code',
+          'authorization_event_required',
+        ),
+      ),
     );
     final proof = await engine.advance(
       purpose: 'vault/unlock',
@@ -171,9 +192,11 @@ void main() {
       postQuantumSecret: Uint8List(32)..fillRange(0, 32, 4),
       chaosFrames: [AionChaosFrame(List.filled(8, .1))],
       federation: mix,
+      authorizationBinding: binding,
     );
     expect(proof.epoch, 1);
-    engine.dispose();
+    expect(proof.authorizationEventCommitment, binding.intent.commitment);
+    expect(proof.physicalReceiptDigest, binding.receiptDigest);
   });
 
   test('restores the encrypted ratchet checkpoint across restarts', () async {

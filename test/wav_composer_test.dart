@@ -1,8 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/audio/humanized_speech_planner.dart';
-import 'package:naza_one/audio/wav_composer.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const composer = NazaWavComposer();

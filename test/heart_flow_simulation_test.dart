@@ -5,7 +5,7 @@
 // and must not require raw identity values to calculate a result.
 // LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/naza_exploration_hub.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('HeartFlow simulation stays bounded and exposes all six dimensions', () {

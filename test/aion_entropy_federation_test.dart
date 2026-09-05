@@ -1,8 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/aion_entropy_federation.dart';
-import 'package:naza_one/security/metameric_surface_lattice.dart';
+import 'package:naza_one/main.dart';
 import 'package:pqcrypto/pqcrypto.dart';
 
 final class _AcceptingVerifier

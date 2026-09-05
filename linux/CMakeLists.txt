@@ -46,6 +46,21 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()
 
+# Match the working naza-mini-2 bootstrap: prepare the pinned CPU runtime
+# before Flutter assembly, including on a clean CI checkout. Install the full
+# compatible library family after native assets (below), preserving SONAMEs.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+  execute_process(
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/../tool/prepare_linux_llamadart_native.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    RESULT_VARIABLE NAZA_SCANNER_NATIVE_RESULT
+  )
+  if(NOT NAZA_SCANNER_NATIVE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Pinned scanner runtime preparation failed (${NAZA_SCANNER_NATIVE_RESULT})")
+  endif()
+endif()
+
 # Flutter library and tool build rules.
 set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
 add_subdirectory(${FLUTTER_MANAGED_DIR})

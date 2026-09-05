@@ -9,8 +9,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/food/models.dart';
-import 'package:naza_one/food/shelf_scanner.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   FoodVisionImage image() => FoodVisionImage(

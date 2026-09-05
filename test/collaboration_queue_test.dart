@@ -8,8 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/agentic/collaboration_queue.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const base =

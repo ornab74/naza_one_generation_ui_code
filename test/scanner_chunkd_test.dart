@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/model/sentinel_model_runtime.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('PUNKD matches Python hazard weighting and marker shape', () {
@@ -32,11 +32,11 @@ void main() {
       },
     );
     expect(prompts, hasLength(2));
-    expect(prompts.first, contains('[PUNKD_MARKERS]'));
+    expect(prompts.first, contains('[CHUNKD_MARKERS]'));
     expect(prompts.last, contains('Assistant so far:'));
     expect(result, endsWith('High'));
     expect('model chunk'.allMatches(result), hasLength(1));
-    expect(temperatures.first, isNot(.18));
+    expect(temperatures, everyElement(.18));
   });
 
   test('CHUNKD applies the Python short-chunk stopping rule', () async {

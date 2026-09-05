@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/aion_broker_protocol.dart';
-import 'package:naza_one/security/metameric_surface_lattice.dart';
+import 'package:naza_one/main.dart';
 
 final class _LoopbackBroker implements AionBrokerTransport {
   _LoopbackBroker(this.codec);

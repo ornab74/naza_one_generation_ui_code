@@ -10,9 +10,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/hardened_vault_controller.dart';
-import 'package:naza_one/security/secure_database.dart';
-import 'package:naza_one/security/security_kernel.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   late Directory directory;

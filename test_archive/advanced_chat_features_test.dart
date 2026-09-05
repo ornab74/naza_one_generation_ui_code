@@ -8,9 +8,7 @@
 // LLM-CONTEXT:END
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/chat/history_drawer.dart';
-import 'package:naza_one/chat/scroll_follow_controller.dart';
-import 'package:naza_one/onboarding/first_run_onboarding.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   group('conversation title policy', () {

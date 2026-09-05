@@ -10,7 +10,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/naza_exploration_hub.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   testWidgets('FindIt requires and forwards explicit location context', (

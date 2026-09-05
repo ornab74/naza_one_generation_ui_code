@@ -11,13 +11,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/hardened_security_runtime.dart';
-import 'package:naza_one/security/key_guardian.dart';
-import 'package:naza_one/security/post_quantum_export.dart';
-import 'package:naza_one/security/pq_trust_policy.dart';
-import 'package:naza_one/security/secure_database.dart';
-import 'package:naza_one/security/security_identity.dart';
-import 'package:naza_one/security/security_kernel.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   late Directory directory;

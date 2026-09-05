@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/agentic/software_reality_compiler.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const compiler = NazaSoftwareRealityCompiler();

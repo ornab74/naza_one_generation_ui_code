@@ -14,7 +14,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/release_trust.dart';
+import 'package:naza_one/main.dart';
 import 'package:pqcrypto/pqcrypto.dart';
 
 void main() {

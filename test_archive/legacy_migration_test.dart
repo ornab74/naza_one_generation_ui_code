@@ -12,7 +12,6 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naza_one/main.dart';
-import 'package:naza_one/security/secure_database.dart';
 
 void main() {
   late Directory directory;

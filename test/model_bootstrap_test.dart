@@ -10,7 +10,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/model_bootstrap.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('GitHub release manifest is ordered and pinned', () {

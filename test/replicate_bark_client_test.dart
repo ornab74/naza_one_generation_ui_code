@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:naza_one/audio/replicate_bark_client.dart';
+import 'package:naza_one/main.dart';
 
 final class _TestClient extends http.BaseClient {
   _TestClient(this.handler);

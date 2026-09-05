@@ -9,8 +9,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/intent_guard.dart';
-import 'package:naza_one/security/security_kernel.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const state = NazaSecurityState(

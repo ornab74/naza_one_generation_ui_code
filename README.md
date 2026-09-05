@@ -1,5 +1,11 @@
 # Naza One
 
+**Single-file source:** All application Dart code now lives in
+[`lib/main.dart`](lib/main.dart). Edit that file directly; its section index
+retains the former file names for navigation. Tests, command-line tools, native
+platform code, and assets remain separate. See [the consolidation notes](docs/single-file-application.md)
+for naming conventions and verification status.
+
 [![Build Naza One](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/flutter-release.yml/badge.svg)](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/flutter-release.yml)
 [![Microsoft Store MSIX](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/windows-store-msix.yml/badge.svg)](https://github.com/ornab74/naza_one_generation_ui_code/actions/workflows/windows-store-msix.yml)
 
@@ -860,19 +866,37 @@ flutter test --no-pub
 
 CI currently uses Flutter `3.44.4`; matching it locally is recommended.
 
-LlamaDart's normal target-specific native bundle is selected through the pinned
-`b10075` runtime configuration. Linux x86-64 developers who need to reproduce
-the exact optional native source build can run:
+Llama Small road and food/water scanning follows the working
+[`naza-mini-2` prototype](https://github.com/ornab74/naza-mini-2/tree/ca7ed8745a9d5bf42d81598d52ea5ede8bdb40ae):
+raw CPU completions, a 2,048-token context, four inference threads, 256/128
+batch sizes, and CHUNKD at temperature 0.18 with 64-token chunks and a
+256-token total budget. Food/water uses the same inference path with storage,
+packaging, handling, temperature, and contamination observations. The exact
+111,454,016-byte GGUF and SHA-256 remain pinned. Missing conditions stay unknown;
+empty or unrecognized output is unavailable, and load failures surface as errors.
+
+Linux CMake automatically runs `tool/prepare_linux_llamadart_native.sh` before
+assembly. The helper pins `llamadart-native` commit
+`0ba009799d7b88ea2851cff4c273a41aa7137224` (`b10075`), builds CPU-only against
+the host GLIBC, checks shared-library dependencies, and installs the complete
+compatible library family including versioned aliases into the app bundle.
+It never invokes `sudo` or a package manager. Other platforms retain their
+normal target-specific native bundles; a Linux-only path is not set globally.
+Generated native bundles and source/build trees remain ignored by Git.
+
+To test real scanner inference, first install the pinned model using the app,
+then build and run the opt-in smoke entry point:
 
 ```bash
-./tool/prepare_linux_llamadart_native.sh
-LLAMADART_ALLOW_LEGACY_LOCAL_BUNDLES=1 flutter test --no-pub
+flutter build linux --debug --target tool/scanner_smoke.dart
+build/linux/x64/debug/bundle/naza_one --enable-software-rendering
+# Restore the normal application entry point afterwards:
+flutter build linux --debug --target lib/main.dart
 ```
 
-The helper pins `llamadart-native` commit
-`0ba009799d7b88ea2851cff4c273a41aa7137224`, builds CPU-only, checks shared
-library dependencies, and never invokes `sudo` or a package manager. Generated
-native bundles and source/build trees remain ignored by Git.
+The smoke app prints a `NAZA_SCANNER_SMOKE` JSON result for both road and food,
+then exits. It checks native loading and the completion contract, not real-world
+risk accuracy. Ordinary unit tests use mock inference and need no model download.
 
 ### Linux
 

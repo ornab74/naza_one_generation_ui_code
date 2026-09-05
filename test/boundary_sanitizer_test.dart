@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/boundary_sanitizer.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('removes invisible controls while preserving readable layout', () {

@@ -11,8 +11,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/audio/encrypted_voice_cache.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 const _voice = 'marin';
 const _model = 'gpt-4o-mini-tts';

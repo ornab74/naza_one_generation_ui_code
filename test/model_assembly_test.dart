@@ -1,8 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/model/embedding_runtime.dart';
-import 'package:naza_one/model/model_assembly.dart';
-import 'package:naza_one/model/provider_gateway.dart';
-import 'package:naza_one/security/pq_trust_policy.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('assembly settings are bounded and preserve local Gemma default', () {

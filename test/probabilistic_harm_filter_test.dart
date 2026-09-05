@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/security/probabilistic_harm_filter.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const telemetry = NazaSystemTelemetry(

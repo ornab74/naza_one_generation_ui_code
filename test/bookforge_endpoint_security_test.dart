@@ -7,7 +7,7 @@
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/naza_bookforge.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('API-key generation accepts only the pinned OpenAI origin', () {

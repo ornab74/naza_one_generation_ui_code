@@ -10,8 +10,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/food/models.dart';
-import 'package:naza_one/food/repository.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   group('MemoryFoodRepository', () {

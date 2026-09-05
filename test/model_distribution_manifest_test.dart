@@ -7,7 +7,7 @@
 // DOCS: See /docs/llm-context-schema.md and the nearest mermaid.md architecture map.
 // LLM-CONTEXT:END
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/model/model_distribution_manifest.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   group('Gemma 4 E2B distribution manifest', () {

@@ -9,9 +9,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/agentic/ipfs_chatrooms.dart';
-import 'package:naza_one/security/probabilistic_harm_filter.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 import 'support/harm_test_support.dart';
 

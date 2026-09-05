@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/audio/humanized_speech_planner.dart';
-import 'package:naza_one/audio/voice_settings.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   const planner = HumanizedSpeechPlanner();

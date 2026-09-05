@@ -8,7 +8,7 @@
 // LLM-CONTEXT:END
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/chat/scroll_follow_controller.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('does not dispose an injected scroll controller', () {

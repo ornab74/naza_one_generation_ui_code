@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/agentic/ipfs_chatrooms.dart';
-import 'package:naza_one/security/hardware_passkey.dart';
+import 'package:naza_one/main.dart';
 
 final class _VerifiedPlatform implements NazaPasskeyPlatform {
   var counter = 0;

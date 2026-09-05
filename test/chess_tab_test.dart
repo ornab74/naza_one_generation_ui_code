@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/chess/chess_tab.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   testWidgets('Chess Agent exposes the advanced contract and accepts a legal move', (tester) async {

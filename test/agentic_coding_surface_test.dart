@@ -12,10 +12,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/agentic/agentic_coding_surface.dart';
-import 'package:naza_one/agentic/agentic_runtime.dart';
-import 'package:naza_one/app.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   group('agentic workspace policy', () {

@@ -7,9 +7,9 @@ cd "$repo_dir"
 test -f pubspec.lock
 flutter pub get --enforce-lockfile
 dart format --output=none --set-exit-if-changed \
-  lib/security/aion_*.dart \
+  lib/main.dart \
   test/aion_*_test.dart
-flutter analyze lib/security test/aion_*_test.dart
+flutter analyze lib/main.dart test/aion_*_test.dart
 flutter test \
   test/aion_broker_key_schedule_test.dart \
   test/aion_broker_protocol_test.dart \

@@ -8,7 +8,7 @@
 // LLM-CONTEXT:END
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/theme/naza_themes.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   test('theme catalog exposes fifteen named presets', () {

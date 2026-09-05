@@ -8,51 +8,64 @@
 // LLM-CONTEXT:END
 import 'dart:io';
 
+import 'support/application_source.dart';
+
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/app.dart' as app;
-import 'package:naza_one/model/pausable_model_downloader.dart';
-import 'package:naza_one/onboarding/boot_theme_catalog.dart';
+import 'package:naza_one/main.dart' as app;
+import 'package:naza_one/main.dart';
 
 void main() {
   test('first-run source keeps password requirement platform-safe', () async {
-    final source = await File(
+    final source = await readApplicationSource(
       'lib/onboarding/boot_coordinator.dart',
-    ).readAsString();
+    );
 
     // Product invariant: encryption is mandatory. Desktop Linux defaults to
     // a password because headless sessions may not expose Secret Service;
     // other platforms can use the OS secure credential store by default.
-    expect(source, contains('bool _requirePassword = Platform.isLinux;'));
+    expect(
+      source,
+      contains('bool _bootCoordinatorRequirePassword = Platform.isLinux;'),
+    );
     expect(
       source,
       contains('false; // UX default: encrypted, no boot password.'),
     );
     expect(source, contains('Require a password every time Naza One starts'));
-    expect(source, contains('passwordRequired: _requirePassword'));
-    expect(source, contains("password: _requirePassword ? password : ''"));
+    expect(
+      source,
+      contains('passwordRequired: _bootCoordinatorRequirePassword'),
+    );
+    expect(
+      source,
+      contains("password: _bootCoordinatorRequirePassword ? password : ''"),
+    );
   });
 
   test('main entrypoint is vault-first rather than model-first', () async {
-    final source = await File('lib/main.dart').readAsString();
-    expect(source, contains("import 'onboarding/boot_coordinator.dart';"));
+    final source = await readApplicationSource('lib/main.dart');
+    expect(source, contains('Future<void> main() async'));
     expect(source, contains('NazaBootCoordinator.launch()'));
     expect(source, isNot(contains('NazaModelBootstrap.launch()')));
   });
 
   test('password unlock can hand off to automatic model preparation', () async {
-    final source = await File(
+    final source = await readApplicationSource(
       'lib/onboarding/boot_coordinator.dart',
-    ).readAsString();
+    );
     expect(source, contains('allowBusyHandoff: true'));
-    expect(source, contains('if (_busy && !allowBusyHandoff) return;'));
+    expect(
+      source,
+      contains('if (_bootCoordinatorBusy && !allowBusyHandoff) return;'),
+    );
   });
 
   test(
     'startup checks the managed model attestation before local preference hashing',
     () async {
-      final source = await File(
+      final source = await readApplicationSource(
         'lib/onboarding/boot_coordinator.dart',
-      ).readAsString();
+      );
       final refresh = source.indexOf("'managed model cache refresh',");
       final restore = source.indexOf("'restore preferred local model',");
       expect(refresh, greaterThanOrEqualTo(0));
@@ -61,9 +74,9 @@ void main() {
   );
 
   test('startup traces each trusted-model handoff await', () async {
-    final source = await File(
+    final source = await readApplicationSource(
       'lib/onboarding/boot_coordinator.dart',
-    ).readAsString();
+    );
     expect(source, contains("'managed model cache refresh'"));
     expect(source, contains("'restore preferred local model'"));
     expect(
@@ -77,11 +90,14 @@ void main() {
   test(
     'first run requires and downloads the separate safety sentinel',
     () async {
-      final source = await File(
+      final source = await readApplicationSource(
         'lib/onboarding/boot_coordinator.dart',
-      ).readAsString();
-      expect(source, contains('bool get _allModelsReady'));
-      expect(source, contains('_modelReady && _sentinelReady'));
+      );
+      expect(source, contains('bool get _bootCoordinatorAllModelsReady'));
+      expect(
+        source,
+        contains('_bootCoordinatorModelReady && _bootCoordinatorSentinelReady'),
+      );
       expect(source, contains('NazaSentinelModelStore.isInstalled()'));
       expect(
         source,
@@ -92,7 +108,7 @@ void main() {
   );
 
   test('remote frontier egress excludes Chat from the sentinel', () async {
-    final source = await File('lib/app.dart').readAsString();
+    final source = await readApplicationSource('lib/app.dart');
     expect(source, contains('feature != NazaModelFeature.chat'));
     expect(source, contains("'frontier.\${feature.name}.request'"));
   });
@@ -100,7 +116,7 @@ void main() {
   test(
     'model store cannot poison refresh after target path resolution fails',
     () async {
-      final source = await File('lib/app.dart').readAsString();
+      final source = await readApplicationSource('lib/app.dart');
       final refresh = source.indexOf(
         'static Future<NazaModelStoreStatus> _refreshInner() async',
       );
@@ -129,7 +145,7 @@ void main() {
   test(
     'theme settings and closed-model recovery stay wired into the app',
     () async {
-      final source = await File('lib/app.dart').readAsString();
+      final source = await readApplicationSource('lib/app.dart');
       expect(source, contains('ValueNotifier<String> selectedId'));
       expect(source, contains('NazaThemeStore.select(option.id)'));
       expect(source, contains('bool _isClosedModelError(Object error)'));
@@ -196,9 +212,9 @@ void main() {
   );
 
   test('desktop local model preference is encrypted and hash gated', () async {
-    final source = await File(
+    final source = await readApplicationSource(
       'lib/model/local_model_preference.dart',
-    ).readAsString();
+    );
     expect(source, contains('NazaSecureDatabase'));
     expect(source, contains('writeJson(namespace, key, selection.toJson())'));
     expect(source, contains('crypto.sha256.bind(file.openRead())'));

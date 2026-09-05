@@ -12,8 +12,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/naza_bookforge.dart';
-import 'package:naza_one/security/probabilistic_harm_filter.dart';
+import 'package:naza_one/main.dart';
 
 import 'support/harm_test_support.dart';
 

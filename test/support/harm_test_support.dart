@@ -1,4 +1,4 @@
-import 'package:naza_one/security/probabilistic_harm_filter.dart';
+import 'package:naza_one/main.dart';
 
 final class RecordingHarmGate implements NazaHarmGate {
   RecordingHarmGate({

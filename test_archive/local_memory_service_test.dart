@@ -9,9 +9,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:naza_one/memory/embedded_vector_store.dart';
-import 'package:naza_one/memory/local_memory_service.dart';
-import 'package:naza_one/security/secure_database.dart';
+import 'package:naza_one/main.dart';
 
 void main() {
   late Directory temp;
