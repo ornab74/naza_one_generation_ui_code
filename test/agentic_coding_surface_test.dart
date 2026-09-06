@@ -421,7 +421,19 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('Code Foundry'), findsOneWidget);
-    expect(find.text('EXECUTION INTELLIGENCE'), findsOneWidget);
+    // Other destinations share this zone; verify the Code Foundry card.
+    final foundryCard = find.ancestor(
+      of: find.text('Code Foundry'),
+      matching: find.byType(InkWell),
+    );
+    expect(foundryCard, findsOneWidget);
+    expect(
+      find.descendant(
+        of: foundryCard,
+        matching: find.text('EXECUTION INTELLIGENCE'),
+      ),
+      findsOneWidget,
+    );
     await tester.tap(find.text('Code Foundry'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));

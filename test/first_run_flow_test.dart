@@ -216,7 +216,15 @@ void main() {
       'lib/model/local_model_preference.dart',
     );
     expect(source, contains('NazaSecureDatabase'));
-    expect(source, contains('writeJson(namespace, key, selection.toJson())'));
+    // Formatting may split arguments across lines and add a trailing comma.
+    expect(
+      source,
+      matches(
+        RegExp(
+          r'_localModelPreferenceDatabase\.writeJson\(\s*namespace,\s*key,\s*selection\.toJson\(\),?\s*\)',
+        ),
+      ),
+    );
     expect(source, contains('crypto.sha256.bind(file.openRead())'));
     expect(source, contains("Platform.environment['NAZA_MODEL_PATH']"));
     expect(source, contains('materializeForApp'));
