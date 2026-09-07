@@ -16,11 +16,30 @@ if "$PREPARE" --verify-bundle "$TEST_ROOT"; then
   exit 1
 fi
 
+# Exercise the internal post-build gate with a harmless changed ELF (a trailing
+# byte leaves its loader behavior intact). It must accept host-specific output,
+# while the public cache gate above must still reject that same file.
+verify_fresh_fixture() (
+  source <(sed '/^if .*--verify-bundle/,$d' "$PREPARE")
+  bundle_works "$TEST_ROOT" fresh-build
+)
+verify_fresh_fixture
+
 rm -rf "$TEST_ROOT"
 mkdir -p "$TEST_ROOT"
 cp -a "$SOURCE_BUNDLE/." "$TEST_ROOT/"
 cp /bin/true "$TEST_ROOT/libunexpected.so"
 if "$PREPARE" --verify-bundle "$TEST_ROOT"; then
   echo 'unexpected native library was accepted' >&2
+  exit 1
+fi
+if verify_fresh_fixture; then
+  echo 'unexpected native library was accepted by fresh-build validation' >&2
+  exit 1
+fi
+
+# There must be no stale-build promotion before the source fetch/build path.
+if sed '/^missing=()/,$d' "$PREPARE" | grep -q '^if stage_bundle_from_build'; then
+  echo 'unverified stale build promotion is enabled' >&2
   exit 1
 fi

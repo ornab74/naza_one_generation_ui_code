@@ -9,7 +9,9 @@ BUILD="$SRC/build/linux-x64-full"
 BUNDLE="$ROOT/third_party/bin/linux-x64"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
-# Reproducible output identities for the pinned commit above.  A cached native
+# Known local bundle identities, NOT reproducible across compilers or hosts.
+# Fresh builds derive trust from verified source and a clean build directory.
+# A cached native
 # bundle is attacker-controlled input until every file matches this allowlist.
 # In particular, do not run ldd on it before this verification: ldd may invoke
 # the ELF loader, and loadability alone says nothing about provenance.
@@ -39,7 +41,8 @@ case "$(uname -m)" in
 esac
 
 bundle_works() {
-  local candidate="${1:-$BUNDLE}" required entry name actual
+  local candidate="${1:-$BUNDLE}" provenance="${2:-cache}" required entry name actual
+  [[ "$provenance" == cache || "$provenance" == fresh-build ]] || return 1
   for required in libllamadart.so libllama.so libllama-common.so libggml.so libggml-base.so libggml-cpu.so libmtmd.so; do
     [[ -f "$candidate/$required" ]] || return 1
   done
@@ -47,19 +50,29 @@ bundle_works() {
     name="${entry##*/}"
     [[ -n "${EXPECTED_RUNTIME_SHA256[$name]:-}" ]] || return 1
     [[ -f "$entry" ]] || return 1
-    actual="$(sha256sum -- "$entry" | awk '{print $1}')"
-    [[ "$actual" == "${EXPECTED_RUNTIME_SHA256[$name]}" ]] || return 1
+    if [[ "$provenance" == cache ]]; then
+      actual="$(sha256sum -- "$entry" | awk '{print $1}')"
+      if [[ "$actual" != "${EXPECTED_RUNTIME_SHA256[$name]}" ]]; then
+        echo "NAZA: cached runtime identity mismatch: $name; a fresh source build is required." >&2
+        return 1
+      fi
+    fi
   done < <(find "$candidate" -maxdepth 1 -mindepth 1 -name '*.so*' -print0)
   for name in "${!EXPECTED_RUNTIME_SHA256[@]}"; do
     [[ -e "$candidate/$name" ]] || return 1
   done
-  local lib report="/tmp/naza-llamadart-ldd.$$"
+  local lib report
+  report="$(mktemp /tmp/naza-llamadart-ldd.XXXXXX)" || return 1
   while IFS= read -r -d '' lib; do
     if ! ldd "$lib" >"$report" 2>&1; then
+      echo "NAZA: dependency inspection failed for $lib:" >&2
+      cat "$report" >&2
       rm -f "$report"
       return 1
     fi
     if grep -Eq 'not found|version `GLIBC_[0-9.]+' "$report"; then
+      echo "NAZA: unresolved runtime dependencies for $lib:" >&2
+      cat "$report" >&2
       rm -f "$report"
       return 1
     fi
@@ -115,8 +128,8 @@ stage_bundle_from_build() {
     fi
   done
   ensure_required_aliases
-  if ! bundle_works; then
-    echo "NAZA: staged native bundle has unresolved dependencies." >&2
+  if ! bundle_works "$BUNDLE" fresh-build; then
+    echo "NAZA: freshly built runtime failed library-layout or dependency validation." >&2
     rm -rf "$BUNDLE"
     return 1
   fi
@@ -135,10 +148,8 @@ if bundle_works; then
   exit 0
 fi
 
-if stage_bundle_from_build; then
-  finish_success
-  exit 0
-fi
+# Never promote an old build tree. Only the build completed below may enter
+# stage_bundle_from_build and use fresh-build validation.
 
 missing=()
 for command_name in git cmake ninja pkg-config python3 c++ readelf sha256sum; do
@@ -165,6 +176,14 @@ fi
 
 git -C "$SRC" submodule sync --recursive
 git -C "$SRC" submodule update --init --recursive --depth 1
+
+# A matching HEAD alone does not establish that the compiler sees those bytes.
+if [[ -n "$(git -C "$SRC" status --porcelain --untracked-files=no)" ]] ||
+   ! git -C "$SRC" submodule foreach --quiet --recursive \
+      'test -z "$(git status --porcelain --untracked-files=no)"'; then
+  echo "NAZA: native source has tracked modifications; refusing to compile." >&2
+  exit 1
+fi
 
 rm -rf "$BUILD"
 (

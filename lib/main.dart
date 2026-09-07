@@ -17,6 +17,7 @@ import 'dart:math' as math;
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'chromatic_document.dart';
 import 'package:archive/archive.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:crypto/crypto.dart' as crypto;
@@ -11284,6 +11285,7 @@ final class NazaLocalGemma {
   /// streams from staging into or tearing down the same native session.
   Future<NazaResponse> send(
     String userText, {
+    ChromaticDocument? sourceDocument,
     void Function(String partialText)? onPartial,
     String? historyUserText,
     NazaVisionImage? visionImage,
@@ -11352,6 +11354,7 @@ final class NazaLocalGemma {
     try {
       return await _sendTurn(
         userText,
+        sourceDocument: sourceDocument,
         onPartial: onPartial,
         historyUserText: historyUserText,
         visionImage: visionImage,
@@ -11381,6 +11384,7 @@ final class NazaLocalGemma {
 
   Future<NazaResponse> _sendTurn(
     String userText, {
+    ChromaticDocument? sourceDocument,
     void Function(String partialText)? onPartial,
     String? historyUserText,
     NazaVisionImage? visionImage,
@@ -11809,8 +11813,14 @@ final class NazaLocalGemma {
           accumulatedReply: prefix,
           passContext: passContext,
         );
+        final continuationSource = sourceDocument == null ? '' :
+            await ChromaticDocument.retrieveAsync(sourceDocument,
+              NazaPromptBudget.compactText(prefix, maxChars: 600),
+              page: continuationCount, maxCharacters: 1500);
+        if (_cancelledGeneration == generationId) break;
         final continuationPrompt = NazaContinuationEngine.buildPrompt(
-          originalUserText: trimmed,
+          originalUserText: continuationSource.isEmpty ? trimmed :
+              '${NazaPromptBudget.compactText(trimmed, maxChars: 800)}\n$continuationSource',
           actionProfile: actionProfile,
           decision: continuationDecision,
           pass: continuationCount,
@@ -13769,6 +13779,7 @@ final class NazaResponse {
 /// the callback above the native runtime lets widget tests verify immediate
 /// pending feedback and duplicate-submit protection without loading a model.
 final class NazaChatPromptRequest {
+  final ChromaticDocument? sourceDocument;
   final String prompt;
   final void Function(String partialText)? onPartial;
   final String historyUserText;
@@ -13782,6 +13793,7 @@ final class NazaChatPromptRequest {
   final String systemInstruction;
 
   const NazaChatPromptRequest({
+    this.sourceDocument,
     required this.prompt,
     required this.onPartial,
     required this.historyUserText,
@@ -19088,6 +19100,8 @@ class NazaStableHome extends StatefulWidget {
 class _NazaStableHomeState extends State<NazaStableHome>
     with WidgetsBindingObserver {
   final TextEditingController _inputController = TextEditingController();
+  ChromaticDocument? _chatDocument;
+  String? _chatDocumentThread;
   final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
   final ValueNotifier<NazaUiMessage?> _activeStreamingMessage =
@@ -19164,6 +19178,8 @@ class _NazaStableHomeState extends State<NazaStableHome>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _chatDocument = null;
+    _chatDocumentThread = null;
     _draftSaveTimer?.cancel();
     if (widget.initializeServices) unawaited(_persistScannerDrafts());
     _inputController.dispose();
@@ -19222,6 +19238,10 @@ class _NazaStableHomeState extends State<NazaStableHome>
 
   void _reloadRecentConversations() {
     if (!widget.initializeServices) return;
+    if (!NazaVault.instance.database.isUnlocked) {
+      _chatDocument = null;
+      _chatDocumentThread = null;
+    }
     unawaited(_loadRecentConversations());
   }
 
@@ -19370,6 +19390,11 @@ class _NazaStableHomeState extends State<NazaStableHome>
     final turnId = NazaHistoryRow._id();
     final threadId = _activeThreadId;
 
+    if (_chatDocumentThread != threadId) {
+      _chatDocument = null;
+      _chatDocumentThread = null;
+    }
+
     final workingMessage = NazaUiMessage.assistant(
       workingText,
       id: 'assistant-$turnId',
@@ -19385,7 +19410,11 @@ class _NazaStableHomeState extends State<NazaStableHome>
       _status = 'local model working';
       _messages.add(
         NazaUiMessage.user(
-          visibleUserText.trim(),
+          visibleUserText.length > ChromaticDocument.threshold
+              ? 'Large document • ${visibleUserText.length} characters\n'
+                  '${NazaPromptBudget.compactText(visibleUserText, maxChars: 1200)}\n'
+                  'Ask about a symbol, phrase, line number, or chunk number.'
+              : visibleUserText.trim(),
           id: 'user-$turnId',
           image: visionImage,
         ),
@@ -19435,8 +19464,30 @@ class _NazaStableHomeState extends State<NazaStableHome>
     }
 
     try {
+      var preparedPrompt = prompt;
+      if (visionImage == null && prompt.length > ChromaticDocument.threshold) {
+        setState(() => _status = 'indexing document into linked source chunks');
+        final document = await ChromaticDocument.ingestAsync(prompt);
+        if (!mounted) return;
+        if (_stopping) throw StateError('Document indexing cancelled.');
+        _chatDocument = document;
+        _chatDocumentThread = threadId;
+        final task = NazaPromptBudget.compactText(prompt, maxChars: 800);
+        final evidence = await ChromaticDocument.retrieveAsync(document, task);
+        if (!mounted) return;
+        if (_stopping) throw StateError('Document indexing cancelled.');
+        preparedPrompt = '$task\n$evidence';
+        setState(() => _status = '${document.chunks.length} source chunks indexed • generating');
+      } else if (visionImage == null && _chatDocumentThread == threadId && _chatDocument != null) {
+        final document = _chatDocument!;
+        final evidence = await ChromaticDocument.retrieveAsync(document, prompt);
+        if (!mounted) return;
+        if (_stopping) throw StateError('Document retrieval cancelled.');
+        preparedPrompt = '$prompt\n$evidence';
+      }
       final request = NazaChatPromptRequest(
-        prompt: prompt,
+        sourceDocument: visionImage == null && _chatDocumentThread == threadId ? _chatDocument : null,
+        prompt: preparedPrompt,
         onPartial: paintPartial,
         historyUserText: visionImage == null
             ? visibleUserText
@@ -19448,8 +19499,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
         threadContext: threadContext,
         excludedMemoryTurnIds: _threadRows.map((row) => row.id).toSet(),
         maxContinuationsOverride:
-            selectedMode == NazaChatMode.writer ||
-                selectedMode == NazaChatMode.visual ||
+            selectedMode == NazaChatMode.visual ||
                 selectedMode == NazaChatMode.chef
             ? 0
             : null,
@@ -19490,6 +19540,7 @@ class _NazaStableHomeState extends State<NazaStableHome>
         response = sender == null
             ? await NazaLocalGemma.instance.send(
                 request.prompt,
+                sourceDocument: request.sourceDocument,
                 onPartial: request.onPartial,
                 historyUserText: request.historyUserText,
                 visionImage: request.visionImage,
@@ -19535,7 +19586,10 @@ class _NazaStableHomeState extends State<NazaStableHome>
     setState(() {
       _sending = false;
       _stopping = false;
-      _status = response.cancelled ? 'cancelled' : 'ready';
+      _status = response.cancelled ? 'cancelled' :
+          _chatDocumentThread == threadId && _chatDocument != null
+              ? 'ready • ${_chatDocument!.chunks.length} source chunks available'
+              : 'ready';
 
       final workingIndex = _messages.indexWhere(
         (m) => m.id == workingMessage.id,
