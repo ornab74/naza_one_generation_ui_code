@@ -22019,7 +22019,7 @@ class _NazaStaticBackdrop extends StatelessWidget {
     final background = Stack(
       fit: StackFit.expand,
       children: [
-        const DecoratedBox(
+        DecoratedBox(
           decoration: BoxDecoration(
             color: NazaPalette.inkDeep,
             image: DecorationImage(
