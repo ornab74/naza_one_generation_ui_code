@@ -69,6 +69,10 @@ flutter:
   uses-material-design: true
   assets:
     - assets/audio/
+    - assets/backgrounds/
+    - assets/branding/
+    - assets/icons/
+    - assets/particles/
     - assets/fonts/OFL-Inter.txt
     - assets/fonts/OFL-JetBrainsMono.txt
   fonts:

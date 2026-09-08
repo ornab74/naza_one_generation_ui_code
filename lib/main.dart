@@ -22016,16 +22016,25 @@ class _NazaStaticBackdrop extends StatelessWidget {
     // Keep the decorative canvas available for GPU builds, but use an opaque
     // surface on the software renderer. The large translucent circles, paths,
     // and grid were the dominant source of raster jank behind every panel.
-    final background = NazaPalette.reduceRasterEffects
-        ? ColoredBox(color: NazaPalette.inkDeep)
-        : Stack(
-            children: [
-              Positioned.fill(child: ColoredBox(color: NazaPalette.inkDeep)),
-              Positioned.fill(
-                child: CustomPaint(painter: _NazaBackdropPainter()),
-              ),
-            ],
-          );
+    final background = Stack(
+      fit: StackFit.expand,
+      children: [
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            color: NazaPalette.inkDeep,
+            image: DecorationImage(
+              image: AssetImage('assets/backgrounds/chat_river_forest.png'),
+              fit: BoxFit.cover,
+              opacity: 0.24,
+            ),
+          ),
+        ),
+        if (!NazaPalette.reduceRasterEffects)
+          const Positioned.fill(
+            child: CustomPaint(painter: _NazaBackdropPainter()),
+          ),
+      ],
+    );
     return IgnorePointer(child: RepaintBoundary(child: background));
   }
 }
@@ -22035,7 +22044,7 @@ class _NazaBackdropPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = const Color(0xF2020806);
+    final bg = Paint()..color = const Color(0xB2020806);
     canvas.drawRect(Offset.zero & size, bg);
 
     final gridPaint = Paint()
@@ -22110,18 +22119,40 @@ class _NazaBackdropPainter extends CustomPainter {
   bool shouldRepaint(covariant _NazaBackdropPainter oldDelegate) => false;
 }
 
-class _ModelWorkingBeacon extends StatelessWidget {
+class _ModelWorkingBeacon extends StatefulWidget {
   const _ModelWorkingBeacon();
+
+  @override
+  State<_ModelWorkingBeacon> createState() => _ModelWorkingBeaconState();
+}
+
+class _ModelWorkingBeaconState extends State<_ModelWorkingBeacon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1500),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Tooltip(
       message: 'Local model is working',
       child: RepaintBoundary(
-        child: const SizedBox(
+        child: SizedBox(
           width: 38,
           height: 38,
-          child: CustomPaint(painter: _ModelWorkingBeaconPainter(0.18)),
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (_, _) => CustomPaint(
+              painter: _ModelWorkingBeaconPainter(_controller.value),
+            ),
+          ),
         ),
       ),
     );
