@@ -7,12 +7,20 @@ Future<String> readApplicationSource(String formerPath) async {
   final source = await File('lib/main.dart').readAsString();
   const separator =
       '// ============================================================================\n';
-  final marker = '$separator// SOURCE SECTION: $formerPath\n$separator';
-  final start = source.indexOf(marker);
-  if (start < 0 || source.indexOf(marker, start + marker.length) >= 0) {
+  final header = '// SOURCE SECTION: $formerPath\n';
+  final headerMatches = header.allMatches(source).toList(growable: false);
+  if (headerMatches.length != 1) {
     throw StateError('Expected exactly one application section: $formerPath');
   }
-  final bodyStart = start + marker.length;
-  final end = source.indexOf('$separator// SOURCE SECTION:', bodyStart);
-  return source.substring(bodyStart, end < 0 ? source.length : end);
+  final start = headerMatches.single.start;
+  final bodyStart = source.indexOf(separator, start + header.length);
+  if (bodyStart < 0) {
+    throw StateError('Malformed application section: $formerPath');
+  }
+  final sectionBodyStart = bodyStart + separator.length;
+  final end = source.indexOf('$separator// SOURCE SECTION:', sectionBodyStart);
+  return source.substring(
+    sectionBodyStart,
+    end < 0 ? source.length : end,
+  );
 }
