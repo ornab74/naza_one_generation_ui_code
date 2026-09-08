@@ -148,7 +148,9 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev build-essential git binutils python3
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good build-essential git binutils python3
+          pkg-config --modversion gstreamer-1.0
+          pkg-config --cflags --libs gstreamer-1.0
       - name: Fetch dependencies
         run: flutter pub get
       - name: Build Linux release
