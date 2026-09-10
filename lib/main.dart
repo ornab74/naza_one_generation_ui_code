@@ -21752,7 +21752,7 @@ Never return prose, JSON, analysis, or a coordinate that is not in the supplied 
           controller: _scrollController,
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          addRepaintBoundaries: false,
+          addRepaintBoundaries: true,
           itemCount: _messages.length + 1,
           itemBuilder: (context, index) {
             if (index == 0) {
@@ -22025,9 +22025,13 @@ class _NazaStaticBackdrop extends StatelessWidget {
             image: DecorationImage(
               image: AssetImage('assets/backgrounds/chat_river_forest.png'),
               fit: BoxFit.cover,
-              opacity: 0.24,
+              opacity: 0.16,
+              filterQuality: FilterQuality.low,
             ),
           ),
+        ),
+        ColoredBox(
+          color: NazaPalette.inkDeep.withValues(alpha: 0.22),
         ),
         if (!NazaPalette.reduceRasterEffects)
           const Positioned.fill(
@@ -23255,8 +23259,10 @@ class _StableMessageBubble extends StatelessWidget {
                   message.text,
                   style: TextStyle(
                     color: NazaPalette.text,
-                    fontSize: 14,
-                    height: 1.48,
+                    fontSize: 15.8,
+                    height: 1.38,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: NazaFonts.display,
                   ),
                 )
               else
