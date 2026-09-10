@@ -1,0 +1,107 @@
+name: Apply second chat UI polish
+
+on:
+  push:
+    paths:
+      - '.github/workflows/ui-streaming-polish.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Polish streaming chat UI
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('lib/main.dart')
+          text = path.read_text()
+
+          replacements = {
+              """          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          addRepaintBoundaries: true,
+          itemCount: _messages.length + 1,""": """          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+          cacheExtent: 720,
+          addRepaintBoundaries: true,
+          itemCount: _messages.length + 1,""",
+              """            if (sending && !narrow) const _ModelWorkingBeacon(),""": """            if (sending && !narrow)
+              Container(
+                margin: const EdgeInsets.only(right: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                decoration: BoxDecoration(
+                  color: NazaPalette.shellSoft,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: NazaPalette.border),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: NazaPalette.mintSoft,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Text(
+                      stopping ? 'Stopping' : 'Writing',
+                      style: TextStyle(
+                        color: NazaPalette.text,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w900,
+                        fontFamily: NazaFonts.display,
+                      ),
+                    ),
+                  ],
+                ),
+              ),""",
+              """    final maxWidth = width >= 760 ? 640.0 : width * 0.84;""": """    final maxWidth = width >= 1200
+        ? 760.0
+        : width >= 760
+        ? 680.0
+        : width * 0.92;""",
+              """            color: isUser ? NazaPalette.userBubble : NazaPalette.panelSoft,""": """            color: isUser
+                ? NazaPalette.userBubble
+                : message.isWorking
+                ? NazaPalette.panel
+                : NazaPalette.panelSoft,""",
+              """            border: Border.all(
+              color: message.isWorking
+                  ? NazaPalette.borderStrong
+                  : isUser
+                  ? NazaPalette.borderStrong
+                  : NazaPalette.border,
+            ),""": """            border: Border.all(
+              color: message.isWorking
+                  ? NazaPalette.borderStrong
+                  : isUser
+                  ? NazaPalette.borderStrong
+                  : NazaPalette.border,
+              width: message.isWorking ? 1.25 : 1,
+            ),""",
+              """                minimumSize: const Size(102, 52),""": """                minimumSize: const Size(88, 52),""",
+          }
+
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one match, got {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          Path('.github/workflows/ui-streaming-polish.yml').unlink()
+      - name: Commit UI polish
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/main.dart .github/workflows/ui-streaming-polish.yml
+          git commit -m "fix: polish streaming chat presentation"
+          git push origin HEAD:main
