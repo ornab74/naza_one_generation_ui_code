@@ -42,6 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.0 # Node.js 24
 
+      - name: Apply guarded chat UI polish
+        run: python tool/patch_chat_ui.py
+
       - uses: subosito/flutter-action@44ac965b96f18d999802d4b807e3256d5a3f9fa1 # v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
