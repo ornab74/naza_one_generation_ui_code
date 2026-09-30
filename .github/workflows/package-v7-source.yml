@@ -1,0 +1,47 @@
+name: Package v7.0.77 source
+
+on:
+  push:
+    branches:
+      - agent/package-v7.0.77
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact v7.0.77 commit
+        uses: actions/checkout@v4
+        with:
+          ref: f9ed89cd0b29cd1ef5c5dd3b556de2ddb6d6a1f3
+
+      - name: Verify version
+        run: grep -q '^version: 7\.0\.77+7$' pubspec.yaml
+
+      - name: Create clean source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          rsync -a ./ dist/package/ \
+            --exclude '.git' \
+            --exclude 'dist' \
+            --exclude '*.keystore' \
+            --exclude '*.jks' \
+            --exclude 'android/key.properties' \
+            --exclude 'relay/secrets.db' \
+            --exclude 'relay/.secrets.key' \
+            --exclude '.env' \
+            --exclude '.env.*'
+          cd dist/package
+          zip -qr ../naza-route-engine-v7.0.77-source.zip .
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: naza-route-engine-v7.0.77-source
+          path: dist/naza-route-engine-v7.0.77-source.zip
+          if-no-files-found: error
+          retention-days: 7
