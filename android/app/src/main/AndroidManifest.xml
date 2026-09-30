@@ -1,7 +1,23 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- GPS-only privacy boundary. Remove any Wi-Fi permissions that a transitive
+         library might try to merge into the final Android manifest. -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_WIFI_STATE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.CHANGE_WIFI_STATE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        tools:node="remove" />
 
     <application
         android:label="Naza Route Engine"

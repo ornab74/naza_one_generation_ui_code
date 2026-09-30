@@ -1,16 +1,26 @@
 package com.qroadsan.routengine
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationManager
+import android.os.CancellationSignal
 import android.provider.Settings
 import android.text.TextUtils
 import androidx.annotation.NonNull
+import androidx.core.content.ContextCompat
+import androidx.core.location.LocationCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class MainActivity : FlutterActivity() {
     private val methodChannelName = "route_engine/doordash_control"
@@ -72,8 +82,14 @@ class MainActivity : FlutterActivity() {
                             "serviceConnected" to
                                 (DoorDashAccessibilityService.instance != null),
                             "packageName" to packageName,
+                            "locationProvider" to "gps_only",
+                            "wifiScanningRequired" to false,
                         ),
                     )
+                }
+
+                "getGpsPosition" -> {
+                    background(result) { gpsOnlyPosition() }
                 }
 
                 "previewOverlay" -> {
@@ -174,6 +190,74 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    private fun gpsOnlyPosition(): Map<String, Any?> {
+        if (
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            throw SecurityException("Precise GPS permission is required.")
+        }
+
+        val manager = getSystemService(LocationManager::class.java)
+        if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            throw IllegalStateException(
+                "GPS is disabled. Turn on Location/GPS; Wi-Fi scanning can remain off.",
+            )
+        }
+
+        val lastKnown = try {
+            manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+        } catch (_: SecurityException) {
+            null
+        }
+        val location = if (
+            lastKnown != null &&
+            System.currentTimeMillis() - lastKnown.time <= 90_000L
+        ) {
+            lastKnown
+        } else {
+            val ref = AtomicReference<Location?>(null)
+            val latch = CountDownLatch(1)
+            val cancellation = CancellationSignal()
+            try {
+                manager.getCurrentLocation(
+                    LocationManager.GPS_PROVIDER,
+                    cancellation,
+                    ContextCompat.getMainExecutor(this),
+                ) { fix ->
+                    ref.set(fix)
+                    latch.countDown()
+                }
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                cancellation.cancel()
+            }
+            ref.get() ?: lastKnown
+        } ?: throw IllegalStateException(
+            "GPS fix unavailable. Move where the sky is visible; Wi-Fi scanning is not required.",
+        )
+
+        return mapOf(
+            "latitude" to location.latitude,
+            "longitude" to location.longitude,
+            "timestampMillis" to location.time,
+            "accuracy" to location.accuracy.toDouble(),
+            "altitude" to location.altitude,
+            "heading" to location.bearing.toDouble(),
+            "speed" to location.speed.toDouble(),
+            "speedAccuracy" to
+                if (location.hasSpeedAccuracy()) location.speedAccuracyMetersPerSecond.toDouble() else 0.0,
+            "altitudeAccuracy" to
+                if (location.hasVerticalAccuracy()) location.verticalAccuracyMeters.toDouble() else 0.0,
+            "headingAccuracy" to
+                if (location.hasBearingAccuracy()) location.bearingAccuracyDegrees.toDouble() else 0.0,
+            "isMocked" to LocationCompat.isMock(location),
+            "provider" to LocationManager.GPS_PROVIDER,
+        )
     }
 
     private fun isAccessibilityEnabled(): Boolean {

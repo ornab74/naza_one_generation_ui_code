@@ -1,9 +1,9 @@
 name: Build Naza One Android
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - release/v7.0.77-gps-only-aab
   workflow_dispatch:
 
 permissions:
@@ -28,6 +28,10 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      - name: Apply GPS-only Dart repair
+        run: ./tool/apply_gps_only_repair.sh
+      - name: Verify GPS-only privacy boundary
+        run: ./tool/verify_gps_only.sh
       - run: flutter pub get
       - run: flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
       - run: flutter test --no-pub
@@ -49,6 +53,8 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      - name: Apply GPS-only Dart repair
+        run: ./tool/apply_gps_only_repair.sh
       - run: flutter pub get
       - name: Configure Android release signing
         shell: bash

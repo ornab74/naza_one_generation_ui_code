@@ -1,0 +1,61 @@
+--- a/lib/main.dart	2026-08-19 08:47:28.000000000 +0000
++++ b/lib/main.dart	2026-09-30 23:12:37.000000000 +0000
+@@ -931,6 +931,9 @@
+ // -----------------------------------------------------------------------------
+ 
+ class LocationService {
++  static const MethodChannel _nativeGps =
++      MethodChannel('route_engine/doordash_control');
++
+   Future<Position> currentPosition() async {
+     var permission = await Geolocator.checkPermission();
+     if (permission == LocationPermission.denied) {
+@@ -938,8 +941,38 @@
+     }
+     if (permission == LocationPermission.denied ||
+         permission == LocationPermission.deniedForever) {
+-      throw StateError('Location permission is required for route weather.');
++      throw StateError('Precise location permission is required for GPS.');
+     }
++
++    if (defaultTargetPlatform == TargetPlatform.android) {
++      // Android is intentionally native GPS/GNSS only. This does not call
++      // Google fused/network positioning or any device Wi-Fi scan. Wi-Fi
++      // scanning can stay disabled in system settings.
++      final raw = await _nativeGps
++          .invokeMapMethod<String, dynamic>('getGpsPosition');
++      if (raw == null) {
++        throw StateError('GPS fix unavailable. Wi-Fi scanning is not required.');
++      }
++      double number(String key, [double fallback = 0]) =>
++          (raw[key] as num?)?.toDouble() ?? fallback;
++      return Position(
++        latitude: number('latitude'),
++        longitude: number('longitude'),
++        timestamp: DateTime.fromMillisecondsSinceEpoch(
++          (raw['timestampMillis'] as num?)?.toInt() ??
++              DateTime.now().millisecondsSinceEpoch,
++        ),
++        accuracy: number('accuracy'),
++        altitude: number('altitude'),
++        heading: number('heading'),
++        speed: number('speed'),
++        speedAccuracy: number('speedAccuracy'),
++        altitudeAccuracy: number('altitudeAccuracy'),
++        headingAccuracy: number('headingAccuracy'),
++        isMocked: raw['isMocked'] == true,
++      );
++    }
++
+     if (!await Geolocator.isLocationServiceEnabled()) {
+       throw StateError('Location services are disabled.');
+     }
+@@ -1955,7 +1988,7 @@
+       );
+ 
+       if (settings.radarEnabled) {
+-        status = 'Scanning live radar';
++        status = 'Fetching live radar';
+         notifyListeners();
+         radarFrame = await _radarService.latestFrame(
+           latitude: position!.latitude,

@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.location.Location
 import android.location.LocationManager
 import android.net.Uri
+import android.os.CancellationSignal
 import android.speech.tts.TextToSpeech
 import android.util.Base64
 import androidx.core.content.ContextCompat
@@ -19,8 +20,11 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.floor
@@ -171,25 +175,56 @@ class OnlineDecisionPipeline(
     }
 
     private fun bestLastKnownLocation(): Location? {
+        // GPS-only policy: never ask Android for NETWORK_PROVIDER or any fused
+        // location source. Wi-Fi scanning is not needed for this app.
         val fine = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.ACCESS_FINE_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
-        val coarse = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!fine && !coarse) return null
+        if (!fine) return null
 
         val manager = context.getSystemService(LocationManager::class.java)
-        val candidates = mutableListOf<Location>()
-        for (provider in manager.getProviders(true)) {
-            try {
-                manager.getLastKnownLocation(provider)?.let(candidates::add)
-            } catch (_: SecurityException) {
-            }
+        if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) return null
+
+        val lastKnown = try {
+            manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+        } catch (_: SecurityException) {
+            null
+        } catch (_: IllegalArgumentException) {
+            null
         }
-        return candidates.maxByOrNull { it.time }
+
+        // A recent satellite fix is good enough and avoids extra radio work.
+        if (lastKnown != null && System.currentTimeMillis() - lastKnown.time <= 90_000L) {
+            return lastKnown
+        }
+
+        // Min SDK is 30, so request one fresh GPS_PROVIDER fix. This is still
+        // satellite/GNSS only; no network or Wi-Fi provider is involved.
+        val result = AtomicReference<Location?>(null)
+        val latch = CountDownLatch(1)
+        val cancellation = CancellationSignal()
+        try {
+            manager.getCurrentLocation(
+                LocationManager.GPS_PROVIDER,
+                cancellation,
+                ContextCompat.getMainExecutor(context),
+            ) { location ->
+                result.set(location)
+                latch.countDown()
+            }
+            latch.await(8, TimeUnit.SECONDS)
+        } catch (_: SecurityException) {
+            return lastKnown
+        } catch (_: IllegalArgumentException) {
+            return lastKnown
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return lastKnown
+        } finally {
+            cancellation.cancel()
+        }
+        return result.get() ?: lastKnown
     }
 
     private fun fetchWeather(location: Location): JSONObject {
